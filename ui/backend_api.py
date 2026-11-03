@@ -17,8 +17,13 @@ from badge_backend.api import MissingPhotosError  # noqa: F401
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = _api.default_db_path(ROOT)   # README: <project_dir>/project.db
-ELEMENT_TYPES = ("text", "field", "photo", "image", "rect", "line", "qr", "barcode")   # 'line' — по решению Архитектора (миграция Backend)
+ELEMENT_TYPES = ("text", "field", "photo", "image", "rect", "ellipse", "line", "qr", "barcode")   # v4: ellipse   # 'line' — по решению Архитектора (миграция Backend)
 SIDES = ("front", "back")
+# Русские названия типов элементов — единственный источник для подписей UI (этап 12)
+TYPE_NAMES = {"field": "Поле", "text": "Текст", "photo": "Фото", "image": "Изображение", "rect": "Рамка",
+              "ellipse": "Эллипс", "line": "Линия", "barcode": "Штрихкод", "qr": "QR-код"}
+SIDE_NAMES = {"front": "Лицевая", "back": "Оборот"}
+
 
 
 def pil_to_qimage(img):
@@ -39,6 +44,7 @@ class BackendAPI:
         if self.con is not None:
             self.con.close()
         self.db_path = path if str(path) == ":memory:" else Path(path)
+        if hasattr(self, "_undo"): self.clear_history()
         self.con = _api.connect(str(self.db_path))
         # connect() применяет миграции; проверяем версию функцией Backend (без SQL в UI)
         if self.schema_version() < _db.LATEST:
@@ -76,9 +82,58 @@ class BackendAPI:
 
     # --- шаблон ---
     def list_elements(self, side=None): return _api.list_elements(self.con, side)
-    def create_element(self, **kw): return _api.create_element(self.con, **kw)
-    def update_element(self, eid, **changes): return _api.update_element(self.con, eid, **changes)
-    def delete_element(self, eid): return _api.delete_element(self.con, eid)
+    # Элементы шаблона + история для «Отменить/Повторить» (только вызовы фасада, без SQL)
+    _EL_KEYS = ("type", "x", "y", "w", "h", "field_name", "static_value", "style", "side", "z_order")
+
+    def _hist(self):
+        if not hasattr(self, "_undo"): self._undo, self._redo, self._ids, self._replaying = [], [], {}, False
+        return self._undo
+
+    def _id(self, eid): self._hist(); return self._ids.get(eid, eid)
+
+    def _el(self, eid): return next((e for e in _api.list_elements(self.con) if e["id"] == self._id(eid)), None)
+
+    def _record(self, op):
+        self._hist()
+        if not self._replaying: self._undo.append(op); self._redo.clear()
+
+    def create_element(self, **kw):
+        eid = _api.create_element(self.con, **kw); self._record(("create", eid, dict(kw))); return eid
+
+    def update_element(self, eid, **changes):
+        old = self._el(eid); r = _api.update_element(self.con, self._id(eid), **changes)
+        if old: self._record(("update", eid, {k: old.get(k) for k in changes}, dict(changes)))
+        return r
+
+    def delete_element(self, eid):
+        old = self._el(eid); r = _api.delete_element(self.con, self._id(eid))
+        if old: self._record(("delete", eid, {k: old.get(k) for k in self._EL_KEYS}))
+        return r
+
+    def can_undo(self): return bool(self._hist())
+    def can_redo(self): self._hist(); return bool(self._redo)
+
+    def _apply(self, op, inverse):
+        kind, eid = op[0], op[1]; self._replaying = True
+        try:
+            if (kind == "create") == inverse:          # отмена создания / повтор удаления
+                _api.delete_element(self.con, self._id(eid))
+            elif kind in ("create", "delete"):         # повтор создания / отмена удаления
+                data = op[2]; self._ids[eid] = _api.create_element(self.con, **data)
+            else:
+                _api.update_element(self.con, self._id(eid), **(op[2] if inverse else op[3]))
+        finally:
+            self._replaying = False
+
+    def undo(self):
+        if not self.can_undo(): return False
+        op = self._undo.pop(); self._apply(op, True); self._redo.append(op); return True
+
+    def redo(self):
+        if not self.can_redo(): return False
+        op = self._redo.pop(); self._apply(op, False); self._undo.append(op); return True
+
+    def clear_history(self): self._hist(); self._undo.clear(); self._redo.clear(); self._ids.clear()
     def get_background(self, side): return _api.get_background(self.con, side)
     def set_background(self, side, color="#FFFFFF", image_path=None):
         return _api.set_background(self.con, side, color, image_path)
@@ -98,6 +153,25 @@ class BackendAPI:
                                 require_photo=require_photo, progress=progress)
 
     # --- экспорт / печать: подготовка в GUI-потоке ---
+    # --- этап 12 (Backend v4) ---
+    def query_persons(self, where=None, printed=None, only_marked=False, order_by="id"):
+        return _api.query_persons(self.con, where, printed=printed, only_marked=only_marked, order_by=order_by)
+    def clear_printed(self, ids): return _api.clear_printed(self.con, list(ids))
+    def delete_persons(self, ids): return _api.delete_persons(self.con, list(ids))
+    def backup_db(self, dest): return _api.backup_db(self.con, dest)
+    def vacuum_db(self): return _api.vacuum_db(self.con)
+    def compact_and_backup(self, backup_dir): return _api.compact_and_backup(self.con, backup_dir)
+    def restore_from(self, backup_path):
+        """Восстановить текущую БД из бэкапа: закрыть соединение → restore_db → открыть заново."""
+        target = str(self.db_path)
+        if target == ":memory:": raise ValueError("Временную БД в памяти восстановить нельзя")
+        base = self.base_dir; self.close(); _api.restore_db(target, backup_path); self.open_db(target, base)
+    def set_field_default(self, name, value): return _api.set_field_default(self.con, name, value)
+    def delete_field(self, name, unlink=True): return _api.delete_field(self.con, name, unlink=unlink)
+    def list_field_links(self): return _api.list_field_links(self.con)
+    def link_field(self, element_id, field_name): return _api.link_field(self.con, element_id, field_name)
+    def unlink_field(self, element_id, static_value=None): return _api.unlink_field(self.con, element_id, static_value)
+
     def missing_photos(self, ids=None): return _api.missing_photos(self.con, ids, self.base_dir)
     def snapshot(self, ids=None, sides=SIDES): return _api.snapshot(self.con, ids, tuple(sides))
 

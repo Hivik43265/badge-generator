@@ -12,99 +12,39 @@ from .backend_api import BackendAPI, CARD_W_PX, CARD_H_PX
 from .layout_editor import element_caption
 from .records_table import format_printed_at
 
-ACCENT, INK = QColor("#2B6CB0"), QColor("#2D3748")
-
-
-def make_icon(kind: str, size: int = 32) -> QIcon:
-    """Простые собственные пиктограммы (геометрия QPainter)."""
-    pm = QPixmap(size, size); pm.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pm); p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    s = size / 32.0; p.scale(s, s)
-    pen = QPen(INK, 2); p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
-    A = QBrush(ACCENT)
-    def cyl(fill):
-        p.setBrush(fill); p.drawRect(7, 8, 18, 16); p.drawEllipse(7, 4, 18, 8); p.drawArc(7, 20, 18, 8, 180 * 16, 180 * 16)
-    if kind == "connect":
-        cyl(QBrush(QColor("#C6F6D5"))); p.setPen(QPen(QColor("#2F855A"), 3)); p.drawLine(13, 16, 16, 19); p.drawLine(16, 19, 22, 12)
-    elif kind == "disconnect":
-        cyl(QBrush(QColor("#FED7D7"))); p.setPen(QPen(QColor("#C53030"), 3)); p.drawLine(12, 12, 20, 20); p.drawLine(20, 12, 12, 20)
-    elif kind == "settings":
-        p.setBrush(A); p.drawEllipse(9, 9, 14, 14); p.setBrush(QBrush(Qt.GlobalColor.white)); p.drawEllipse(13, 13, 6, 6)
-        for a in range(0, 360, 45):
-            p.save(); p.translate(16, 16); p.rotate(a); p.setBrush(A); p.drawRect(-2, -14, 4, 5); p.restore()
-    elif kind == "save":
-        p.setBrush(A); p.drawRoundedRect(5, 5, 22, 22, 3, 3); p.setBrush(QBrush(Qt.GlobalColor.white))
-        p.drawRect(10, 5, 12, 8); p.drawRect(9, 17, 14, 10)
-    elif kind == "print":
-        p.setBrush(QBrush(QColor("#E2E8F0"))); p.drawRect(9, 4, 14, 8); p.setBrush(A); p.drawRoundedRect(4, 11, 24, 11, 2, 2)
-        p.setBrush(QBrush(Qt.GlobalColor.white)); p.drawRect(9, 18, 14, 10)
-    elif kind == "queue":
-        for i, y in enumerate((7, 15, 23)):
-            p.setBrush(A if i == 0 else QBrush(QColor("#BEE3F8"))); p.drawRect(4, y - 3, 6, 6); p.drawLine(13, y, 28, y)
-    elif kind == "printed":
-        p.setBrush(QBrush(QColor("#E2E8F0"))); p.drawRect(6, 4, 20, 24)
-        p.setPen(QPen(QColor("#2F855A"), 3)); p.drawLine(10, 17, 14, 21); p.drawLine(14, 21, 22, 11)
-    elif kind in ("front", "back"):
-        p.setBrush(QBrush(QColor("#EDF2F7") if kind == "back" else A)); p.drawRoundedRect(3, 8, 26, 17, 3, 3)
-        p.setPen(QPen(Qt.GlobalColor.white if kind == "front" else INK, 2))
-        if kind == "front": p.drawEllipse(7, 12, 7, 9); p.drawLine(17, 14, 25, 14); p.drawLine(17, 19, 23, 19)
-        else: p.drawLine(7, 13, 25, 13); p.drawLine(7, 17, 25, 17); p.drawLine(7, 21, 18, 21)
-    elif kind == "text":
-        f = QFont(); f.setBold(True); f.setPixelSize(24); p.setFont(f); p.setPen(QPen(ACCENT)); p.drawText(QRectF(0, 0, 32, 32), Qt.AlignmentFlag.AlignCenter, "Т")
-    elif kind == "position":
-        p.drawRect(5, 5, 22, 22); p.setBrush(A); p.drawRect(12, 12, 8, 8)
-        p.drawLine(16, 2, 16, 8); p.drawLine(16, 24, 16, 30); p.drawLine(2, 16, 8, 16); p.drawLine(24, 16, 30, 16)
-    elif kind == "add":
-        p.setBrush(A); p.drawEllipse(4, 4, 24, 24); p.setPen(QPen(Qt.GlobalColor.white, 3)); p.drawLine(16, 9, 16, 23); p.drawLine(9, 16, 23, 16)
-    elif kind == "remove":
-        p.setBrush(QBrush(QColor("#E53E3E"))); p.drawEllipse(4, 4, 24, 24); p.setPen(QPen(Qt.GlobalColor.white, 3)); p.drawLine(9, 16, 23, 16)
-    elif kind == "capture":
-        p.setBrush(A); p.drawRoundedRect(3, 9, 26, 18, 3, 3); p.drawRect(11, 5, 10, 5)
-        p.setBrush(QBrush(Qt.GlobalColor.white)); p.drawEllipse(10, 12, 12, 12)
-    elif kind == "design":
-        p.setBrush(QBrush(QColor("#EDF2F7"))); p.drawRect(4, 6, 24, 20); p.setBrush(A)
-        p.drawPolygon(QPolygonF([QPointF(10, 22), QPointF(24, 8), QPointF(27, 11), QPointF(13, 25)]))
-    else:
-        p.setBrush(A); p.drawEllipse(8, 8, 16, 16)
-    p.end()
-    return QIcon(pm)
+from .backend_api import TYPE_NAMES, SIDE_NAMES
+from .ribbon import glyph
 
 
 class PreviewPanel(QWidget):
-    """Правая часть главного вида: сверху — лицевая сторона выбранной записи (render_card),
-    ниже — вкладки «Поля макета» / «Поля БД»."""
+    """Вкладка «База данных», справа: «Предпросмотр / Поля».
+    Сверху вкладки Сторона 1 / Сторона 2 (рендер Backend), снизу — «Поле шаблона | Значение из БД»."""
 
     def __init__(self, api: BackendAPI, parent=None):
         super().__init__(parent)
         self.api, self.person_id, self.side = api, None, "front"
-        self.title = QLabel("Предпросмотр / Поля"); self.title.setStyleSheet("font-weight:600; font-size:13px;")
-        self.image = QLabel(); self.image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image.setMinimumSize(320, 202); self.image.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.image.setStyleSheet("background:#EDF2F7; border:1px solid #CBD5E0; border-radius:6px;")
+        self.title = QLabel("Предпросмотр / Поля"); self.title.setStyleSheet("font-weight:600;")
+        self.sides = QTabWidget(); self.images, self.pixmaps = {}, {}
+        for side, name in (("front", "Сторона 1"), ("back", "Сторона 2")):
+            lab = QLabel(); lab.setAlignment(Qt.AlignmentFlag.AlignCenter); lab.setMinimumSize(260, 165)
+            lab.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            self.images[side] = lab; self.sides.addTab(lab, name)
+        self.sides.currentChanged.connect(lambda i: self._fit())
         self.caption = QLabel(); self.caption.setStyleSheet("color:#4A5568;")
-        self.tabs = QTabWidget()
-        self.layout_fields = QListWidget()
-        self.db_fields = QTableWidget(0, 2); self.db_fields.setHorizontalHeaderLabels(["Поле", "Значение"])
-        self.db_fields.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.db_fields.verticalHeader().setVisible(False)
-        self.db_fields.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        # QTabWidget над предпросмотром: на каждой вкладке сверху общий предпросмотр, снизу — свой список
-        self.preview_box = QWidget(); pv = QVBoxLayout(self.preview_box); pv.setContentsMargins(0, 0, 0, 0)
-        pv.addWidget(self.image, 1); pv.addWidget(self.caption)
-        self.pages = []
-        for content, name in ((self.layout_fields, "Поля макета"), (self.db_fields, "Поля БД")):
-            pg = QWidget(); QVBoxLayout(pg).setContentsMargins(4, 4, 4, 4); pg.layout().addWidget(content, 2)
-            self.tabs.addTab(pg, name); self.pages.append(pg)
-        self.tabs.currentChanged.connect(self._move_preview); self._move_preview(0)
-        lay = QVBoxLayout(self); lay.setContentsMargins(6, 6, 6, 6)
-        lay.addWidget(self.title); lay.addWidget(self.tabs, 1)
-        self.pixmap = None
+        self.fields = QTableWidget(0, 2); self.fields.setHorizontalHeaderLabels(["Поле шаблона", "Значение из БД"])
+        self.fields.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.fields.verticalHeader().setVisible(False)
+        self.fields.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.fields.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        lay = QVBoxLayout(self); lay.setContentsMargins(4, 4, 4, 4)
+        lay.addWidget(self.title); lay.addWidget(self.sides, 3); lay.addWidget(self.caption); lay.addWidget(self.fields, 2)
 
-    def _move_preview(self, i):
-        self.pages[i].layout().insertWidget(0, self.preview_box, 3); self.preview_box.show(); self._fit()
+    @property
+    def pixmap(self):
+        return self.pixmaps.get("front")
 
     def set_side(self, side):
-        self.side = side; self.refresh()
+        self.side = side; self.sides.setCurrentIndex(0 if side == "front" else 1)
 
     def set_person(self, pid):
         self.person_id = pid; self.refresh()
@@ -112,61 +52,166 @@ class PreviewPanel(QWidget):
     def refresh(self):
         p = self.api.get_person(self.person_id) if self.person_id is not None else None
         if p is None: self.person_id = None
-        img = self.api.render_card(self.person_id, self.side)          # рендер Backend
-        self.pixmap = QPixmap.fromImage(img)
+        for side in ("front", "back"):
+            self.pixmaps[side] = QPixmap.fromImage(self.api.render_card(self.person_id, side))   # рендер Backend
         self._fit()
-        side = "лицевая" if self.side == "front" else "оборот"
-        self.caption.setText(f"{'Запись #' + str(p['id']) if p else 'Пустой шаблон'} · {side}")
-        # Поля макета
-        labels = {f["name"]: f["label"] for f in self.api.list_fields()}
-        self.layout_fields.clear()
-        for e in self.api.list_elements(self.side):
-            it = QListWidgetItem(element_caption(e, labels)); it.setData(Qt.ItemDataRole.UserRole, e["id"])
-            self.layout_fields.addItem(it)
-        if not self.layout_fields.count():
-            self.layout_fields.addItem("Шаблон пуст — откройте «Дизайн → Редактор макета»")
-        # Поля БД
+        self.caption.setText(f"Запись #{p['id']}" if p else "Пустой шаблон (запись не выбрана)")
+        labels = {f["name"]: f["label"] or f["name"] for f in self.api.list_fields()}
+        vals = (p or {}).get("fields") or {}
         rows = []
-        if p:
-            logo = next((e.get("static_value") for e in sorted(self.api.list_elements(), key=lambda e: e["side"] != "front") if e["type"] == "image"), None)
-            if p["fields"].get("logo") or logo: rows.append(("Логотип", p["fields"].get("logo") or logo))
-            rows.append(("Фото", p.get("photo_path") or "—"))
-            fio = " ".join(str(p["fields"].get(k) or "") for k in ("last_name", "first_name", "middle_name")).strip()
-            if fio: rows.append(("ФИО", fio))
-            for f in self.api.list_fields():
-                if f["name"] != "logo": rows.append((f["label"], str(p["fields"].get(f["name"], "") or "")))
-            rows.append(("Напечатано", format_printed_at(p.get("printed_at")) or "—"))
-        self.db_fields.setRowCount(len(rows))
+        for e in self.api.list_elements():
+            if e["type"] == "photo":
+                rows.append((f"{TYPE_NAMES['photo']} · {SIDE_NAMES[e['side']].lower()}", (p or {}).get("photo_path") or "—"))
+            elif e.get("field_name"):
+                rows.append((f"{labels.get(e['field_name'], e['field_name'])} · {TYPE_NAMES.get(e['type'], e['type'])} · "
+                             f"{SIDE_NAMES[e['side']].lower()}", str(vals.get(e["field_name"], "") or "")))
+        self.fields.setRowCount(len(rows))
         for r, (k, v) in enumerate(rows):
-            self.db_fields.setItem(r, 0, QTableWidgetItem(k)); self.db_fields.setItem(r, 1, QTableWidgetItem(v))
+            self.fields.setItem(r, 0, QTableWidgetItem(k)); self.fields.setItem(r, 1, QTableWidgetItem(v))
+
+    def db_rows(self):
+        return [(self.fields.item(r, 0).text(), self.fields.item(r, 1).text()) for r in range(self.fields.rowCount())]
 
     def _fit(self):
-        if getattr(self, "pixmap", None) is None: return
-        w = max(200, self.image.width() - 12); h = max(120, self.image.height() - 12)
-        self.image.setPixmap(self.pixmap.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        for side, lab in self.images.items():
+            pm = self.pixmaps.get(side)
+            if pm is None: continue
+            w = max(200, lab.width() - 8); h = max(120, lab.height() - 8)
+            lab.setPixmap(pm.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev); self._fit()
 
-    def db_rows(self):
-        return [(self.db_fields.item(r, 0).text(), self.db_fields.item(r, 1).text()) for r in range(self.db_fields.rowCount())]
+
+def _two_icons(side, kind):
+    pm = QPixmap(44, 22); pm.fill(Qt.GlobalColor.transparent); p = QPainter(pm)
+    p.drawPixmap(0, 0, glyph(side).pixmap(22, 22))
+    p.drawPixmap(22, 0, glyph({"field": "text"}.get(kind, kind)).pixmap(22, 22)); p.end(); return QIcon(pm)
+
+
+field_manager_hook = None    # тесты: field_manager_hook(kind, dialog) -> значение вместо модального вопроса
+
+
+class FieldManager(QDialog):
+    """Менеджер полей: «Поле | Значение по умолчанию»; у поля — связанные объекты шаблона.
+    Данные: list_fields (default_value), list_field_links; изменения — set_field_default, link_field, unlink_field."""
+    LINKABLE = ("field", "text", "barcode", "qr")   # Backend 01a1768: text → field при связывании
+
+    def __init__(self, api: BackendAPI, parent=None):
+        super().__init__(parent); self.api = api; self.setWindowTitle("Менеджер полей"); self.resize(640, 520)
+        from PyQt6.QtWidgets import QTreeWidget
+        self.tree = QTreeWidget(); self.tree.setHeaderLabels(["Поле", "Значение по умолчанию"]); self.tree.setIconSize(QSize(44, 22))
+        self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.tree.itemChanged.connect(self._edited); self.tree.currentItemChanged.connect(lambda *_: self._sel())
+        leg = QHBoxLayout(); leg.addWidget(QLabel("Легенда:"))
+        for k, t in (("front", SIDE_NAMES["front"]), ("back", SIDE_NAMES["back"]), ("text", TYPE_NAMES["field"]),
+                     ("barcode", TYPE_NAMES["barcode"]), ("qr", TYPE_NAMES["qr"]), ("photo", "Фото / изображение")):
+            i = QLabel(); i.setPixmap(glyph(k).pixmap(18, 18)); leg.addWidget(i); leg.addWidget(QLabel(t))
+        leg.addStretch(1)
+        self.b_print, self.b_link = QPushButton("Печать списка полей"), QPushButton("Связать поле")
+        self.b_unlink, self.b_close = QPushButton("Отвязать поле"), QPushButton("Закрыть")
+        self.b_print.clicked.connect(self.print_list); self.b_link.clicked.connect(lambda: self.link())
+        self.b_unlink.clicked.connect(lambda: self.unlink()); self.b_close.clicked.connect(self.accept)
+        bl = QHBoxLayout()
+        for b in (self.b_print, self.b_link, self.b_unlink): bl.addWidget(b)
+        bl.addStretch(1); bl.addWidget(self.b_close)
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel("Значение по умолчанию подставляется в рендер, если у записи поле пустое (двойной клик — изменить)."))
+        lay.addWidget(self.tree, 1); lay.addLayout(leg); lay.addLayout(bl)
+        self.reload()
+
+    def reload(self):
+        from PyQt6.QtWidgets import QTreeWidgetItem
+        self.tree.blockSignals(True); self.tree.clear()
+        links = self.api.list_field_links()
+        for f in self.api.list_fields():
+            it = QTreeWidgetItem(self.tree, [f["label"] or f["name"], f.get("default_value") or ""])
+            it.setData(0, Qt.ItemDataRole.UserRole, ("field", f["name"]))
+            it.setFlags(it.flags() | Qt.ItemFlag.ItemIsEditable)
+            for e in links.get(f["name"], []):
+                cap = f"{TYPE_NAMES.get(e['type'], e['type'])} · {SIDE_NAMES[e['side']]} · #{e['element_id']}"
+                ch = QTreeWidgetItem(it, [cap, ""]); ch.setIcon(0, _two_icons(e["side"], e["type"]))
+                ch.setData(0, Qt.ItemDataRole.UserRole, ("element", e["element_id"], e["type"]))
+            it.setExpanded(True)
+        free = [e for e in self.api.list_elements() if e["type"] in self.LINKABLE and not e.get("field_name")]
+        if free:
+            it = QTreeWidgetItem(self.tree, ["Не связаны", ""]); it.setData(0, Qt.ItemDataRole.UserRole, ("free", None))
+            for e in free:
+                ch = QTreeWidgetItem(it, [f"{TYPE_NAMES.get(e['type'], e['type'])} · {SIDE_NAMES[e['side']]} · #{e['id']}", ""])
+                ch.setIcon(0, _two_icons(e["side"], e["type"])); ch.setData(0, Qt.ItemDataRole.UserRole, ("element", e["id"], e["type"]))
+            it.setExpanded(True)
+        self.tree.blockSignals(False); self._sel()
+
+    def selected_element(self):
+        it = self.tree.currentItem(); d = it.data(0, Qt.ItemDataRole.UserRole) if it else None
+        return d[1] if d and d[0] == "element" else None
+
+    def _sel(self):
+        it = self.tree.currentItem(); d = it.data(0, Qt.ItemDataRole.UserRole) if it else None
+        obj = bool(d and d[0] == "element")
+        self.b_link.setEnabled(obj and d[2] in self.LINKABLE)
+        self.b_unlink.setEnabled(obj and it.parent() is not None and it.parent().data(0, Qt.ItemDataRole.UserRole)[0] == "field")
+
+    def _edited(self, item, col):
+        d = item.data(0, Qt.ItemDataRole.UserRole)
+        if col == 1 and d and d[0] == "field":
+            self.api.set_field_default(d[1], item.text(1).strip() or None)
+
+    def set_default(self, name, value):
+        self.api.set_field_default(name, value); self.reload()
+
+    def link(self, field_name=None):
+        eid = self.selected_element()
+        if eid is None: return False
+        if field_name is None:
+            names = [f["name"] for f in self.api.list_fields()]
+            if field_manager_hook is not None: field_name = field_manager_hook("link", self)
+            else:
+                from PyQt6.QtWidgets import QInputDialog
+                field_name, ok = QInputDialog.getItem(self, "Связать поле", "Поле БД:", names, 0, False)
+                if not ok: return False
+        try:
+            r = self.api.link_field(eid, field_name)
+        except ValueError as e:
+            QMessageBox.warning(self, "Связать поле", str(e)); return False
+        self.reload(); return r
+
+    def unlink(self):
+        eid = self.selected_element()
+        if eid is None: return False
+        r = self.api.unlink_field(eid); self.reload(); return r
+
+    def field_list_text(self):
+        lines = ["Поля БД и связанные объекты шаблона", ""]
+        links = self.api.list_field_links()
+        for f in self.api.list_fields():
+            dv = f.get("default_value")
+            lines.append(f"{f['label'] or f['name']} ({f['name']})" + (f" — по умолчанию: {dv}" if dv else ""))
+            for e in links.get(f["name"], []):
+                lines.append(f"    {TYPE_NAMES.get(e['type'], e['type'])} · {SIDE_NAMES[e['side']]} · #{e['element_id']}")
+        return "\n".join(lines)
+
+    def print_list(self, printer=None):
+        from PyQt6.QtGui import QTextDocument
+        from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
+        doc = QTextDocument(); doc.setPlainText(self.field_list_text())
+        if printer is None:
+            printer = QPrinter()
+            if QPrintDialog(printer, self).exec() != QPrintDialog.DialogCode.Accepted: return False
+        doc.print(printer); return True
 
 
 class PrintQueueDialog(QDialog):
-    """Очередь печати: записи с print_mark=1."""
+    """Очередь печати: просмотр записей с print_mark=1 (действия — только в ленте)."""
 
-    def __init__(self, api: BackendAPI, parent=None, on_print=None):
+    def __init__(self, api: BackendAPI, parent=None):
         super().__init__(parent); self.setWindowTitle("Очередь печати"); self.resize(560, 380)
-        self.api, self.on_print = api, on_print
+        self.api = api
         self.table = QTableWidget(0, 4); self.table.setHorizontalHeaderLabels(["#", "ФИО", "Должность", "Напечатано"])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers); self.table.verticalHeader().setVisible(False)
         self.info = QLabel()
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Close); bb.rejected.connect(self.reject)
-        self.btn_print = bb.addButton("Печать…", QDialogButtonBox.ButtonRole.ActionRole)
-        self.btn_print.clicked.connect(self._print)
-        self.btn_clear = bb.addButton("Убрать из очереди", QDialogButtonBox.ButtonRole.ActionRole)
-        self.btn_clear.clicked.connect(self._unmark)
         lay = QVBoxLayout(self); lay.addWidget(self.table); lay.addWidget(self.info); lay.addWidget(bb)
         self.reload()
 
@@ -178,19 +223,11 @@ class PrintQueueDialog(QDialog):
             vals = [str(p["id"]), " ".join(str(f.get(k) or "") for k in ("last_name", "first_name", "middle_name")).strip(),
                     str(f.get("position") or ""), format_printed_at(p.get("printed_at"))]
             for c, v in enumerate(vals): self.table.setItem(r, c, QTableWidgetItem(v))
-        self.info.setText(f"В очереди: {len(self.persons)}" if self.persons else "Очередь пуста — отметьте записи в колонке «Печать».")
-        self.btn_print.setEnabled(bool(self.persons))
+        self.info.setText(f"В очереди: {len(self.persons)}. Печать и снятие отметок — лента «База данных → Печать»."
+                          if self.persons else "Очередь пуста — отметьте записи в колонке «Печать».")
 
     def ids(self):
         return [p["id"] for p in self.persons]
-
-    def _unmark(self):
-        rows = sorted({i.row() for i in self.table.selectedIndexes()})
-        ids = [self.persons[r]["id"] for r in rows] or self.ids()
-        self.api.set_print_mark(ids, False); self.reload()
-
-    def _print(self):
-        if self.on_print: self.accept(); self.on_print()
 
 
 ALIGN = [("left", "По левому краю"), ("hcenter", "По центру (гориз.)"), ("right", "По правому краю"),
@@ -210,24 +247,16 @@ def aligned_geometry(el, how, margin=0):
 
 
 class PositionDialog(QDialog):
-    """Положение выбранного элемента: X/Y и выравнивание по карте."""
+    """Положение выбранного элемента: только численный ввод X/Y (выравнивание — «Выровнять ▾» в ленте)."""
 
     def __init__(self, el, parent=None):
         super().__init__(parent); self.setWindowTitle("Положение элемента"); self.el = dict(el)
         self.x = QSpinBox(); self.y = QSpinBox()
         for s_, v in ((self.x, el["x"]), (self.y, el["y"])): s_.setRange(-2000, 2000); s_.setValue(v)
-        self.margin = QSpinBox(); self.margin.setRange(0, 300); self.margin.setValue(20)
-        form = QFormLayout(); form.addRow("X, px:", self.x); form.addRow("Y, px:", self.y); form.addRow("Отступ от края, px:", self.margin)
-        grid = QGridLayout()
-        for i, (k, t) in enumerate(ALIGN):
-            b = QPushButton(t); b.clicked.connect(lambda _=False, k=k: self.align(k)); grid.addWidget(b, i // 3, i % 3)
+        form = QFormLayout(); form.addRow("X, px:", self.x); form.addRow("Y, px:", self.y)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         bb.accepted.connect(self.accept); bb.rejected.connect(self.reject)
-        lay = QVBoxLayout(self); lay.addWidget(QLabel(element_caption(el))); lay.addLayout(form); lay.addLayout(grid); lay.addWidget(bb)
-
-    def align(self, how):
-        g = aligned_geometry({**self.el, "x": self.x.value(), "y": self.y.value()}, how, self.margin.value())
-        self.x.setValue(g["x"]); self.y.setValue(g["y"])
+        lay = QVBoxLayout(self); lay.addWidget(QLabel(element_caption(el))); lay.addLayout(form); lay.addWidget(bb)
 
     def value(self):
         return {"x": self.x.value(), "y": self.y.value()}

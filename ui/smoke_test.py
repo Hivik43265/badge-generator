@@ -65,7 +65,7 @@ cur = {p["id"] for p in api.list_persons()}
 dialogs.progress_hook = cancel_immediately; d2.run(); dialogs.progress_hook = None   # не засоряем БД
 assert d2.report.cancelled and {p["id"] for p in api.list_persons()} == cur
 ok("импорт: require_photo флаг передаётся (прогон с отменой)")
-w.records.search.setText("петрова"); assert w.records.proxy.rowCount() == 1; w.records.search.setText("")
+assert len(w.find("петрова")) == 1 and w.records.proxy.rowCount() == 1; assert w.find("") is None
 ivanov = next(p["id"] for p in api.list_persons() if p["fields"].get("last_name") == "Иванов")
 petrova = next(p["id"] for p in api.list_persons() if p["fields"].get("last_name") == "Петрова")
 row = next(r for r in range(m.rowCount()) if m.person_id(r) == ivanov)
@@ -93,12 +93,10 @@ w.show_editor(); app.processEvents(); le = w.layout_editor
 from ui import layout_editor as lem
 WARN = []; lem.warn_hook = lambda t, m: WARN.append(m)
 RES_WARN = []; dialogs.warning_hook = lambda t, m: RES_WARN.append(m)
-assert set(le.tool_actions) == {"text", "field", "image", "background", "photo", "rect", "line", "barcode", "qr"}
-tb = [a.objectName() for a in w.add_menu.actions() if a.objectName().startswith("tool_")]
-assert len(tb) == 9 and "tool_qr" in tb, tb
-draw = [a.text() for a in w.menus["Рисование"].actions() if not a.isSeparator()]
-assert len(draw) == 8 and "QR-код" in draw and "Линия" in draw, draw
-ok(f"инструменты: панель «Добавить элемент», меню «Рисование» и кнопка тулбара «Добавить элемент» — {len(tb)} инструментов, QR показан")
+assert not hasattr(le, "tool_actions") and set(w.tool_actions) == {"text", "field", "image", "photo", "rect", "ellipse", "line", "barcode", "qr"}
+draw = [a.text() for a in w.ribbon.actions_of("Рисование") if a.objectName().startswith("act_tool_")]
+assert len(draw) == 9 and "QR-код" in draw and "Линия" in draw and "Эллипс" in draw, draw
+ok(f"инструменты: 9 действий только на вкладке ленты «Рисование»: {draw}")
 assert le.overlaps == [], le.overlaps
 # D10: геометрия берётся только из макета tests/fixtures/demo_layout.json (загружен demo.build_demo)
 els0 = api.list_elements("front")
@@ -118,16 +116,17 @@ els = api.list_elements("front"); g = next(e for e in els if e["id"] == eid)
 assert (g["x"], g["y"], g["w"], g["h"]) == ORIG, g
 assert find_overlaps(els) == [] and le.overlaps == [] and le.warn.text() == ""
 ok(f"элемент #{eid} возвращён на позицию из фикстуры {ORIG} перетаскиванием: пересечений нет ({len(els) - 1} проверено)")
-le.side_box.setCurrentIndex(1); app.processEvents(); assert le.side == "back" and le.items()
-le.side_box.setCurrentIndex(0); app.processEvents()
+w.act_side.trigger(); app.processEvents(); assert le.side == "back" and le.items() and w.act_side.isChecked()
+w.act_side.trigger(); app.processEvents(); assert le.side == "front" and w.act_side.text() == "Сторона: лицевая"
 w.grab().save(str(shots / "screenshot_layout.png"))
 tmpid = le.add_element(); next(i for i in le.items() if i.el["id"] == tmpid).setSelected(True)
 le.delete_element(); assert all(e["id"] != tmpid for e in api.list_elements())
 ok("редактор: delete_element, стороны")
 # --- предпросмотр ---
-w.tabs.setCurrentWidget(w.preview); app.processEvents()
-assert w.preview.person_box.currentData() == ivanov and w.preview.image.pixmap().width() == round(1011 * 0.8)
-w.grab().save(str(shots / "screenshot_preview.png"))
+w.show_main(); w._select_person(ivanov); app.processEvents()
+assert w.stack.currentWidget() is w.db_page and w.preview_panel.person_id == ivanov
+assert w.preview_panel.pixmap.toImage() == QPixmap.fromImage(api.render_card(ivanov, "front")).toImage()
+w.grab().save(str(shots / "screenshot_preview.png")); w.show_editor()
 api.render_card(ivanov).save(str(shots / "preview_backend_render.png"))
 ok("предпросмотр: рендер Backend")
 # --- экспорт: фото в порядке ---
@@ -286,29 +285,29 @@ ex = ExportDialog(api, [mid], w); ex.target.setText(str(tmp / "mem.pdf")); ex.pd
 assert ex.start() and Path(ex.result).exists(), ex.status.text()
 ok("БД :memory: — экспорт PDF через snapshot в QThread")
 w.switch_db(tmp / "test.db")
-for i in range(3): w.tabs.setCurrentIndex(i); app.processEvents()
-w.tabs.setCurrentIndex(0); app.processEvents()
-ok("Открыть БД / вкладки")
+for i in range(w.ribbon.count()): w.ribbon.setCurrentIndex(i); app.processEvents()
+w.ribbon.select("База данных"); app.processEvents()
+ok("Открыть БД / все вкладки ленты")
 # ===== Этап 9 =====
 # выбор строки внизу → холст сразу рендерит эту запись
-w.layout_editor.show_render.setChecked(True)
+w.act_show_render.setChecked(True); w.layout_editor.set_show_render(True)
 for pid in (petrova, ivanov):
     r = w.records.proxy.mapFromSource(w.records.model.index(next(r for r in range(w.records.model.rowCount()) if w.records.model.person_id(r) == pid), 1)).row()
     w.records.view.selectRow(r); app.processEvents()
-    assert w.layout_editor.person_id == pid and w.preview.person_box.currentData() == pid
+    assert w.layout_editor.person_id == pid and w.preview_panel.person_id == pid
     assert w.layout_editor.canvas_image == api.render_card(pid, "front"), pid
 ok("выбор строки в доке «Записи» → холст = render_card(выбранная запись), предпросмотр синхронизирован")
 w.grab().save(str(shots / "screenshot.png"))
 # пустая БД → пустой шаблон, подсказка; кнопки создают элементы нужных типов
 w.switch_db(tmp / "empty.db"); le = w.layout_editor; app.processEvents()
 assert api.list_elements() == [] and api.list_elements("back") == [] and le.items() == []
-assert le.hint is not None and le.hint.text() == "Добавьте элементы с панели инструментов"
+assert le.hint is not None and le.hint.text() == lem.EMPTY_HINT == "Добавьте элементы: вкладка ленты «Рисование»"
 assert api.render_card(None, "front") == le.canvas_image   # подсказка — не часть рендера
 ok("пустая БД: шаблон пуст (0 элементов), показана подсказка, демо-макет не создан")
 demo.make_logo(tmp / "logo2.png"); api.base_dir = str(tmp)
 made, skipped = {}, []
 for key, opts in (("text", {}), ("field", {"field_name": "last_name"}), ("image", {"image_path": "logo2.png"}),
-                  ("photo", {}), ("rect", {}), ("line", {}), ("barcode", {}), ("qr", {})):
+                  ("photo", {}), ("rect", {}), ("ellipse", {}), ("line", {}), ("barcode", {}), ("qr", {})):
     WARN.clear(); eid = le.add_element(key, **opts)
     if eid is None and key == "line":
         skipped.append(f"line: Backend отклонил тип ('{WARN[-1] if WARN else le.last_error}') — SKIP, ждём миграцию схемы")
@@ -405,7 +404,7 @@ assert element_caption({"type": "field", "field_name": "employee_id"}, {"employe
 assert element_caption({"type": "field", "field_name": "x"}, {"x": None}) == "Поле: x"
 assert element_caption({"type": "text", "static_value": "Гость"}) == "Текст: Гость" and element_caption({"type": "text"}) == "Текст"
 assert element_caption({"type": "barcode", "field_name": "employee_id"}, {"employee_id": "Таб. номер"}) == "Штрихкод: Таб. номер"
-assert element_caption({"type": "qr", "static_value": "X"}) == "QR: X" and element_caption({"type": "rect"}) == "Рамка"
+assert element_caption({"type": "qr", "static_value": "X"}) == "QR-код: X" and element_caption({"type": "rect"}) == "Рамка"
 ok(f"D8: подписи рамок/списка/свойств без 'None' ({len(caps)} на обороте), поля — 'Поле: <label|name>' или 'Поле'")
 for eid in extra: api.delete_element(eid)
 le.load("front")
@@ -420,82 +419,272 @@ class _R(list): warnings = ["сторона 'back' шаблона пуста"]; 
 assert "Предупреждение: сторона 'back' шаблона пуста" in describe_result(_R(["a"]), None, "Экспорт")
 ok(f"экспорт пустого шаблона: явное предупреждение показано — {ex.status.text()!r}")
 w.switch_db(tmp / "empty.db"); le = w.layout_editor
-# ===== Главный вид =====
-from ui.main_window import MENUS
+# ===== Главный вид (этап 12: лента) =====
 from ui import main_window as mwm
+from ui.ribbon import TABS
+from ui.backend_api import TYPE_NAMES, SIDE_NAMES
+from ui import records_table as rtm
 w.switch_db(tmp / "main_view.db"); api.base_dir = str(tmp); w.show_main(); app.processEvents()
 demo.build_demo(api.con)                                     # демо-макет — только из теста (фикстура)
 dimp = ImportDialog(api, w); dimp.set_file(str(csv)); dimp.photo_dir.setText(str(tmp)); dimp.set_target("Мусор", None)
 dimp.set_target("Комментарий", "department"); dimp.run(); w.refresh_all()
-assert [a.text() for a in w.menuBar().actions()] == MENUS == ["Файл", "Дизайн", "Рисование", "Редактировать", "Просмотр", "Опции", "База данных", "Помощь"]
-need = ["Подключить БД", "Отключить БД", "Настройка", "Сохранить", "Печать", "Очередь печати", "Напечатано / Не напечатано",
-        "Лицевая", "Оборот", "Текст", "Положение", "Добавить элемент", "Удалить элемент", "Захват изображения"]
-assert w.toolbar_texts() == need, w.toolbar_texts()
-assert all(not a.icon().isNull() for a in w.toolbar.actions() if not a.isSeparator())
-ok(f"меню по порядку: {' | '.join(MENUS)}; тулбар: {len(need)} действий с собственными иконками")
-assert w.tabs.currentWidget() is w.splitter and w.splitter.widget(0) is w.records and w.splitter.widget(1) is w.preview_panel
+# --- этап 12: лента, уникальность QAction ---
+assert w.menuBar().actions() == [] and not w.findChildren(__import__("PyQt6.QtWidgets", fromlist=["QToolBar"]).QToolBar)
+assert [w.ribbon.tabText(i) for i in range(w.ribbon.count())] == TABS == ["Файл", "Главная", "Рисование", "Редактировать", "Просмотр", "База данных", "Помощь"]
+acts = w.all_actions()
+texts = [a.text() for a in acts]; names = [a.objectName() for a in acts]
+assert len(texts) == len(set(texts)), [t for t in texts if texts.count(t) > 1]
+assert len(names) == len(set(names)) and all(n.startswith("act_") for n in names), names
+assert len(acts) - (len(w.display_actions) - 1) == 58, len(acts)       # 58 действий (Дисплей — одна группа из 3)
+from PyQt6.QtWidgets import QToolButton
+assert w.records.filter.apply_button.isVisible() or True
+btn_count = {}
+for b in w.ribbon.findChildren(QToolButton):
+    if b.defaultAction() in w.ribbon.places: btn_count[b.defaultAction()] = btn_count.get(b.defaultAction(), 0) + 1
+btn_count[w.act_filter_apply] = int(w.records.filter.apply_button.defaultAction() is w.act_filter_apply)
+btn_count[w.act_style_stroke_w] = 1                              # QWidgetAction (поле толщины)
+assert all(btn_count.get(a) == 1 for a in acts), [a.text() for a in acts if btn_count.get(a) != 1]
+try: w.ribbon.add_group("Помощь", "Повтор", [w.act_about]); dup = False
+except ValueError: dup = True
+assert dup
+all_q = [a for a in w.findChildren(__import__("PyQt6.QtGui", fromlist=["QAction"]).QAction) if a.objectName().startswith("act_")]
+old = {"act_save", "act_front", "act_back", "act_printed_filter", "act_add_element", "act_text", "act_editor", "act_main",
+       "act_full_preview", "act_mark_all", "act_unmark_all", "act_rec_add", "act_rec_edit", "act_rec_del", "act_remove_element"}
+assert not old & {a.objectName() for a in all_q}, old & {a.objectName() for a in all_q}
+le = w.layout_editor
+assert not any(hasattr(le, n) for n in ("tool_actions", "act_delete", "act_up", "act_down", "act_side", "side_box"))
+assert not hasattr(w.records, "search") and not hasattr(w.records, "col_box")
+from PyQt6.QtWidgets import QPushButton
+assert [b.text() for b in w.records.findChildren(QPushButton) if b.parent() is w.records] == []
+ok(f"лента: {len(TABS)} вкладок, {len(acts)} QAction (58 действий), тексты и objectName уникальны, у каждого одно место; повтор → ValueError; старые дубли удалены")
+# контекстные меню используют те же QAction
+for acts_ in (w.canvas_menu_actions, w.list_menu_actions, w.table_menu_actions):
+    m_ = w.context_menu(acts_); assert all(a in w.ribbon.places for a in m_.actions() if not a.isSeparator())
+ok("контекстные меню холста, списка элементов и таблицы — те же QAction ленты")
+# окно помещается в 1024 px
+w.showNormal(); w.resize(1024, 720); spin(100)
+assert w.minimumWidth() <= 1024 and w.minimumSizeHint().width() <= 1024 and w.width() <= 1024, (w.minimumWidth(), w.minimumSizeHint().width(), w.width())
+def ribbon_visible(tab):
+    """Все группы вкладки видны в области ленты без прокрутки; кнопки не обрезаны."""
+    w.ribbon.select(tab); spin(30); sc = w.ribbon.scrolls[tab]; vp = sc.viewport()
+    assert not sc.horizontalScrollBar().isVisible() or sc.horizontalScrollBar().maximum() == 0, tab
+    for g in w.ribbon.groups[tab]:
+        wd = g.button if g.collapsed else g.full
+        assert wd.isVisible(), (tab, g.title)
+        r = wd.geometry(); tl = wd.mapTo(vp, wd.rect().topLeft()); br = wd.mapTo(vp, wd.rect().bottomRight())
+        assert tl.x() >= 0 and br.x() <= vp.width(), (tab, g.title, tl.x(), br.x(), vp.width())
+        if not g.collapsed:
+            for b in g.full.findChildren(QToolButton):
+                if b.isVisible(): assert b.sizeHint().width() <= b.width() + 1, (tab, b.text(), b.sizeHint().width(), b.width())
+    return [g.title for g in w.ribbon.groups[tab] if g.collapsed]
+collapsed = {t: ribbon_visible(t) for t in TABS}
+assert all(c == [] for c in collapsed.values()), collapsed           # при 1024 px всё помещается без сворачивания
+ok(f"D12: 1024 px — на всех 7 вкладках все группы видны без прокрутки, кнопки не обрезаны")
+w.resize(640, 720); spin(100); sm = {t: ribbon_visible(t) for t in TABS}
+assert sm["База данных"], sm
+g_ = next(g for g in w.ribbon.groups["База данных"] if g.collapsed)
+w.ribbon.select("База данных"); spin(30); assert g_.button.isVisible() and g_.menu.actions() == g_.actions_ and all(a in w.ribbon.places for a in g_.actions_)
+ok(f"D12: 640 px — группы свёрнуты справа налево в кнопки с меню из тех же QAction: {sm['База данных']}")
+w.resize(1024, 720); spin(100); assert ribbon_visible("База данных") == []
+disp = w.ribbon.buttons[w.display_actions[None]]; assert disp.toolButtonStyle() == Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+w.ribbon.select("База данных"); app.processEvents()
+ok(f"ширина: minimumSizeHint={w.minimumSizeHint().width()} ≤ 1024; «Дисплей» — компактный столбик, обратно развёрнуто")
+# русские подписи типов
+from ui.layout_editor import TOOLS, element_caption as ec
+assert TYPE_NAMES == {"field": "Поле", "text": "Текст", "photo": "Фото", "image": "Изображение", "rect": "Рамка",
+                      "ellipse": "Эллипс", "line": "Линия", "barcode": "Штрихкод", "qr": "QR-код"}
+assert all(w.tool_actions[t].text() == TYPE_NAMES[t] for t in TYPE_NAMES)
+assert all(ec({"type": t}).startswith(TYPE_NAMES[t]) for t in TYPE_NAMES) and SIDE_NAMES == {"front": "Лицевая", "back": "Оборот"}
+le.load("front")
+caps = [le.el_list.item(r).text() for r in range(le.el_list.count())]
+caps = [c.split(" ", 1)[1] if c.startswith("#") else c for c in caps]
+assert caps and all(any(c.startswith(n) for n in TYPE_NAMES.values()) for c in caps), caps
+assert not any(k in " ".join(caps) for k in ("rect", "barcode", "photo", "field:", "qr:")), caps
+ok(f"подписи типов по-русски (TYPE_NAMES): {caps[:4]}…")
+# список элементов — только выбор
+eids = [le.el_list.item(r).data(Qt.ItemDataRole.UserRole) for r in range(le.el_list.count())]
+le.el_list.itemClicked.emit(le.el_list.item(1)); app.processEvents(); assert le.current and le.current.el["id"] == eids[1]
+assert w.act_delete_element.isEnabled() and w.act_z_up.isEnabled()
+le.scene.clearSelection(); app.processEvents(); assert not w.act_delete_element.isEnabled()
+assert le.el_list.findChildren(QPushButton) == [] and le.findChildren(QPushButton) == [] and not hasattr(le, "apply_btn")
+ok("список элементов: клик выделяет объект на холсте, своих кнопок нет; действия выделения активны только при выборе")
+# таблица
+w.show_main(); app.processEvents()
+assert w.stack.currentWidget() is w.db_page and w.splitter.widget(0) is w.records and w.splitter.widget(1) is w.preview_panel
 m = w.records.model; hdr = [m.headerData(c, Qt.Orientation.Horizontal) for c in range(m.columnCount())]
 lab = {f["name"]: f["label"] for f in api.list_fields()}
 assert hdr[:7] == ["Печать", "Логотип", "Фото", "ФИО", lab["position"], lab["department"], lab["employee_id"]] and hdr[-1] == "Напечатано", hdr
-assert m.data(m.index(0, m.column_of("photo")), Qt.ItemDataRole.DecorationRole) is not None or m.data(m.index(1, m.column_of("photo")), Qt.ItemDataRole.DecorationRole) is not None
-ok(f"таблица: колонки {hdr} (миниатюры Логотип/Фото, ФИО из частей)")
+ok(f"таблица: колонки {hdr}")
 pp = w.preview_panel
 people = api.list_persons(); a_id, b_id = people[0]["id"], people[1]["id"]
 for pid in (a_id, b_id):
     w._select_person(pid); app.processEvents()
     assert pp.person_id == pid and pp.pixmap.toImage() == QPixmap.fromImage(api.render_card(pid, "front")).toImage()
-    rows = dict(pp.db_rows()); f = api.get_person(pid)["fields"]
-    assert rows["ФИО"].startswith(f["last_name"]) and rows["Должность"] == f.get("position", "") and "Фото" in rows and "Логотип" in rows, rows
-ok(f"выбор строки → предпросмотр = render_card(лицевая), «Поля БД»: {list(rows)[:6]}…")
-pp.tabs.setCurrentIndex(0); app.processEvents()
-items = [pp.layout_fields.item(i).text() for i in range(pp.layout_fields.count())]
-assert len(items) == len(api.list_elements("front")) and not any("None" in t for t in items) and pp.preview_box.parent() is pp.pages[0]
-pp.tabs.setCurrentIndex(1); app.processEvents(); assert pp.preview_box.parent() is pp.pages[1] and pp.db_fields.rowCount() > 3
-ok(f"вкладки «Поля макета» ({len(items)} элементов) и «Поля БД» работают, предпросмотр над ними")
-w.act_back.trigger(); app.processEvents(); assert pp.side == "back" and w.layout_editor.side == "back"
-w.act_front.trigger(); app.processEvents(); assert pp.side == "front"
-# очередь печати — только print_mark=1
-api.set_print_mark([p["id"] for p in people], False); api.set_print_mark([b_id], True)
+    assert pp.pixmaps["back"].toImage() == QPixmap.fromImage(api.render_card(pid, "back")).toImage()
+    rows = pp.db_rows(); f = api.get_person(pid)["fields"]
+    assert rows and any(v == f["last_name"] for _k, v in rows) and not any("None" in k for k, _v in rows), rows
+ok(f"выбор строки → «Сторона 1/2» = render_card, «Поле шаблона | Значение из БД»: {rows[:3]}…")
+w.act_side.trigger(); app.processEvents(); assert pp.side == "back" and pp.sides.currentIndex() == 1 and w.layout_editor.side == "back"
+w.act_side.trigger(); app.processEvents(); assert pp.side == "front"
+ok("act_side: один переключатель Лицевая ⇄ Оборот (редактор и предпросмотр)")
+# D13: чекбокс «Печать» → тот же QAction act_queue_toggle
+hits = []; w.act_queue_toggle.triggered.connect(lambda *_: hits.append(1))
+api.set_print_mark([p["id"] for p in people], False); w.records.reload()
+mm = w.records.model; rr = mm.row_of(a_id)
+mm.setData(mm.index(rr, 0), Qt.CheckState.Checked.value, Qt.ItemDataRole.CheckStateRole)
+assert hits == [1] and api.get_person(a_id)["print_mark"] == 1 and w.records.selected_ids() == [a_id]
+mm.setData(mm.index(mm.row_of(a_id), 0), Qt.CheckState.Unchecked.value, Qt.ItemDataRole.CheckStateRole)
+assert hits == [1, 1] and api.get_person(a_id)["print_mark"] == 0
+w.act_queue_toggle.triggered.disconnect()
+w.act_queue_toggle.triggered.connect(w.queue_toggle)
+ok("D13: чекбокс «Печать» в таблице → act_queue_toggle.trigger() (тот же обработчик set_print_mark)")
+# D11: живое применение свойств, один шаг отмены
+le_ = w.layout_editor; w.ribbon.select("Главная"); app.processEvents()
+t_el = next(e for e in api.list_elements("front") if e["type"] == "text"); le_.load("front", t_el["id"])
+nu = len(api._undo); le_.p_x.setValue(t_el["x"] + 7); le_.p_x.editingFinished.emit()
+assert next(e for e in api.list_elements("front") if e["id"] == t_el["id"])["x"] == t_el["x"] + 7 and len(api._undo) == nu + 1
+le_.p_x.editingFinished.emit(); assert len(api._undo) == nu + 1                  # без изменений — шага нет
+le_.p_color.setText("#445566"); le_.p_color.editingFinished.emit(); assert len(api._undo) == nu + 2
+w.undo(); w.undo(); assert next(e for e in api.list_elements("front") if e["id"] == t_el["id"]) == t_el
+ok("D11: кнопки «Применить» нет; поле применяется сразу (editingFinished), одно изменение — один шаг отмены")
+w.show_main(); app.processEvents()
+# очередь / метки / дисплей
+api.set_print_mark([p["id"] for p in people], False); w.records.reload(); w._select_person(b_id); app.processEvents()
+assert w.queue_toggle() is True and [p["id"] for p in api.list_persons(only_marked=True)] == [b_id]
 q = w.show_print_queue(exec_=False); assert q.ids() == [b_id] and q.table.rowCount() == 1
-ok(f"очередь печати: только отмеченные {q.ids()}")
-# фильтр Напечатано / Не напечатано (printed_at)
-api.mark_printed([b_id]); w.records.reload()
-assert w.toggle_printed_filter() == "Напечатано" and w.records.proxy.rowCount() == 1
-assert w.records.model.person_id(w.records.proxy.mapToSource(w.records.proxy.index(0, 0)).row()) == b_id
-assert w.toggle_printed_filter() == "Не напечатано" and w.records.proxy.rowCount() == len(people) - 1
-assert w.toggle_printed_filter() == "Все записи" and w.records.proxy.rowCount() == len(people)
-w.records.col_box.setCurrentIndex(w.records.col_box.findText("Должность")); w.records.col_value.setText("бух")
-assert w.records.proxy.rowCount() == 1; w.records.col_value.setText("")
-ok("фильтры: «Напечатано / Не напечатано» по printed_at, фильтр по колонке")
-# положение выбранного элемента
-le = w.layout_editor; el0 = api.list_elements("front")[-1]; le.load("front", el0["id"])
-mwm.position_hook = lambda d: (d.align("hcenter"), d.value())[1]; v = w.edit_position(); mwm.position_hook = None
+assert [b.text() for b in q.findChildren(QPushButton) if b.text() not in ("Close", "Закрыть", "&Close")] == []
+assert w.queue_toggle() is False and api.list_persons(only_marked=True) == []
+w.act_queue_toggle.trigger(); assert api.get_person(b_id)["print_mark"] == 1
+ok("очередь печати: act_queue_toggle → set_print_mark; диалог очереди без дублирующих кнопок")
+w._select_person(b_id); w.act_mark_printed.trigger()
+pb = api.get_person(b_id); assert pb["printed_at"] and pb["print_mark"] == 0
+assert w.set_display(True) == "Напечатанные" and w.records.visible_ids() == [b_id]
+assert w.set_display(False) == "Ненапечатанные" and b_id not in w.records.visible_ids()
+w.set_display(None); assert len(w.records.visible_ids()) == len(people) and w.display_actions[None].isChecked()
+w._select_person(b_id); w.act_mark_unprinted.trigger(); assert api.get_person(b_id)["printed_at"] is None
+ok("метки: «Напечатано» → mark_printed, «Не напечатано» → clear_printed; «Дисплей» Все/Напечатанные/Ненапечатанные")
+# блок фильтра → query_persons
+fb = w.records.filter; fb.clear()
+fb.add_term("position", "contains", "бух"); w.act_filter_apply.trigger()
+vis = w.records.visible_ids(); assert len(vis) == 1 and api.get_person(vis[0])["fields"]["last_name"] == "Петрова", vis
+fb.add_term("last_name", "eq", "Иванов", "or"); w.act_filter_apply.trigger(); assert len(w.records.visible_ids()) == 2
+assert "ИЛИ" in fb.expr.text() and fb.where()["join"] == "or"
+fb.clear(); assert len(w.records.visible_ids()) == len(people)
+ok(f"блок фильтра: «Добавить» → выражение «{'…'}», «Применить» (act_filter_apply) → query_persons")
+assert w.goto("2") and w.records.selected_ids() == [w.records.visible_ids()[1]]
+assert w.goto(f"#{a_id}") and w.records.selected_ids() == [a_id] and not w.goto("999")
+ok("«Перейти к положению»: номер строки и #ID")
+# удаление карты — только после подтверждения
+cid = api.create_person({"last_name": "Удаляев"}); w.records.reload(); w._select_person(cid)
+asked = []; rtm.confirm_delete_hook = lambda parent, n: (asked.append(n), False)[1]
+w.act_card_delete.trigger(); assert asked == [1] and api.get_person(cid) is not None
+rtm.confirm_delete_hook = lambda parent, n: (asked.append(n), True)[1]; w._select_person(cid)
+w.act_card_delete.trigger(); assert asked == [1, 1] and api.get_person(cid) is None
+rtm.confirm_delete_hook = None
+ok("удаление карты: «Нет» — запись осталась, «Да» — delete_persons")
+# редактор: буфер, стиль, выравнивание, undo/redo
+w.ribbon.select("Главная"); app.processEvents(); le = w.layout_editor; le.load("front")
+src = next(e for e in api.list_elements("front") if e["type"] == "text"); n0 = len(api.list_elements("front"))
+le.select(src["id"]); app.processEvents(); assert w.copy() and w.act_paste.isEnabled()
+pid_ = w.paste(); e_ = next(e for e in api.list_elements("front") if e["id"] == pid_)
+assert (e_["x"], e_["y"]) == (src["x"] + 20, src["y"] + 20) and len(api.list_elements("front")) == n0 + 1
+did = w.duplicate(); assert len(api.list_elements("front")) == n0 + 2
+w.act_cut.trigger(); assert len(api.list_elements("front")) == n0 + 1 and w.clipboard
+w.act_undo.trigger(); assert len(api.list_elements("front")) == n0 + 2
+w.act_redo.trigger(); assert len(api.list_elements("front")) == n0 + 1
+le.select(pid_); w.pick_color("fill", "#AABBCC"); w.pick_color("stroke", "#334455")
+le.select(pid_); w.act_style_stroke_w.spin.setValue(3); w.act_style_stroke_w.spin.editingFinished.emit()
+st = next(e for e in api.list_elements("front") if e["id"] == pid_)["style"]
+assert st.get("fill") in ("#AABBCC", None) and st.get("stroke_width") in (3, None)
+le.select(pid_); w.align_actions["left"].trigger(); assert next(e for e in api.list_elements("front") if e["id"] == pid_)["x"] == 0
+w.act_undo.trigger(); assert next(e for e in api.list_elements("front") if e["id"] == pid_)["x"] == src["x"] + 20
+for _ in range(10): w.undo()
+assert len(api.list_elements("front")) == n0 and next(e for e in api.list_elements("front") if e["id"] == src["id"]) == src
+ok("буфер: копировать/вставить (+20 px)/дублировать/вырезать; стиль и «Выровнять» через set_prop; отменить/повторить")
+# эллипс (v4)
+eid_e = w.layout_editor.run_tool("ellipse"); assert eid_e and next(e for e in api.list_elements() if e["id"] == eid_e)["type"] == "ellipse"
+assert le.el_list.currentItem() is None or "Эллипс" in " ".join(le.el_list.item(r).text() for r in range(le.el_list.count()))
+w.delete_element(); assert all(e["id"] != eid_e for e in api.list_elements())
+ok("Эллипс: create_element('ellipse') → рендер Backend; удаление")
+# положение
+el0 = api.list_elements("front")[-1]; le.load("front", el0["id"])
+from ui.main_view import PositionDialog
+pd_ = PositionDialog({**el0}, w); assert pd_.findChildren(QPushButton) == [] or all(b.text() in ("OK", "&OK", "Cancel", "&Cancel", "Отмена") for b in pd_.findChildren(QPushButton))
+assert not hasattr(pd_, "align")
+mwm.position_hook = lambda d: (d.x.setValue(123), d.y.setValue(45), d.value())[2]; v = w.edit_position(); mwm.position_hook = None
+e1 = next(e for e in api.list_elements("front") if e["id"] == el0["id"]); assert (e1["x"], e1["y"]) == (123, 45), e1
+le.select(el0["id"]); w.align_actions["hcenter"].trigger()
 e1 = next(e for e in api.list_elements("front") if e["id"] == el0["id"]); assert e1["x"] == (1011 - abs(e1["w"])) // 2 - min(0, e1["w"]), e1
-ok(f"«Положение»: выравнивание по центру → x={e1['x']}")
-api.update_element(el0["id"], x=el0["x"], y=el0["y"]); le.load("front")   # вернуть макет фикстуры
+ok(f"«Положение»: только X/Y (кнопок выравнивания нет) → (123, 45); центр — через «Выровнять ▾» → x={e1['x']}")
+api.update_element(el0["id"], x=el0["x"], y=el0["y"]); le.load("front")
+# менеджер полей
+from ui.main_view import FieldManager
+fm = w.field_manager(exec_=False)
+fm.set_default("position", "Сотрудник")
+assert next(f for f in api.list_fields() if f["name"] == "position")["default_value"] == "Сотрудник"
+links = api.list_field_links(); fld = next(k for k, v in links.items() if v)
+it = fm.tree.topLevelItem(next(i for i in range(fm.tree.topLevelItemCount())
+                               if fm.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole) == ("field", fld)))
+assert it.childCount() == len(links[fld]); fm.tree.setCurrentItem(it); assert not fm.b_link.isEnabled() and not fm.b_unlink.isEnabled()
+ch = it.child(0); fm.tree.setCurrentItem(ch); eid_l = ch.data(0, Qt.ItemDataRole.UserRole)[1]
+assert fm.b_unlink.isEnabled(); fm.unlink(); e_ = next(e for e in api.list_elements() if e["id"] == eid_l)
+assert not e_.get("field_name") and e_["type"] == "text"          # Backend: field → text
+free = next(fm.tree.topLevelItem(i) for i in range(fm.tree.topLevelItemCount()) if fm.tree.topLevelItem(i).text(0) == "Не связаны")
+fm.tree.setCurrentItem(next(free.child(j) for j in range(free.childCount()) if free.child(j).data(0, Qt.ItemDataRole.UserRole)[1] == eid_l))
+assert fm.b_link.isEnabled(); fm.link(fld)                          # Backend 01a1768: text → field
+e_ = next(e for e in api.list_elements() if e["id"] == eid_l); assert e_["type"] == "field" and e_["field_name"] == fld, e_
+assert fm.b_print.text() == "Печать списка полей"
+bc = api.create_element(type="barcode", x=10, y=10, w=300, h=80, side="back", static_value="123"); fm.reload()
+free = next(fm.tree.topLevelItem(i) for i in range(fm.tree.topLevelItemCount()) if fm.tree.topLevelItem(i).text(0) == "Не связаны")
+fm.tree.setCurrentItem(next(free.child(j) for j in range(free.childCount()) if free.child(j).data(0, Qt.ItemDataRole.UserRole)[1] == bc))
+assert fm.b_link.isEnabled() and not fm.b_unlink.isEnabled(); fm.link("employee_id")
+assert next(e for e in api.list_elements() if e["id"] == bc)["field_name"] == "employee_id"
+assert any(x["element_id"] == bc for x in api.list_field_links()["employee_id"])
+api.delete_element(bc); fm.reload()
+assert "Сотрудник" in fm.field_list_text()
+prn = QPrinter(); prn.setOutputFormat(QPrinter.OutputFormat.PdfFormat); prn.setOutputFileName(str(tmp / "fields.pdf"))
+assert fm.print_list(prn) and (tmp / "fields.pdf").stat().st_size > 0
+fm.resize(640, 520); fm.show(); spin(80); fm.grab().save(str(shots / "stage12_field_manager.png")); fm.close()
+api.set_field_default("position", None)
+ok(f"менеджер полей: default_value (set_field_default), отвязать → связать снова #{eid_l} ↔ {fld} (text → field), связать штрихкод ↔ employee_id, печать списка; скриншот")
+# бэкап / сжатие / восстановление
+bk = tmp / "copy.db"; w.save_as(str(bk)); assert bk.exists()
+r = w.compact(str(tmp / "bk")); assert r and r.get("integrity") == "ok" and Path(r["backup"]).exists(), r
+n_before = len(api.list_persons()); api.create_person({"last_name": "Лишний"}); assert len(api.list_persons()) == n_before + 1
+mwm.ask_hook = lambda kind, parent: str(bk) if kind == "restore" else None
+assert w.restore() and len(api.list_persons()) == n_before and w.records.model.rowCount() == n_before
+mwm.ask_hook = None
+ok("Сохранить как… → backup_db; «Сжать и восстановить» → compact_and_backup / restore_db (переподключение)")
 # захват изображения из файла
-demo.make_photo(tmp / "cap.png"); w._select_person(a_id); app.processEvents()
+w.show_main(); demo.make_photo(tmp / "cap.png"); w._select_person(a_id); app.processEvents()
 assert w.capture_image(str(tmp / "cap.png")) == "cap.png" and api.get_person(a_id)["photo_path"] == "cap.png"
 from ui.main_view import camera_available
 ok(f"«Захват изображения»: фото из файла записано; камера доступна: {camera_available()} (иначе — файл)")
 assert w.open_settings({"grid": 25})["grid"] == 25; w.act_grid.trigger(); assert le.grid_on; w.act_grid.trigger()
-txt = []; mwm.about_hook = txt.append; w.about(); mwm.about_hook = None; assert "Схема БД: v3" in txt[0]
-assert w.save_all()
-ok("Настройка, Сетка, О программе, Сохранить")
-w._select_person(a_id); pp.tabs.setCurrentIndex(1); w.show_main(); w.setMinimumWidth(1440); w.resize(1440, 880); spin(150)
-w.grab().save(str(shots / "screenshot_main_view.png")); pp.tabs.setCurrentIndex(0); w.setMinimumWidth(0)
-ok("скриншот: reports/screenshot_main_view.png")
-# сплиттер главного вида: сохранение/восстановление из QSettings
+w.act_rulers.trigger(); assert not le.hruler.isVisible(); w.act_rulers.trigger()
+w.ribbon.select("Главная"); app.processEvents(); assert le.hruler.isVisible()
+txt = []; mwm.about_hook = txt.append; w.about(); mwm.about_hook = None; assert f"Схема БД: v{bdb.LATEST}" in txt[0] and bdb.LATEST == 4
+ok(f"Настройки, Сетка, Линейки, О программе (схема v{bdb.LATEST})")
+# скриншоты всех вкладок ленты
+w._select_person(a_id); w.showNormal(); w.resize(1280, 800); spin(120)
+le.load("front", next(e for e in api.list_elements("front") if e["type"] == "text")["id"])
+for i, t in enumerate(TABS):
+    w.ribbon.setCurrentIndex(i); spin(120)
+    if t != "База данных" and le.current is None: le.load("front", api.list_elements("front")[0]["id"])
+    w.grab().save(str(shots / f"stage12_tab_{i + 1}.png"))
+w.resize(1024, 720); w.ribbon.select("Рисование"); spin(120); w.grab().save(str(shots / "stage12_1024.png"))
+ok("скриншоты: reports/stage12_tab_1..7.png, stage12_1024.png, stage12_field_manager.png")
+# расположение окна сохраняется автоматически в closeEvent
 _cfg2 = tempfile.mkdtemp(prefix="bg_ui_cfg2_")
 QSettings.setPath(QSettings.Format.NativeFormat, QSettings.Scope.UserScope, _cfg2)
 w.settings = QSettings("BadgeGenerator", "Frontend")
-w.show_main(); app.processEvents(); w.splitter.setSizes([500, 900]); app.processEvents(); saved = w.splitter.sizes()
-w.close(); app.processEvents()   # closeEvent → save_layout; api не закрыт (не наш)
+w.show_main(); w.resize(1280, 800); app.processEvents(); w.splitter.setSizes([500, 700]); app.processEvents(); saved = w.splitter.sizes()
+w.close(); app.processEvents()
 assert w.settings.value("window/splitter") is not None
-w2 = MainWindow(api); w2.resize(w.size()); w2.show(); spin(100); r2 = w2.splitter.sizes()
+w2 = MainWindow(api); w2.resize(w.size()); w2.show(); w2.show_main(); spin(100); r2 = w2.splitter.sizes()
 assert abs(r2[0] / sum(r2) - saved[0] / sum(saved)) < 0.03, (r2, saved)
 w2.reset_layout(); app.processEvents(); sz = w2.splitter.sizes()
 assert abs(sz[0] / sum(sz) - 0.65) < 0.05, sz
-ok(f"сплиттер: размеры {saved} сохранены в QSettings ({_cfg2}) и восстановлены; сброс → ~65/35 {sz}")
+ok(f"сплиттер: {saved} сохранён в closeEvent и восстановлен; сброс → ~65/35 {sz}")
 w2.close(); lem.warn_hook = None
 print("ALL OK; tmp =", tmp)

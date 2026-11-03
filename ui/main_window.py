@@ -1,183 +1,387 @@
+"""Главное окно этапа 12: лента (ribbon) вместо меню и панели инструментов.
+Каждое действие — ровно один QAction и одно место в ленте; горячие клавиши и контекстные меню
+используют те же QAction. Вкладка ленты «База данных» показывает таблицу записей, остальные — редактор."""
 import os
 from PyQt6.QtCore import QSettings, Qt
-from PyQt6.QtGui import QAction, QActionGroup
-from PyQt6.QtWidgets import (QMainWindow, QTabWidget, QFileDialog, QMessageBox, QInputDialog, QSplitter, QMenu,
-                             QToolButton, QWidget)
-from .backend_api import BackendAPI, DEFAULT_DB_PATH
-from .records_table import RecordsWidget
+from PyQt6.QtGui import QAction, QActionGroup, QKeySequence
+from PyQt6.QtWidgets import (QMainWindow, QFileDialog, QMessageBox, QInputDialog, QSplitter, QMenu, QStackedWidget,
+                             QWidget, QVBoxLayout, QWidgetAction, QSpinBox, QLabel, QHBoxLayout, QColorDialog)
+from .backend_api import BackendAPI, DEFAULT_DB_PATH, TYPE_NAMES
+from .records_table import RecordsWidget, PRINTED_FILTERS
 from .layout_editor import LayoutEditor
-from .preview import PreviewWidget
-from .main_view import (PreviewPanel, PrintQueueDialog, PositionDialog, SettingsDialog, make_icon,
-                        camera_available, CameraDialog)
+from .main_view import (PreviewPanel, PrintQueueDialog, PositionDialog, SettingsDialog, FieldManager, ALIGN,
+                        aligned_geometry, camera_available, CameraDialog)
+from .ribbon import Ribbon, glyph
 from .dialogs import ImportDialog, ExportDialog, confirm_missing_photos, run_snapshot_job, describe_result, show_result_warnings
 from .backend_api import print_snapshot
 
 
-# Хуки для тестов: clear_marks_hook(parent, n) -> bool; position_hook(dialog) -> dict|None; about_hook(text)
+# Хуки для тестов: clear_marks_hook(parent, n) -> bool; position_hook(dialog) -> dict|None; about_hook(text);
+# ask_hook(kind, parent) -> значение вместо модального вопроса (find/goto/save_as/compact/restore/color/help)
 clear_marks_hook = None
 position_hook = None
 about_hook = None
+ask_hook = None
 
-MENUS = ["Файл", "Дизайн", "Рисование", "Редактировать", "Просмотр", "Опции", "База данных", "Помощь"]
 STYLE = """
-QMainWindow { background:#F7FAFC; }
-QToolBar { background:#FFFFFF; border-bottom:1px solid #E2E8F0; spacing:2px; padding:2px; }
-QToolBar QToolButton { padding:3px 6px; border-radius:5px; color:#2D3748; }
-QToolBar QToolButton:hover { background:#EBF4FF; }
-QToolBar QToolButton:checked { background:#BEE3F8; }
-QTableView { gridline-color:#E2E8F0; selection-background-color:#3182CE; alternate-background-color:#F7FAFC; }
-QHeaderView::section { background:#EDF2F7; padding:4px; border:0; border-right:1px solid #E2E8F0; font-weight:600; }
-QTabWidget::pane { border:1px solid #E2E8F0; border-radius:4px; }
+QMainWindow { background:#F6F8F7; }
+QTabWidget#ribbon::pane { border:0; border-bottom:1px solid #D5DCDA; background:#FFFFFF; }
+QTabWidget#ribbon QTabBar::tab { padding:4px 12px; }
+QTabWidget#ribbon QTabBar::tab:selected { color:#2E7D6B; font-weight:600; }
+QToolButton { border-radius:4px; padding:2px; color:#24302D; }
+QToolButton:hover { background:#E3F1EC; }
+QToolButton:checked { background:#C8E4DA; }
+QTableView { gridline-color:#E2E8F0; selection-background-color:#2E7D6B; }
+QHeaderView::section { background:#EEF2F1; padding:4px; border:0; border-right:1px solid #DDE3E1; font-weight:600; }
 """
+HELP_TEXT = ("Лента: «Файл» — проект и данные; «Главная» — буфер и сторона; «Рисование» — объекты и стиль;\n"
+             "«Редактировать» — история, объект, порядок; «Просмотр» — масштаб и сетка; «База данных» — записи,\n"
+             "фильтр, печать и метки. Правый клик по холсту, списку элементов или таблице — те же команды.")
+
+
+class StrokeWidthAction(QWidgetAction):
+    """«Толщина границы»: виджет создаётся заново для каждого контейнера (группа ленты и меню свёрнутой группы)."""
+
+    def __init__(self, parent, on_change):
+        super().__init__(parent); self.setObjectName("act_style_stroke_w"); self.setText("Толщина границы")
+        self.on_change, self.value, self.spins = on_change, 0, []
+
+    def createWidget(self, parent):
+        w = QWidget(parent); h = QVBoxLayout(w); h.setContentsMargins(2, 4, 2, 0); h.setSpacing(1)
+        sp = QSpinBox(); sp.setRange(0, 50); sp.setSuffix(" px"); sp.setToolTip("Толщина границы"); sp.setValue(self.value)
+        sp.editingFinished.connect(lambda sp=sp: self._changed(sp.value()))
+        h.addWidget(QLabel("Толщина")); h.addWidget(sp); h.addStretch(1)
+        self.spins.append(sp); w.destroyed.connect(lambda *_ , sp=sp: self.spins.remove(sp) if sp in self.spins else None)
+        return w
+
+    def _changed(self, v):
+        if v == self.value: return
+        self.set_value(v); self.on_change(v)
+
+    def set_value(self, v):
+        self.value = v
+        for sp in self.spins:
+            sp.blockSignals(True); sp.setValue(v); sp.blockSignals(False)
+
+    @property
+    def spin(self): return self.spins[0]
 
 
 class MainWindow(QMainWindow):
-    STATE_VERSION = 2
+    STATE_VERSION = 3
+    MIN_W = 1000
 
     def __init__(self, api: BackendAPI | None = None):
         super().__init__()
-        self.setObjectName("bg_main_window")
-        self.setStyleSheet(STYLE)
+        self.setObjectName("bg_main_window"); self.setStyleSheet(STYLE)
         self.settings = QSettings("BadgeGenerator", "Frontend")
         self._own_api = api is None
         self.api = api or BackendAPI(self.settings.value("db_path", str(DEFAULT_DB_PATH)))
+        self.side, self.clipboard = "front", None
         self.resize(1440, 880)
-        self.side = "front"
 
-        # --- главный вид: таблица (≈65%) | Предпросмотр / Поля ---
+        self.layout_editor = le = LayoutEditor(self.api)
         self.records = RecordsWidget(self.api)
         self.preview_panel = PreviewPanel(self.api)
         self.splitter = QSplitter(Qt.Orientation.Horizontal); self.splitter.setObjectName("main_splitter")
         self.splitter.addWidget(self.records); self.splitter.addWidget(self.preview_panel)
-        self.splitter.setStretchFactor(0, 65); self.splitter.setStretchFactor(1, 35); self.splitter.setSizes([930, 500])
-        # отдельный режим — редактор макета (панель свойств внутри) и подробный предпросмотр
-        self.layout_editor = LayoutEditor(self.api)
-        self.preview = PreviewWidget(self.api)
-        self.tabs = QTabWidget(); self.tabs.setDocumentMode(True)
-        self.tabs.addTab(self.splitter, "Главная"); self.tabs.addTab(self.layout_editor, "Редактор макета")
-        self.tabs.addTab(self.preview, "Предпросмотр")
-        self.tabs.currentChanged.connect(self._tab_changed)
-        self.setCentralWidget(self.tabs)
-        self.layout_editor.status.connect(self._editor_changed)
+        self.splitter.setStretchFactor(0, 65); self.splitter.setStretchFactor(1, 35); self.splitter.setSizes([900, 480])
+        self.db_page = QWidget(); dl = QVBoxLayout(self.db_page); dl.setContentsMargins(4, 4, 4, 0)
+        dl.addWidget(self.records.filter); dl.addWidget(self.splitter, 1)
+        self.stack = QStackedWidget(); self.stack.addWidget(le); self.stack.addWidget(self.db_page)
+
+        self.ribbon = Ribbon()
+        central = QWidget(); cl = QVBoxLayout(central); cl.setContentsMargins(0, 0, 0, 0); cl.setSpacing(0)
+        cl.addWidget(self.ribbon); cl.addWidget(self.stack, 1)
+        self.setCentralWidget(central)
+        self.pos_label = QLabel("X: —  Y: — мм"); self.statusBar().addPermanentWidget(self.pos_label)
+
+        self._build_actions(); self._build_ribbon(); self._build_context_menus()
+        self.ribbon.currentChanged.connect(self._ribbon_changed)
+        le.status.connect(self._editor_changed)
+        le.cursor_moved.connect(lambda x, y: self.pos_label.setText(f"X: {x:.1f}  Y: {y:.1f} мм"))
+        le.scene.selectionChanged.connect(self._sync_selection)
         self.records.view.selectionModel().selectionChanged.connect(lambda *_: self._on_record_selected())
         self.records.model.modelReset.connect(self._on_record_selected)
-        self.preview_panel.layout_fields.itemClicked.connect(self._layout_field_clicked)
-
-        self._build_actions(); self._build_menus(); self._build_toolbar()
+        self.records.model.queue_toggle_requested.connect(self._checkbox_queue)
+        self.setMinimumWidth(self.MIN_W)
         self._default_state = self.saveState(self.STATE_VERSION)
         self.restore_layout()
-        self._update_title(); self._on_record_selected()
+        self.ribbon.select("Главная"); self._ribbon_changed(self.ribbon.currentIndex())
+        self._update_title(); self._on_record_selected(); self._sync_selection()
 
     # --- действия ---
-    def _act(self, text, slot, icon=None, name=None, shortcut=None, checkable=False):
-        a = QAction(text, self)
-        if icon: a.setIcon(make_icon(icon))
-        if shortcut: a.setShortcut(shortcut)
-        a.setCheckable(checkable); a.triggered.connect(slot)
-        a.setObjectName(name or ("act_" + (icon or text))); return a
+    def _act(self, name, text, slot, icon=None, shortcut=None, checkable=False, icon_text=None, tip=None):
+        a = QAction(text, self); a.setObjectName(name)
+        if icon: a.setIcon(glyph(icon))
+        if icon_text: a.setIconText(icon_text)
+        if shortcut:
+            a.setShortcuts([QKeySequence(s) for s in (shortcut if isinstance(shortcut, (list, tuple)) else [shortcut])])
+            a.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        a.setToolTip(tip or (text + (f" ({a.shortcut().toString()})" if shortcut else "")))
+        a.setCheckable(checkable)
+        if slot is not None: a.triggered.connect(slot)
+        self.addAction(a); return a
 
     def _build_actions(self):
-        A = self._act; le = self.layout_editor
-        self.act_connect = A("Подключить БД", self.open_db, "connect", "act_connect", "Ctrl+O")
-        self.act_disconnect = A("Отключить БД", self.disconnect_db, "disconnect", "act_disconnect")
-        self.act_settings = A("Настройка", self.open_settings, "settings", "act_settings")
-        self.act_save = A("Сохранить", self.save_all, "save", "act_save", "Ctrl+S")
-        self.act_print = A("Печать", self.do_print, "print", "act_print", "Ctrl+P")
-        self.act_queue = A("Очередь печати", self.show_print_queue, "queue", "act_queue")
-        self.act_printed = A("Напечатано / Не напечатано", self.toggle_printed_filter, "printed", "act_printed_filter")
-        self.act_front = A("Лицевая", lambda: self.set_side("front"), "front", "act_front", checkable=True)
-        self.act_back = A("Оборот", lambda: self.set_side("back"), "back", "act_back", checkable=True)
-        g = QActionGroup(self); g.addAction(self.act_front); g.addAction(self.act_back); self.act_front.setChecked(True)
-        self.act_text = A("Текст", lambda: le.run_tool("text"), "text", "act_text")
-        self.act_position = A("Положение", self.edit_position, "position", "act_position")
-        self.act_add = A("Добавить элемент", self._add_menu_popup, "add", "act_add_element")
-        self.act_remove = A("Удалить элемент", le.delete_element, "remove", "act_remove_element")
-        self.act_capture = A("Захват изображения", self.capture_image, "capture", "act_capture")
-        self.act_import = A("Импорт…", self.do_import, None, "act_import", "Ctrl+I")
-        self.act_export = A("Экспорт…", self.do_export, None, "act_export", "Ctrl+E")
-        self.act_exit = A("Выход", self.close, None, "act_exit")
-        self.act_editor = A("Редактор макета", self.show_editor, "design", "act_editor")
-        self.act_main = A("Главный вид", self.show_main, None, "act_main")
-        self.act_full_preview = A("Подробный предпросмотр", lambda: self.tabs.setCurrentWidget(self.preview), None, "act_full_preview")
-        self.act_zoom_in = A("Увеличить", lambda: le.zoom(1.25), None, "act_zoom_in", "Ctrl++")
-        self.act_zoom_out = A("Уменьшить", lambda: le.zoom(0.8), None, "act_zoom_out", "Ctrl+-")
-        self.act_zoom_fit = A("По размеру окна", lambda: le.zoom(None), None, "act_zoom_fit")
-        self.act_grid = A("Сетка", lambda on: le.set_grid(on, int(self.settings.value("editor/grid", 20))), None, "act_grid", checkable=True)
-        self.act_reset_layout = A("Вернуть расположение панелей", self.reset_layout, None, "act_reset_layout")
-        self.act_rec_add = A("Добавить запись", self.records.add, None, "act_rec_add")
-        self.act_rec_edit = A("Изменить запись", self.records.edit, None, "act_rec_edit")
-        self.act_rec_del = A("Удалить запись", self.records.delete, None, "act_rec_del")
-        self.act_mark_all = A("Отметить все для печати", lambda: self.records._mark_all(True), None, "act_mark_all")
-        self.act_unmark_all = A("Снять отметки печати", lambda: self.records._mark_all(False), None, "act_unmark_all")
-        self.act_about = A("О программе", self.about, None, "act_about")
-        self.add_menu = QMenu("Добавить элемент", self)
-        for a in le.tool_actions.values(): self.add_menu.addAction(a)
-        self.act_add.setMenu(self.add_menu)
+        A, le = self._act, self.layout_editor
+        # Файл
+        self.act_new = A("act_new", "Новый проект", self.new_project, "new", "Ctrl+N", icon_text="Новый\nпроект")
+        self.act_open = A("act_open", "Открыть проект…", self.open_db, "open", "Ctrl+O", icon_text="Открыть")
+        self.act_save_as = A("act_save_as", "Сохранить как…", self.save_as, "save", "Ctrl+Shift+S", icon_text="Сохранить\nкак…")
+        self.act_import = A("act_import", "Импорт записей…", self.do_import, "import", "Ctrl+I", icon_text="Импорт")
+        self.act_export = A("act_export", "Экспорт PNG/PDF…", self.do_export, "export", "Ctrl+E", icon_text="Экспорт")
+        self.act_settings = A("act_settings", "Настройки…", self.open_settings, "settings", "Ctrl+,", icon_text="Настройки")
+        self.act_exit = A("act_exit", "Выход", self.close, "exit", "Ctrl+Q")
+        # Главная
+        self.act_cut = A("act_cut", "Вырезать", self.cut, "cut", "Ctrl+X")
+        self.act_copy = A("act_copy", "Копировать", self.copy, "copy", "Ctrl+C")
+        self.act_paste = A("act_paste", "Вставить", self.paste, "paste", "Ctrl+V")
+        self.act_duplicate = A("act_duplicate", "Дублировать", self.duplicate, "duplicate", "Ctrl+D")
+        self.act_side = A("act_side", "Сторона: лицевая", lambda on: self.set_side("back" if on else "front"), "front",
+                          "Ctrl+Tab", checkable=True, icon_text="Лицевая")
+        self.act_background = A("act_background", "Фон стороны…", lambda: le.run_tool("background"), "background", icon_text="Фон")
+        # Рисование
+        self.tool_actions = {}
+        keys = {"field": "F", "photo": "P", "barcode": "B", "qr": "Q", "text": "T", "rect": "R", "ellipse": "E",
+                "line": "L", "image": "I"}
+        icons = {"field": "text", "rect": "rect"}
+        for t, k in keys.items():
+            self.tool_actions[t] = A(f"act_tool_{t}", TYPE_NAMES[t], lambda _=False, t=t: le.run_tool(t), icons.get(t, t), k)
+        self.act_style_fill = A("act_style_fill", "Цвет заливки…", lambda: self.pick_color("fill"), "fill", icon_text="Заливка")
+        self.act_style_stroke = A("act_style_stroke", "Цвет границы…", lambda: self.pick_color("stroke"), "stroke", icon_text="Граница")
+        self.act_style_stroke_w = StrokeWidthAction(self, lambda v: le.set_prop("stroke_width", v))
+        self.act_align = A("act_align", "Выровнять", None, "align", icon_text="Выровнять")
+        self.align_menu = QMenu("Выровнять", self); self.align_actions = {}
+        for how, t in ALIGN:
+            sub = QAction(t, self); sub.setObjectName(f"act_align_{how}"); sub.triggered.connect(lambda _=False, h=how: self.align(h))
+            self.align_menu.addAction(sub); self.align_actions[how] = sub
+        self.act_align.setMenu(self.align_menu)
+        # Редактировать
+        self.act_undo = A("act_undo", "Отменить", self.undo, "undo", "Ctrl+Z")
+        self.act_redo = A("act_redo", "Повторить", self.redo, "redo", ["Ctrl+Y", "Ctrl+Shift+Z"])
+        self.act_delete_element = A("act_delete_element", "Удалить объект", self.delete_element, "delete", "Del", icon_text="Удалить")
+        self.act_position = A("act_position", "Положение…", self.edit_position, "position", "Ctrl+K", icon_text="Положение")
+        self.act_capture = A("act_capture", "Захват изображения…", self.capture_image, "capture", icon_text="Захват")
+        self.act_z_up = A("act_z_up", "Выше", lambda: self._z(1), "z_up", "Ctrl+]")
+        self.act_z_down = A("act_z_down", "Ниже", lambda: self._z(-1), "z_down", "Ctrl+[")
+        # Просмотр
+        self.act_zoom_in = A("act_zoom_in", "Увеличить", lambda: le.zoom(1.25), "zoom_in", ["Ctrl++", "Ctrl+="])
+        self.act_zoom_out = A("act_zoom_out", "Уменьшить", lambda: le.zoom(0.8), "zoom_out", "Ctrl+-")
+        self.act_zoom_fit = A("act_zoom_fit", "По размеру", lambda: le.zoom(None), "zoom_fit", "Ctrl+0")
+        self.act_grid = A("act_grid", "Сетка", lambda on: le.set_grid(on, int(self.settings.value("editor/grid", 20))),
+                          "grid", "Ctrl+'", checkable=True)
+        self.act_rulers = A("act_rulers", "Линейки", le.set_rulers, "ruler", checkable=True); self.act_rulers.setChecked(True)
+        self.act_show_render = A("act_show_render", "Рендер под рамками", le.set_show_render, "render", checkable=True,
+                                 icon_text="Рендер")
+        self.act_show_render.setChecked(le.show_render)
+        self.act_reset_layout = A("act_reset_layout", "Сбросить расположение", self.reset_layout, "reset", icon_text="Сбросить\nокно")
+        # База данных
+        self.act_connect = A("act_connect", "Подключить БД…", self.connect_db, "connect", icon_text="Подключить")
+        self.act_disconnect = A("act_disconnect", "Отключить БД", self.disconnect_db, "disconnect", icon_text="Отключить")
+        self.act_field_manager = A("act_field_manager", "Менеджер полей…", self.field_manager, "table", icon_text="Настр.\nполя")
+        self.act_compact = A("act_compact", "Сжать и восстановить", None, "db", icon_text="Сжать /\nвосст.")
+        cm = QMenu(self)
+        self.act_compact_run = cm.addAction("Сжать и создать бэкап…", self.compact)
+        self.act_restore = cm.addAction("Восстановить из бэкапа…", self.restore)
+        self.act_compact.setMenu(cm)
+        self.act_print = A("act_print", "Печать…", self.do_print, "print", "Ctrl+P", icon_text="Печать")
+        self.act_queue = A("act_queue", "Очередь печати", self.show_print_queue, "queue", icon_text="Очередь")
+        self.act_queue_toggle = A("act_queue_toggle", "В очередь / из очереди", self.queue_toggle, "mark", "Space",
+                                  icon_text="В очередь")
+        self.act_mark_printed = A("act_mark_printed", "Напечатано", self.mark_printed, "printed")
+        self.act_mark_unprinted = A("act_mark_unprinted", "Не напечатано", self.mark_unprinted, "unprinted", icon_text="Не\nнапечатано")
+        self.display_group = QActionGroup(self); self.display_actions = {}
+        for v, t in PRINTED_FILTERS:
+            key = {None: "all", True: "printed", False: "unprinted"}[v]
+            a = A(f"act_display_{key}", t, lambda _=False, v=v: self.set_display(v), {"all": "table"}.get(key, key),
+                  checkable=True, icon_text={"all": "Все", "printed": "Напечат.", "unprinted": "Ненапечат."}[key])
+            self.display_group.addAction(a); self.display_actions[v] = a
+        self.display_actions[None].setChecked(True)
+        self.act_find = A("act_find", "Поиск по данным…", self.find, "zoom_in", "Ctrl+F", icon_text="Поиск")
+        self.act_goto = A("act_goto", "Перейти к положению…", self.goto, "goto", "Ctrl+G", icon_text="Перейти")
+        self.act_card_add = A("act_card_add", "Добавить карту", self.records.add, "add", "Ins", icon_text="Добавить")
+        self.act_card_edit = A("act_card_edit", "Изменить карту", self.records.edit, "edit", "Return", icon_text="Изменить")
+        self.act_card_delete = A("act_card_delete", "Удалить карту", self.records.delete, "delete", "Shift+Del", icon_text="Удалить")
+        self.act_filter_apply = A("act_filter_apply", "Применить", self.apply_filter, None)
+        self.records.filter.set_apply_action(self.act_filter_apply)
+        # Помощь
+        self.act_help = A("act_help", "Справка", self.help, "help", "F1")
+        self.act_about = A("act_about", "О программе", self.about, "about", icon_text="О\nпрограмме")
+        # Действия, зависящие от выделения/режима
+        le.selection_actions = [self.act_cut, self.act_copy, self.act_duplicate, self.act_delete_element, self.act_position,
+                                self.act_z_up, self.act_z_down, self.act_align, self.act_style_fill, self.act_style_stroke,
+                                self.act_style_stroke_w]
+        self.editor_actions = le.selection_actions + [self.act_paste, self.act_undo, self.act_redo] + list(self.tool_actions.values())
+        self.db_actions = [self.act_queue_toggle, self.act_card_edit, self.act_card_delete, self.act_mark_printed,
+                           self.act_mark_unprinted, self.act_capture]
 
-    def _build_menus(self):
-        le = self.layout_editor; mb = self.menuBar(); self.menus = {}
-        groups = {
-            "Файл": [self.act_save, None, self.act_print, self.act_queue, None, self.act_exit],
-            "Дизайн": [self.act_editor, self.act_main, None, self.act_front, self.act_back, le.tool_actions["background"]],
-            "Рисование": [a for k, a in le.tool_actions.items() if k != "background"],
-            "Редактировать": [self.act_remove, le.act_up, le.act_down, self.act_position, None,
-                              self.act_rec_add, self.act_rec_edit, self.act_rec_del, self.act_capture],
-            "Просмотр": [self.act_main, self.act_editor, self.act_full_preview, None, self.act_zoom_in, self.act_zoom_out,
-                         self.act_zoom_fit, self.act_grid, None, self.act_reset_layout],
-            "Опции": [self.act_settings],
-            "База данных": [self.act_connect, self.act_disconnect, None, self.act_import, self.act_export, None,
-                            self.act_mark_all, self.act_unmark_all, self.act_printed],
-            "Помощь": [self.act_about],
-        }
-        for name in MENUS:
-            m = mb.addMenu(name); self.menus[name] = m
-            for a in groups[name]:
-                m.addSeparator() if a is None else m.addAction(a)
+    def _build_ribbon(self):
+        R, T = self.ribbon, self.tool_actions
+        R.add_group("Файл", "Проект", [self.act_new, self.act_open, self.act_save_as])
+        R.add_group("Файл", "Данные", [self.act_import, self.act_export])
+        R.add_group("Файл", "Параметры", [self.act_settings, self.act_exit])
+        R.add_group("Главная", "Буфер", [self.act_cut, self.act_copy, self.act_paste, self.act_duplicate])
+        R.add_group("Главная", "Сторона", [self.act_side, self.act_background])
+        R.add_group("Рисование", "Данные", [T["field"], T["photo"], T["barcode"], T["qr"]])
+        R.add_group("Рисование", "Фигуры", [T["text"], T["rect"], T["ellipse"], T["line"], T["image"]])
+        R.add_group("Рисование", "Стиль", [[self.act_style_fill, self.act_style_stroke], self.act_style_stroke_w, self.act_align])
+        R.add_group("Редактировать", "История", [self.act_undo, self.act_redo])
+        R.add_group("Редактировать", "Объект", [self.act_delete_element, self.act_position, self.act_capture])
+        R.add_group("Редактировать", "Порядок", [self.act_z_up, self.act_z_down])
+        R.add_group("Просмотр", "Масштаб", [self.act_zoom_in, self.act_zoom_out, self.act_zoom_fit])
+        R.add_group("Просмотр", "Показать", [self.act_grid, self.act_rulers, self.act_show_render])
+        R.add_group("Просмотр", "Окно", [self.act_reset_layout])
+        R.add_group("База данных", "Подключение", [[self.act_connect, self.act_disconnect]])
+        R.add_group("База данных", "Установки", [self.act_field_manager, self.act_compact])
+        R.add_group("База данных", "Печать", [self.act_print, self.act_queue, self.act_queue_toggle])
+        R.add_group("База данных", "Метка", [[self.act_mark_printed, self.act_mark_unprinted]])
+        R.add_group("База данных", "Дисплей", [list(self.display_actions.values())])   # §4 п.3: столбик маленьких кнопок
+        R.add_group("База данных", "Поиск", [self.act_find, self.act_goto])
+        R.add_group("База данных", "Карта", [self.act_card_add, self.act_card_edit, self.act_card_delete])
+        R.add_group("Помощь", "Справка", [self.act_help, self.act_about])
+        # act_filter_apply — единственное место: кнопка блока фильтра под лентой (вкладка «База данных»)
+        R.places[self.act_filter_apply] = ("База данных", "Блок фильтра")
 
-    def _build_toolbar(self):
-        tb = self.addToolBar("Основная"); tb.setObjectName("tb_main"); self.toolbar = tb
-        tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon); tb.setIconSize(tb.iconSize() * 0.9)
-        for a in (self.act_connect, self.act_disconnect, self.act_settings, self.act_save, None, self.act_print,
-                  self.act_queue, self.act_printed, None, self.act_front, self.act_back, None, self.act_text,
-                  self.act_position, self.act_add, self.act_remove, None, self.act_capture):
-            tb.addSeparator() if a is None else tb.addAction(a)
-        b = tb.widgetForAction(self.act_add)
-        if isinstance(b, QToolButton): b.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.tb_elements = self.toolbar   # совместимость: инструменты элементов доступны через меню «Добавить элемент»
+    def _build_context_menus(self):
+        le = self.layout_editor
+        # клавиши, конфликтующие с вводом текста, действуют только в своём виджете (тот же QAction)
+        for a, w in ((self.act_queue_toggle, self.records.view), (self.act_card_edit, self.records.view),
+                     (self.act_card_delete, self.records.view), (self.act_delete_element, le.view),
+                     (self.act_delete_element, le.el_list)):
+            self.removeAction(a); w.addAction(a); a.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self.canvas_menu_actions = [self.act_cut, self.act_copy, self.act_paste, self.act_duplicate, None,
+                                    self.act_delete_element, self.act_position, self.act_align, self.act_z_up, self.act_z_down,
+                                    None, self.act_capture, self.act_background]
+        self.list_menu_actions = [self.act_cut, self.act_copy, self.act_duplicate, None, self.act_delete_element,
+                                  self.act_position, self.act_z_up, self.act_z_down]
+        self.table_menu_actions = [self.act_card_add, self.act_card_edit, self.act_card_delete, None, self.act_queue_toggle,
+                                   self.act_mark_printed, self.act_mark_unprinted, None, self.act_print, self.act_capture]
+        for w, acts in ((le.view, self.canvas_menu_actions), (le.el_list, self.list_menu_actions),
+                        (self.records.view, self.table_menu_actions)):
+            w.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            w.customContextMenuRequested.connect(lambda pos, w=w, acts=acts: self._popup(w, acts, pos))
 
-    def toolbar_texts(self):
-        return [a.text() for a in self.toolbar.actions() if not a.isSeparator()]
+    def context_menu(self, acts):
+        m = QMenu(self)
+        for a in acts: m.addSeparator() if a is None else m.addAction(a)
+        return m
 
-    def _add_menu_popup(self):
-        b = self.toolbar.widgetForAction(self.act_add)
-        self.add_menu.popup(b.mapToGlobal(b.rect().bottomLeft()) if b else self.cursor().pos())
+    def _popup(self, w, acts, pos):
+        if w is self.layout_editor.el_list:
+            it = w.itemAt(pos)
+            if it: self.layout_editor.select(it.data(Qt.ItemDataRole.UserRole))
+        self.context_menu(acts).popup(w.mapToGlobal(pos))
+
+    def all_actions(self):
+        """Все действия ленты (каждое — одно место)."""
+        return list(self.ribbon.places)
 
     # --- режимы ---
-    def show_editor(self):
-        self.tabs.setCurrentWidget(self.layout_editor)
+    def _ribbon_changed(self, i):
+        db = self.ribbon.tabText(i) == "База данных"
+        self.stack.setCurrentWidget(self.db_page if db else self.layout_editor)
+        if db: self.preview_panel.refresh()
+        else: self.layout_editor.reload()
+        self._sync_selection()
 
     def show_main(self):
-        self.tabs.setCurrentWidget(self.splitter)
+        self.ribbon.select("База данных")
+
+    def show_editor(self):
+        if self.ribbon.tabText(self.ribbon.currentIndex()) == "База данных": self.ribbon.select("Главная")
 
     def set_side(self, side):
         self.side = side
-        (self.act_front if side == "front" else self.act_back).setChecked(True)
-        i = self.layout_editor.side_box.findData(side)
-        if self.layout_editor.side_box.currentIndex() != i: self.layout_editor.side_box.setCurrentIndex(i)
-        self.preview_panel.set_side(side)
+        self.act_side.blockSignals(True); self.act_side.setChecked(side == "back"); self.act_side.blockSignals(False)
+        t = "Оборот" if side == "back" else "Лицевая"
+        self.act_side.setText(f"Сторона: {t.lower()}"); self.act_side.setIconText(t); self.act_side.setIcon(glyph(side))
+        self.layout_editor.set_side(side); self.preview_panel.set_side(side)
 
     def _editor_changed(self, msg):
         self.statusBar().showMessage(msg)
-        if self.layout_editor.side != self.side:
-            self.side = self.layout_editor.side; (self.act_front if self.side == "front" else self.act_back).setChecked(True)
-            self.preview_panel.side = self.side
-        self.preview_panel.refresh()
+        if self.layout_editor.side != self.side: self.set_side(self.layout_editor.side)
+        self._sync_selection()
 
-    def _layout_field_clicked(self, item):
-        eid = item.data(Qt.ItemDataRole.UserRole)
-        if eid is not None: self.layout_editor.load(self.side, eid)
+    def _sync_selection(self):
+        sel = self.layout_editor.current is not None
+        for a in self.layout_editor.selection_actions: a.setEnabled(sel)
+        self.act_paste.setEnabled(self.clipboard is not None)
+        self.act_undo.setEnabled(self.api.can_undo()); self.act_redo.setEnabled(self.api.can_redo())
+        if sel:
+            st = self.layout_editor.current.el.get("style") or {}
+            self.act_style_stroke_w.set_value(int(st.get("stroke_width") or 0))
+        has_rec = bool(self.records.selected_ids())
+        for a in (self.act_queue_toggle, self.act_card_edit, self.act_card_delete, self.act_mark_printed, self.act_mark_unprinted):
+            a.setEnabled(has_rec)
 
-    # --- расположение (сплиттер + окно) ---
+    # --- буфер ---
+    _COPY_KEYS = ("type", "x", "y", "w", "h", "field_name", "static_value", "style", "side", "z_order")
+
+    def copy(self):
+        c = self.layout_editor.current
+        if not c: return None
+        self.clipboard = {k: c.el.get(k) for k in self._COPY_KEYS}; self._sync_selection(); return self.clipboard
+
+    def cut(self):
+        if self.copy() is None: return None
+        self.delete_element(); return self.clipboard
+
+    def paste(self, offset=20):
+        if not self.clipboard: return None
+        le = self.layout_editor
+        kw = dict(self.clipboard); kw["x"] += offset; kw["y"] += offset; kw["side"] = le.side
+        kw["z_order"] = max([i.el.get("z_order") or 0 for i in le.items()] + [0]) + 1
+        eid = self.api.create_element(**kw); le.load(le.side, eid); self._sync_selection(); return eid
+
+    def duplicate(self):
+        saved = self.clipboard
+        if self.copy() is None: return None
+        eid = self.paste(); self.clipboard = saved; self._sync_selection(); return eid
+
+    # --- стиль/объект ---
+    def pick_color(self, key, color=None):
+        le = self.layout_editor
+        if not le.current: return None
+        if color is None:
+            if ask_hook is not None: color = ask_hook("color", self)
+            else:
+                st = le.current.el.get("style") or {}
+                from PyQt6.QtGui import QColor
+                c = QColorDialog.getColor(QColor(st.get(key) or "#000000"), self, "Цвет")
+                color = c.name() if c.isValid() else None
+        if not color: return None
+        le.set_prop(key, color); self._sync_selection(); return color
+
+    def align(self, how):
+        le = self.layout_editor
+        if not le.current: return None
+        g = aligned_geometry({**le.current.el, **le.current.geometry()}, how)
+        le.set_props(x=g["x"], y=g["y"]); return g
+
+    def _z(self, d):
+        self.layout_editor.move_z(d); self._sync_selection()
+
+    def delete_element(self):
+        self.layout_editor.delete_element(); self._sync_selection()
+
+    def undo(self):
+        r = self.api.undo(); self.layout_editor.reload(); self._sync_selection(); return r
+
+    def redo(self):
+        r = self.api.redo(); self.layout_editor.reload(); self._sync_selection(); return r
+
+    def edit_position(self):
+        le = self.layout_editor
+        if not le.current:
+            self.statusBar().showMessage("Выберите объект на холсте"); return None
+        d = PositionDialog({**le.current.el, **le.current.geometry()}, self)
+        val = position_hook(d) if position_hook is not None else (d.value() if d.exec() else None)
+        if val:
+            le.set_props(**{k: val[k] for k in ("x", "y") if k in val})
+        return val
+
+    # --- расположение ---
     def save_layout(self):
         self.settings.setValue("window/geometry", self.saveGeometry())
         self.settings.setValue("window/state", self.saveState(self.STATE_VERSION))
@@ -194,68 +398,94 @@ class MainWindow(QMainWindow):
 
     def reset_layout(self):
         self.restoreState(self._default_state, self.STATE_VERSION)
-        total = sum(self.splitter.sizes()) or 1430
+        total = sum(self.splitter.sizes()) or 1380
         self.splitter.setSizes([int(total * 0.65), total - int(total * 0.65)])
-        self.toolbar.show()
 
-    # --- выбор записи → предпросмотр/поля/холст ---
+    # --- записи ---
     def selected_person_id(self):
         ids = self.records.selected_ids()
         return ids[0] if ids else None
 
     def _on_record_selected(self):
         pid = self.selected_person_id()
-        self.preview_panel.set_person(pid)
-        self.layout_editor.set_person(pid)
-        i = self.preview.person_box.findData(pid)
-        if pid is not None and i >= 0: self.preview.person_box.setCurrentIndex(i)
+        self.preview_panel.set_person(pid); self.layout_editor.set_person(pid); self._sync_selection()
 
-    # --- команды панели инструментов ---
-    def disconnect_db(self):
-        self.switch_db(":memory:")
-        self.statusBar().showMessage("БД отключена: открыта временная база в памяти")
+    def _select_person(self, pid):
+        r = self.records.model.row_of(pid)
+        if r >= 0:
+            self.records.view.selectRow(self.records.proxy.mapFromSource(self.records.model.index(r, 1)).row())
+        return r >= 0
 
-    def open_settings(self, values=None):
-        d = SettingsDialog(self.api, self.settings, self)
-        if values is not None:
-            if "base_dir" in values: d.base_dir.setText(values["base_dir"])
-            if "grid" in values: d.grid.setValue(values["grid"])
-            res = d.apply()
-        elif d.exec():
-            res = d.apply()
-        else:
-            return None
-        self.refresh_all(); return res
+    def apply_filter(self):
+        ids = self.records.apply_filter()
+        self.statusBar().showMessage("Фильтр сброшен" if ids is None else f"Фильтр: найдено {len(ids)}"); return ids
 
-    def save_all(self):
-        self.save_layout()
-        self.statusBar().showMessage("Сохранено: записи и макет пишутся в БД сразу; расположение окна сохранено")
-        return True
+    def set_display(self, value):
+        self.display_actions[value].setChecked(True)
+        t = self.records.set_printed_filter(value); self.statusBar().showMessage(f"Дисплей: {t}"); return t
 
-    def show_print_queue(self, exec_=True):
-        d = PrintQueueDialog(self.api, self, on_print=self.do_print)
-        if exec_: d.exec(); self.records.reload()
-        return d
+    def find(self, text=None):
+        if text is None:
+            if ask_hook is not None: text = ask_hook("find", self)
+            else:
+                text, ok = QInputDialog.getText(self, "Поиск по данным", "Текст:")
+                if not ok: return None
+        f = self.records.filter; f.terms = []; f.join_value = "or"
+        if text:
+            for fl in self.api.list_fields(): f.terms.append({"field": fl["name"], "op": "contains", "value": text})
+        f._show(); return self.apply_filter()
 
-    def toggle_printed_filter(self):
-        t = self.records.cycle_printed_filter()
-        self.act_printed.setToolTip(f"Фильтр по печати: {t}"); self.statusBar().showMessage(f"Фильтр по печати: {t}")
-        return t
+    def goto(self, target=None):
+        if target is None:
+            if ask_hook is not None: target = ask_hook("goto", self)
+            else:
+                target, ok = QInputDialog.getText(self, "Перейти к положению", "Номер строки или #ID:")
+                if not ok: return None
+        s = str(target).strip()
+        if s.startswith("#"): return self._select_person(int(s[1:]))
+        try: n = int(s)
+        except ValueError: return False
+        if 1 <= n <= self.records.proxy.rowCount():
+            self.records.view.selectRow(n - 1); return True
+        return False
 
-    def edit_position(self):
-        le = self.layout_editor
-        if not le.current:
-            self.statusBar().showMessage("Выберите элемент макета (вкладка «Поля макета» или редактор)"); return None
-        d = PositionDialog({**le.current.el, **le.current.geometry()}, self)
-        val = position_hook(d) if position_hook is not None else (d.value() if d.exec() else None)
-        if val:
-            eid = le.current.el["id"]; self.api.update_element(eid, **val); le.load(le.side, eid)
-        return val
+    def _checkbox_queue(self, pid):
+        """Чекбокс «Печать»: выделить запись и вызвать тот же QAction act_queue_toggle."""
+        self._select_person(pid); self.act_queue_toggle.setEnabled(True); self.act_queue_toggle.trigger()
+
+    def queue_toggle(self):
+        ids = self.records.selected_ids()
+        if not ids: return None
+        rows = {p["id"]: p for p in self.records.model.rows}
+        val = not all(rows[i]["print_mark"] for i in ids if i in rows)
+        n = self.api.set_print_mark(ids, val); self._reload_keep(ids)
+        self.statusBar().showMessage(("В очереди: " if val else "Убрано из очереди: ") + str(len(ids))); return val
+
+    def mark_printed(self):
+        ids = self.records.selected_ids()
+        if not ids: return None
+        n = self.api.mark_printed(ids); self._reload_keep(ids); return n
+
+    def mark_unprinted(self):
+        ids = self.records.selected_ids()
+        if not ids: return None
+        n = self.api.clear_printed(ids); self._reload_keep(ids); return n
+
+    def _reload_keep(self, ids):
+        self.records.reload()
+        from PyQt6.QtCore import QItemSelectionModel
+        sm = self.records.view.selectionModel()
+        for pid in ids:
+            r = self.records.model.row_of(pid)
+            if r >= 0:
+                sm.select(self.records.proxy.mapFromSource(self.records.model.index(r, 0)),
+                          QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows)
+        self._sync_selection()
 
     def capture_image(self, path=None):
         pid = self.selected_person_id()
         if pid is None:
-            self.statusBar().showMessage("Выберите запись для захвата фото"); return None
+            self.statusBar().showMessage("Выберите запись для захвата фото (вкладка «База данных»)"); return None
         if path is None:
             if camera_available():
                 os.makedirs(os.path.join(self.api.base_dir, "photos"), exist_ok=True)
@@ -271,13 +501,86 @@ class MainWindow(QMainWindow):
             pass
         self.api.update_person(pid, photo_path=path)
         self.records.reload(); self._select_person(pid)
-        self.statusBar().showMessage(f"Фото записи #{pid}: {path}")
+        self.statusBar().showMessage(f"Фото записи #{pid}: {path}"); return path
+
+    # --- БД / проект ---
+    def _ask_path(self, kind, title, save=True, filt="SQLite (*.db *.sqlite)"):
+        if ask_hook is not None: return ask_hook(kind, self)
+        f = QFileDialog.getSaveFileName if save else QFileDialog.getOpenFileName
+        p, _ = f(self, title, str(self.api.db_path), filt); return p or None
+
+    def new_project(self, path=None):
+        path = path or self._ask_path("new", "Новый проект (файл БД)")
+        if not path: return None
+        if os.path.exists(path):
+            QMessageBox.warning(self, "Новый проект", "Файл уже существует — используйте «Открыть»."); return None
+        self.switch_db(path); return path
+
+    def open_db(self, path=None):
+        path = path or self._ask_path("open", "Открыть проект", save=False)
+        if path: self.switch_db(path)
         return path
 
-    def _select_person(self, pid):
-        r = self.records.model.row_of(pid)
-        if r >= 0:
-            self.records.view.selectRow(self.records.proxy.mapFromSource(self.records.model.index(r, 1)).row())
+    def connect_db(self, path=None):
+        if path is None and ask_hook is None:
+            path, _ = QFileDialog.getSaveFileName(self, "Подключить или создать БД", str(self.api.db_path),
+                                                  "SQLite (*.db *.sqlite)", options=QFileDialog.Option.DontConfirmOverwrite)
+        path = path or (ask_hook("connect", self) if ask_hook else None)
+        if path: self.switch_db(path)
+        return path
+
+    def disconnect_db(self):
+        self.switch_db(":memory:")
+        self.statusBar().showMessage("БД отключена: открыта временная база в памяти")
+
+    def save_as(self, dest=None):
+        dest = dest or self._ask_path("save_as", "Сохранить копию БД как…")
+        if not dest: return None
+        r = self.api.backup_db(dest); self.statusBar().showMessage(f"Копия БД сохранена: {dest}"); return r
+
+    def compact(self, backup_dir=None):
+        if backup_dir is None:
+            backup_dir = ask_hook("compact", self) if ask_hook else QFileDialog.getExistingDirectory(
+                self, "Папка для бэкапа", self.api.base_dir)
+        if not backup_dir: return None
+        r = self.api.compact_and_backup(backup_dir)
+        self.statusBar().showMessage(f"БД сжата: {r.get('size_before')} → {r.get('size_after')} байт; бэкап: {r.get('backup')}")
+        return r
+
+    def restore(self, backup=None):
+        backup = backup or self._ask_path("restore", "Восстановить из бэкапа", save=False, filt="Бэкап БД (*.db *.sqlite *.bak);;Все (*)")
+        if not backup: return None
+        if ask_hook is None and QMessageBox.question(
+                self, "Восстановление", "Текущая БД будет заменена бэкапом. Продолжить?") != QMessageBox.StandardButton.Yes:
+            return None
+        self.api.restore_from(backup); self.refresh_all(); self._update_title(); return backup
+
+    def field_manager(self, exec_=True):
+        d = FieldManager(self.api, self)
+        if exec_: d.exec(); self.refresh_all()
+        return d
+
+    def open_settings(self, values=None):
+        d = SettingsDialog(self.api, self.settings, self)
+        if values is not None:
+            if "base_dir" in values: d.base_dir.setText(values["base_dir"])
+            if "grid" in values: d.grid.setValue(values["grid"])
+            res = d.apply()
+        elif d.exec():
+            res = d.apply()
+        else:
+            return None
+        self.refresh_all(); return res
+
+    def show_print_queue(self, exec_=True):
+        d = PrintQueueDialog(self.api, self)
+        if exec_: d.exec(); self.records.reload()
+        return d
+
+    def help(self):
+        if ask_hook is not None: ask_hook("help", self)
+        else: QMessageBox.information(self, "Справка", HELP_TEXT)
+        return HELP_TEXT
 
     def about(self):
         text = ("Генератор пропусков\nРедактор шаблонов карт CR80, база записей, печать и экспорт.\n"
@@ -291,23 +594,12 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"БД: {self.api.db_path}; база путей фото: {self.api.base_dir}")
 
     def refresh_all(self):
-        self.records.reload(); self.layout_editor.reload(); self.preview.refresh(); self._on_record_selected()
-
-    def _tab_changed(self, i):
-        w = self.tabs.widget(i)
-        if w is self.splitter: self.preview_panel.refresh()
-        if w is self.preview: self.preview.refresh()
-        elif w is self.layout_editor: self.layout_editor.reload()
-
-    def open_db(self):
-        p, _ = QFileDialog.getSaveFileName(self, "Открыть или создать БД", str(self.api.db_path),
-                                           "SQLite (*.db *.sqlite)", options=QFileDialog.Option.DontConfirmOverwrite)
-        if p: self.switch_db(p)
+        self.records.reload(); self.layout_editor.reload(); self.preview_panel.refresh(); self._on_record_selected()
 
     def switch_db(self, path):
         self.api.open_db(path)
         if str(path) != ":memory:": self.settings.setValue("db_path", str(path))
-        self.refresh_all(); self._update_title()
+        self.clipboard = None; self.refresh_all(); self._update_title()
 
     def do_import(self):
         ImportDialog(self.api, self).exec(); self.refresh_all()
@@ -338,7 +630,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(msg)
         if err is not None: QMessageBox.warning(self, "Печать", msg)
         elif res is not None and not getattr(res, "cancelled", False) and int(res) > 0:
-            printed = list(dict.fromkeys(item["person"]["id"] for item in snap))   # реально напечатанные
+            printed = list(dict.fromkeys(item["person"]["id"] for item in snap))
             self._offer_clear_marks(printed)
         if err is None: show_result_warnings(self, res, "Печать")
         return res, err
@@ -352,14 +644,11 @@ class MainWindow(QMainWindow):
         else:
             yes = QMessageBox.question(self, "Печать", q, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                        QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes
-        if not yes:
-            return 0
-        changed = self.api.mark_printed(ids)   # print_mark=0 + printed_at=now (атомарно, Backend)
-        self.records.reload()
-        self.statusBar().showMessage(f"Отметки сняты: {changed}")
-        return changed
+        if not yes: return 0
+        changed = self.api.mark_printed(ids)
+        self.records.reload(); self.statusBar().showMessage(f"Отметки сняты: {changed}"); return changed
 
     def closeEvent(self, ev):
-        self.save_layout()
+        self.save_layout()          # расположение окна сохраняется автоматически
         if self._own_api: self.api.close()
         super().closeEvent(ev)

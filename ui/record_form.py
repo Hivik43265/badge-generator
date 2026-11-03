@@ -27,8 +27,6 @@ class RecordForm(QDialog):
         for f in fields:
             e = QLineEdit(str(self.person["fields"].get(f["name"], "")))
             self.edits[f["name"]] = e; form.addRow(f["label"] + ":", e)
-        self.print_mark = QCheckBox("Отметить для печати"); self.print_mark.setChecked(bool(self.person["print_mark"]))
-        form.addRow(self.print_mark)
 
         cfg = PhotoConfig.parse(self.person["photo_config"])
         box = QGroupBox("Фото"); pf = QFormLayout(box)
@@ -109,10 +107,9 @@ class RecordForm(QDialog):
             for f in self._new_fields:
                 self.api.upsert_field(f["name"], f["label"], f["sort_order"])
             if self.person_id:
-                self.api.update_person(self.person_id, fields=fields, photo_path=photo,
-                                       print_mark=int(self.print_mark.isChecked()))
+                self.api.update_person(self.person_id, fields=fields, photo_path=photo)
             else:
-                self.person_id = self.api.create_person(fields, photo, None, int(self.print_mark.isChecked()))
+                self.person_id = self.api.create_person(fields, photo, None, 0)
             self.api.update_photo_config(self.person_id, self.config_string())   # только эта запись
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "Ошибка сохранения", str(e)); return

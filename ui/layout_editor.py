@@ -14,26 +14,24 @@ from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QGraphicsView, Q
                              QFormLayout, QLabel, QComboBox, QPushButton, QSpinBox, QLineEdit,
                              QPlainTextEdit, QMessageBox, QCheckBox, QToolButton, QGridLayout,
                              QInputDialog, QFileDialog, QColorDialog, QScrollArea, QSizePolicy, QListWidget, QListWidgetItem)
-from .backend_api import BackendAPI, CARD_W_PX, CARD_H_PX
+from .backend_api import BackendAPI, CARD_W_PX, CARD_H_PX, TYPE_NAMES, SIDE_NAMES
 
-SIDE_LABELS = {"front": "Лицевая", "back": "Оборотная"}
-TYPE_LABELS = {"text": "Текст", "field": "Поле", "photo": "Фото", "image": "Изображение",
-               "rect": "Рамка", "line": "Линия", "qr": "QR-код", "barcode": "Штрихкод"}
-# Инструменты «Добавить элемент»: (ключ, подпись, тип элемента или None для фона)
-TOOLS = [("text", "Текст", "text"), ("field", "Текст из поля", "field"), ("image", "Изображение", "image"),
-         ("background", "Фон стороны", None), ("photo", "Фото из базы", "photo"), ("rect", "Рамка", "rect"),
-         ("line", "Линия", "line"), ("barcode", "Штрихкод", "barcode"), ("qr", "QR-код", "qr")]
+SIDE_LABELS = SIDE_NAMES
+TYPE_LABELS = TYPE_NAMES
+MM_PER_PX = 85.6 / CARD_W_PX
+# Типы, создаваемые инструментами ленты «Рисование» (ключ = тип элемента); фон — отдельное действие
+TOOLS = [(t, TYPE_NAMES[t], t) for t in ("field", "photo", "barcode", "qr", "text", "rect", "ellipse", "line", "image")]
 DEFAULT_SIZE = {"text": (400, 80), "field": (400, 80), "image": (200, 200), "photo": (300, 400), "rect": (400, 250),
-                "line": (600, 0), "barcode": (420, 140), "qr": (220, 220)}
+                "ellipse": (300, 200), "line": (600, 0), "barcode": (420, 140), "qr": (220, 220)}
 DEFAULT_STYLE = {"text": {"font_size": 14, "color": "#000000"}, "field": {"font_size": 14, "color": "#000000"},
-                 "rect": {"stroke": "#1F4E8C", "stroke_width": 3}, "line": {"stroke": "#1F4E8C", "stroke_width": 3},
+                 "rect": {"stroke": "#1F4E8C", "stroke_width": 3},
+                 "ellipse": {"stroke": "#1F4E8C", "stroke_width": 3}, "line": {"stroke": "#1F4E8C", "stroke_width": 3},
                  "barcode": {"format": "code128", "show_text": True, "quiet_zone": 10, "font_size": 8},
                  "qr": {"error_correction": "M", "border": 4}, "photo": {}, "image": {"fit": "contain"}}
 FORMATS = [("code128", "Code128"), ("ean13", "EAN-13")]      # style["format"] (старый ключ symbology — только чтение)
 EC_LEVELS = ["L", "M", "Q", "H"]
-# Подписи типов для рамок, списка элементов и панели свойств (D8)
-KIND_NAMES = {"text": "Текст", "field": "Поле", "photo": "Фото", "image": "Изображение", "rect": "Рамка",
-              "line": "Линия", "barcode": "Штрихкод", "qr": "QR"}
+# Подписи типов для рамок, списка элементов и панели свойств (D8) — из TYPE_NAMES
+KIND_NAMES = TYPE_NAMES
 
 
 def _s(v):
@@ -54,7 +52,7 @@ def element_caption(el, labels=None):
     else:
         det = ""
     return f"{name}: {det}" if det else name
-EMPTY_HINT = "Добавьте элементы с панели инструментов"
+EMPTY_HINT = "Добавьте элементы: вкладка ленты «Рисование»"
 warn_hook = None   # хук для тестов: warn_hook(title, text) вместо модального QMessageBox
 
 
@@ -164,34 +162,10 @@ class LayoutEditor(QWidget):
         self.scene.selectionChanged.connect(self._on_select)
         self.overlaps, self.hint = [], None
 
-        # --- действия (используются панелью и панелью инструментов главного окна) ---
-        self.tool_actions = {}
-        for key, label, _t in TOOLS:
-            a = QAction(label, self); a.setObjectName(f"tool_{key}")
-            a.triggered.connect(lambda _=False, k=key: self.run_tool(k))
-            self.tool_actions[key] = a
-        self.act_delete = QAction("Удалить элемент", self, triggered=self.delete_element)
-        self.act_up = QAction("Выше", self, triggered=lambda: self.move_z(+1))
-        self.act_down = QAction("Ниже", self, triggered=lambda: self.move_z(-1))
-        self.act_side = QAction("Сторона: лицевая", self, triggered=self.toggle_side)
-
-        self.side_box = QComboBox()
-        for k, v in SIDE_LABELS.items(): self.side_box.addItem(v, k)
-        self.side_box.currentIndexChanged.connect(lambda _: self.load(self.side_box.currentData()))
+        # Действия (инструменты, удаление, порядок, сторона) живут только в ленте главного окна.
+        self.show_render = True          # «Рендер под рамками» — переключается действием ленты
         self.person_label = QLabel("Запись на холсте: пустой шаблон"); self.person_label.setWordWrap(True)
-        self.show_render = QCheckBox("Показывать рендер под рамками"); self.show_render.setChecked(True)
-        self.show_render.toggled.connect(lambda _: self.load(self.side))
-
-        add_box = QGroupBox("Добавить элемент"); grid = QGridLayout(add_box)
-        self.tool_buttons = {}
-        for i, (key, _l, _t) in enumerate(TOOLS):
-            b = QToolButton(); b.setDefaultAction(self.tool_actions[key])
-            b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-            b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            grid.addWidget(b, i // 3, i % 3); self.tool_buttons[key] = b
-        arrange = QHBoxLayout()
-        for a in (self.act_up, self.act_down, self.act_delete):
-            b = QToolButton(); b.setDefaultAction(a); arrange.addWidget(b)
+        self.selection_actions = []      # действия ленты, активные только при выделенном объекте
 
         self.warn = QLabel(); self.warn.setWordWrap(True); self.warn.setStyleSheet("color:#c00;")
 
@@ -226,21 +200,68 @@ class LayoutEditor(QWidget):
                             ("stroke", "Цвет обводки:", self.p_stroke), ("stroke_w", "Толщина обводки, px:", self.p_stroke_w),
                             ("radius", "Скругление, px:", self.p_radius), ("style", "Стиль (JSON):", self.p_style)):
             pf.addRow(lab, w); self.rows[key] = (pf.labelForField(w), w)
-        apply_ = QPushButton("Применить"); apply_.clicked.connect(self.apply_props); pf.addRow(apply_)
+        self._loading = False
+        self._live_wiring()          # D11: свойства применяются сразу при изменении поля (кнопки «Применить» нет)
         self.props = props; props.setEnabled(False)
 
         right = QVBoxLayout()
-        right.addWidget(QLabel("Сторона:")); right.addWidget(self.side_box); right.addWidget(self.person_label)
-        right.addWidget(self.show_render); right.addWidget(add_box); right.addLayout(arrange)
+        right.addWidget(self.person_label)
+        # Список элементов — только для выбора (перекрытые объекты); своих кнопок нет,
+        # контекстное меню строит главное окно на тех же QAction ленты.
         self.el_list = QListWidget(); self.el_list.setMaximumHeight(140)
-        self.el_list.itemClicked.connect(lambda it: self.load(self.side, it.data(Qt.ItemDataRole.UserRole)))
+        self.el_list.itemClicked.connect(lambda it: self.select(it.data(Qt.ItemDataRole.UserRole)))
         right.addWidget(QLabel("Элементы стороны:")); right.addWidget(self.el_list)
         right.addWidget(self.warn); right.addWidget(props); right.addStretch()
         inner = QWidget(); inner.setLayout(right)
-        rw = QScrollArea(); rw.setWidget(inner); rw.setWidgetResizable(True); rw.setMinimumWidth(300)
-        self.panel = rw                # главное окно выносит панель в док
-        lay = QHBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0); lay.addWidget(self.view, 1); lay.addWidget(rw)
+        rw = QScrollArea(); rw.setWidget(inner); rw.setWidgetResizable(True); rw.setMinimumWidth(260)
+        self.panel = rw
+        self.view.setMouseTracking(True); self.view.viewport().setMouseTracking(True)
+        self.view.viewport().installEventFilter(self)
+        self.hruler, self.vruler = Ruler(self, True), Ruler(self, False)
+        cw = QWidget(); g = QGridLayout(cw); g.setContentsMargins(0, 0, 0, 0); g.setSpacing(0)
+        corner = QLabel("мм"); corner.setFixedSize(Ruler.T, Ruler.T); corner.setStyleSheet("font-size:8px; background:#F1F3F2;")
+        g.addWidget(corner, 0, 0); g.addWidget(self.hruler, 0, 1); g.addWidget(self.vruler, 1, 0); g.addWidget(self.view, 1, 1)
+        self.canvas_box = cw
+        lay = QHBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0); lay.addWidget(cw, 1); lay.addWidget(rw)
         self.load("front")
+
+    cursor_moved = pyqtSignal(float, float)
+
+    def eventFilter(self, obj, ev):
+        from PyQt6.QtCore import QEvent
+        if obj is self.view.viewport() and ev.type() == QEvent.Type.MouseMove:
+            p = self.view.mapToScene(ev.position().toPoint())
+            self.cursor_moved.emit(p.x() * MM_PER_PX, p.y() * MM_PER_PX)
+        if obj is self.view.viewport() and ev.type() in (QEvent.Type.Paint,):
+            self.hruler.update(); self.vruler.update()
+        return False
+
+    def set_rulers(self, on):
+        self.hruler.setVisible(on); self.vruler.setVisible(on)
+
+    def set_show_render(self, on):
+        self.show_render = bool(on); self.load(self.side, self.current.el["id"] if self.current else None)
+
+    def set_side(self, side):
+        if side != self.side: self.load(side)
+
+    def select(self, eid):
+        """Выбор объекта по id (список элементов, панель полей): выделяет объект на холсте."""
+        for i in self.items(): i.setSelected(i.el["id"] == eid)
+        return self.current
+
+    def set_prop(self, key, value):
+        """Единый путь записи свойства: значение кладётся в панель свойств и применяется apply_props."""
+        return self.set_props(**{key: value})
+
+    def set_props(self, **values):
+        """Несколько свойств за одно применение (один шаг истории «Отменить»)."""
+        if not self.current: return False
+        m = {"x": self.p_x, "y": self.p_y, "w": self.p_w, "h": self.p_h, "fill": self.p_fill, "stroke": self.p_stroke,
+             "stroke_width": self.p_stroke_w, "color": self.p_color}
+        for key, value in values.items():
+            w = m[key]; (w.setText if isinstance(w, QLineEdit) else w.setValue)(value)
+        return self.apply_props()
 
     @staticmethod
     def _spin(lo, hi):
@@ -249,14 +270,10 @@ class LayoutEditor(QWidget):
     def reload(self):
         self.load(self.side)
 
-    def toggle_side(self):
-        self.side_box.setCurrentIndex(1 if self.side == "front" else 0)
-
     def load(self, side, select_id=None):
         self.side = side; self.current = None
-        self.act_side.setText(f"Сторона: {SIDE_LABELS[side].lower()}")
         self.scene.clear(); self.hint = None
-        if self.show_render.isChecked():
+        if self.show_render:
             pid = self.person_id if self.person_id is not None and self.api.get_person(self.person_id) else None
             self.person_id = pid
             self.canvas_image = self.api.render_card(pid, side)          # рендер Backend
@@ -332,8 +349,8 @@ class LayoutEditor(QWidget):
     VIS = {"field": ("field", "barcode", "qr"), "static": ("text", "image", "barcode", "qr"),
            "hint": ("barcode",), "format": ("barcode",), "show_text": ("barcode",), "quiet": ("barcode",),
            "ec": ("qr",), "qborder": ("qr",), "font": ("text", "field", "barcode"),
-           "color": ("text", "field", "barcode", "qr"), "bg": ("barcode", "qr"), "fill": ("rect", "text", "field"),
-           "stroke": ("rect", "line"), "stroke_w": ("rect", "line"), "radius": ("rect",)}
+           "color": ("text", "field", "barcode", "qr"), "bg": ("barcode", "qr"), "fill": ("rect", "ellipse", "text", "field"),
+           "stroke": ("rect", "ellipse", "line"), "stroke_w": ("rect", "ellipse", "line"), "radius": ("rect",)}
 
     def _show_rows(self, t):
         for key, (lab, w) in self.rows.items():
@@ -348,11 +365,35 @@ class LayoutEditor(QWidget):
         self.p_hint.setText("12 или 13 цифр" if ean else "Значение: поле записи или статический текст")
         self.p_static.setPlaceholderText("12 или 13 цифр" if ean else "")
 
+    def _live_wiring(self):
+        from PyQt6.QtCore import QTimer
+        live = self._live_apply
+        for w in (self.p_x, self.p_y, self.p_w, self.p_h, self.p_z, self.p_font, self.p_stroke_w, self.p_radius,
+                  self.p_quiet, self.p_qborder, self.p_static, self.p_color, self.p_bg, self.p_fill, self.p_stroke):
+            w.editingFinished.connect(live)
+        self.p_field.activated.connect(lambda *_: live()); self.p_field.lineEdit().editingFinished.connect(live)
+        self.p_format.activated.connect(lambda *_: live()); self.p_ec.activated.connect(lambda *_: live())
+        self.p_show_text.toggled.connect(lambda *_: live())
+        self._style_timer = QTimer(self, singleShot=True, interval=700, timeout=live)
+        self.p_style.textChanged.connect(lambda: None if self._loading else self._style_timer.start())
+
+    def _live_apply(self):
+        if self._loading or not self.current: return None
+        return self.apply_props()
+
     def _on_select(self):
+        self._loading = True
+        try: self._on_select_inner()
+        finally: self._loading = False
+
+    def _on_select_inner(self):
         sel = [i for i in self.scene.selectedItems() if isinstance(i, ElementItem)]
         self.current = sel[0] if sel else None
         self.props.setEnabled(bool(sel))
-        for a in (self.act_delete, self.act_up, self.act_down): a.setEnabled(bool(sel))
+        for a in self.selection_actions: a.setEnabled(bool(sel))
+        cur = self.current.el["id"] if sel else None
+        for r in range(self.el_list.count()):
+            it = self.el_list.item(r); it.setSelected(it.data(Qt.ItemDataRole.UserRole) == cur)
         if not sel: return
         e = {**sel[0].el, **sel[0].geometry()}; st = e.get("style") or {}; t = e["type"]
         self.p_type.setText(element_caption(e, getattr(self, "labels", {}))); self._show_rows(t)
@@ -382,8 +423,8 @@ class LayoutEditor(QWidget):
         if t in ("text", "field", "barcode"): style["font_size"] = self.p_font.value()
         if t in ("text", "field", "barcode", "qr"): put("color", self.p_color.text().strip())
         if t in ("barcode", "qr"): put("background", self.p_bg.text().strip())
-        if t in ("rect", "text", "field"): put("fill", self.p_fill.text().strip())
-        if t in ("rect", "line"):
+        if t in ("rect", "ellipse", "text", "field"): put("fill", self.p_fill.text().strip())
+        if t in ("rect", "ellipse", "line"):
             for k in ("border_color", "border_width", "color", "width"): style.pop(k, None)   # старые ключи → новые
             put("stroke", self.p_stroke.text().strip()); style["stroke_width"] = self.p_stroke_w.value()
         if t == "rect": style["radius"] = self.p_radius.value()
@@ -407,6 +448,9 @@ class LayoutEditor(QWidget):
         changes = dict(x=self.p_x.value(), y=self.p_y.value(), w=self.p_w.value(), h=self.p_h.value(),
                        z_order=self.p_z.value(), field_name=self.p_field.currentText() or None,
                        static_value=self.p_static.text() or None, style=style)
+        el = self.current.el
+        changes = {k: v for k, v in changes.items() if el.get(k) != v}
+        if not changes: return True              # ничего не изменилось — шага истории нет
         try:
             self.api.update_element(self.current.el["id"], **changes)
         except Exception as e:  # noqa: BLE001 (IntegrityError из CHECK Backend)
@@ -424,7 +468,7 @@ class LayoutEditor(QWidget):
 
     def _ask_field(self):
         names = [f["name"] for f in self.api.list_fields()] or ["last_name"]
-        name, ok = QInputDialog.getItem(self, "Текст из поля", "Поле записи:", names, 0, True)
+        name, ok = QInputDialog.getItem(self, "Поле", "Поле записи:", names, 0, True)
         if not ok or not name: raise _Cancelled
         return name
 
@@ -518,3 +562,29 @@ class LayoutEditor(QWidget):
 
 class _Cancelled(Exception):
     pass
+
+
+class Ruler(QWidget):
+    """Линейка в мм по сцене холста (1011 px = 85,6 мм)."""
+    T = 20
+
+    def __init__(self, editor, horizontal):
+        super().__init__(editor); self.ed, self.h = editor, horizontal
+        (self.setFixedHeight if horizontal else self.setFixedWidth)(self.T)
+
+    def paintEvent(self, ev):
+        p = QPainter(self); p.fillRect(self.rect(), QColor("#F1F3F2")); p.setPen(QColor("#555555"))
+        f = QFont(); f.setPixelSize(9); p.setFont(f)
+        view = self.ed.view
+        o = view.mapFromScene(0, 0); e = view.mapFromScene(CARD_W_PX, CARD_H_PX)
+        px_per_mm = ((e.x() - o.x()) / 85.6) if self.h else ((e.y() - o.y()) / (CARD_H_PX * MM_PER_PX))
+        if px_per_mm <= 0: return
+        base = o.x() if self.h else o.y(); length = self.width() if self.h else self.height()
+        for mm in range(int(-base / px_per_mm) - 1, int((length - base) / px_per_mm) + 2):
+            v = int(base + mm * px_per_mm); t = 9 if mm % 10 == 0 else (6 if mm % 5 == 0 else 3)
+            if self.h:
+                p.drawLine(v, self.T - t, v, self.T)
+                if mm % 10 == 0: p.drawText(v + 2, 9, str(mm))
+            else:
+                p.drawLine(self.T - t, v, self.T, v)
+                if mm % 10 == 0: p.drawText(1, v + 10, str(mm))

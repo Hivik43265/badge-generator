@@ -1,7 +1,7 @@
 """Таблица записей: колонки из person_fields + чекбокс «Печать» (print_mark)."""
 import os
 from datetime import datetime
-from PyQt6.QtCore import Qt, QAbstractTableModel, QModelIndex, QSortFilterProxyModel, QSize
+from PyQt6.QtCore import pyqtSignal, Qt, QAbstractTableModel, QModelIndex, QSortFilterProxyModel, QSize
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QComboBox,
                              QTableView, QAbstractItemView, QMessageBox, QHeaderView, QLabel)
@@ -39,6 +39,7 @@ THUMB = 36
 
 
 class PersonsModel(QAbstractTableModel):
+    queue_toggle_requested = pyqtSignal(int)
     """Колонки: Печать | [Логотип] | [Фото] | [ФИО] | поля в предпочтительном порядке, затем прочие | Напечатано."""
 
     def __init__(self, api: BackendAPI, parent=None):
@@ -145,11 +146,8 @@ class PersonsModel(QAbstractTableModel):
 
     def setData(self, index, value, role=Qt.ItemDataRole.EditRole):
         if index.column() == 0 and role == Qt.ItemDataRole.CheckStateRole:
-            p = self.rows[index.row()]
-            mark = Qt.CheckState(value) == Qt.CheckState.Checked
-            self.api.set_print_mark([p["id"]], mark)
-            p["print_mark"] = int(mark)
-            self.dataChanged.emit(index, index)
+            # D13: своего пути нет — запрос уходит в act_queue_toggle (главное окно)
+            self.queue_toggle_requested.emit(self.rows[index.row()]["id"])
             return True
         return False
 
@@ -166,6 +164,9 @@ class RecordsFilter(QSortFilterProxyModel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.search, self.col, self.col_text, self.printed = "", -1, "", None   # printed: None | True | False
+        self.ids = None        # результат query_persons (Backend) или None — без отбора
+
+    def set_ids(self, ids): self.ids = None if ids is None else set(ids); self.invalidateFilter()
 
     def set_search(self, t): self.search = (t or "").casefold(); self.invalidateFilter()
     def set_column_filter(self, col, t): self.col, self.col_text = col, (t or "").casefold(); self.invalidateFilter()
@@ -174,6 +175,7 @@ class RecordsFilter(QSortFilterProxyModel):
     def filterAcceptsRow(self, row, parent):
         m = self.sourceModel(); p = m.rows[row]
         if self.printed is not None and bool(p.get("printed_at")) != self.printed: return False
+        if self.ids is not None and p["id"] not in self.ids: return False
         if self.col_text and 0 <= self.col < m.columnCount() and self.col_text not in m.text(row, self.col).casefold():
             return False
         if self.search and not any(self.search in m.text(row, c).casefold() for c in range(m.columnCount())):
@@ -181,7 +183,71 @@ class RecordsFilter(QSortFilterProxyModel):
         return True
 
 
-PRINTED_FILTERS = [(None, "Все записи"), (True, "Напечатано"), (False, "Не напечатано")]
+PRINTED_FILTERS = [(None, "Все карты"), (True, "Напечатанные"), (False, "Ненапечатанные")]
+CONDITIONS = [("eq", "равно"), ("ne", "не равно"), ("contains", "содержит"), ("startswith", "начинается с"),
+              ("empty", "пусто"), ("not_empty", "не пусто")]
+confirm_delete_hook = None    # тесты: confirm_delete_hook(parent, n) -> bool
+
+
+class FilterBlock(QWidget):
+    """Блок фильтра под лентой: поле / условие / И-ИЛИ / значение / «Добавить»; выражение / «Применить».
+    Выражение — данные {"join", "terms"} для Backend query_persons; SQL в UI нет."""
+
+    def __init__(self, records, parent=None):
+        super().__init__(parent)
+        from PyQt6.QtWidgets import QGridLayout
+        self.records, self.terms, self.join_value = records, [], "and"
+        self.field, self.cond, self.join = QComboBox(), QComboBox(), QComboBox()
+        for c in (self.field, self.cond, self.join):
+            c.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon); c.setMinimumContentsLength(6)
+        for k, t in CONDITIONS: self.cond.addItem(t, k)
+        self.join.addItem("И", "and"); self.join.addItem("ИЛИ", "or")
+        self.value = QLineEdit(placeholderText="Значение"); self.value.returnPressed.connect(lambda: self.records.apply_filter())
+        self.add_btn = QPushButton("Добавить"); self.add_btn.clicked.connect(self.add_term)
+        self.expr = QLineEdit(); self.expr.setReadOnly(True); self.expr.setPlaceholderText("Условия не заданы — показаны все записи")
+        self.clear_btn = QPushButton("Сбросить"); self.clear_btn.clicked.connect(self.clear)
+        g = QGridLayout(self); g.setContentsMargins(0, 0, 0, 0); g.setHorizontalSpacing(4); g.setVerticalSpacing(2)
+        g.addWidget(QLabel("Поле"), 0, 0); g.addWidget(self.field, 0, 1); g.addWidget(QLabel("Условие"), 0, 2)
+        g.addWidget(self.cond, 0, 3); g.addWidget(self.join, 0, 4); g.addWidget(self.value, 0, 5); g.addWidget(self.add_btn, 0, 6)
+        g.addWidget(QLabel("Выражение"), 1, 0); g.addWidget(self.expr, 1, 1, 1, 5); g.addWidget(self.clear_btn, 1, 6)
+        g.setColumnStretch(5, 1)
+        self.grid = g
+        self.apply_button = None  # кнопка «Применить» — QAction act_filter_apply, ставится главным окном
+
+    def set_apply_action(self, act):
+        from PyQt6.QtWidgets import QToolButton
+        b = QToolButton(); b.setDefaultAction(act); b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        b.setAutoRaise(False); b.setMinimumWidth(96)
+        b.setStyleSheet("QToolButton{border:1px solid #2E7D6B; border-radius:4px; background:#2E7D6B; color:white;"
+                        " padding:4px 12px; font-weight:600;} QToolButton:hover{background:#3A9480;}")
+        self.grid.addWidget(b, 0, 7, 2, 1); self.apply_button = b
+        self.value.returnPressed.disconnect(); self.value.returnPressed.connect(act.trigger)
+
+    def set_fields(self, fields):
+        cur = self.field.currentData(); self.field.clear()
+        for f in fields: self.field.addItem(f.get("label") or f["name"], f["name"])
+        i = self.field.findData(cur); self.field.setCurrentIndex(max(i, 0))
+
+    def add_term(self, field=None, op=None, value=None, join=None):
+        field = field or self.field.currentData(); op = op or self.cond.currentData()
+        if not field: return None
+        value = self.value.text() if value is None else value
+        t = {"field": field, "op": op}
+        if op not in ("empty", "not_empty"): t["value"] = value
+        if self.terms: self.join_value = join or self.join.currentData()
+        self.terms.append(t); self.value.clear(); self._show(); return self.where()
+
+    def where(self):
+        return {"join": self.join_value, "terms": list(self.terms)} if self.terms else None
+
+    def _show(self):
+        names = {self.field.itemData(i): self.field.itemText(i) for i in range(self.field.count())}
+        ops = dict(CONDITIONS); j = " И " if self.join_value == "and" else " ИЛИ "
+        self.expr.setText(j.join(f"[{names.get(t['field'], t['field'])}] {ops[t['op']]}" + (f" «{t['value']}»" if "value" in t else "")
+                                 for t in self.terms))
+
+    def clear(self):
+        self.terms = []; self.join_value = "and"; self._show(); self.records.apply_filter()
 
 
 class RecordsWidget(QWidget):
@@ -193,20 +259,9 @@ class RecordsWidget(QWidget):
         self.proxy.setSourceModel(self.model)
         self.proxy.setSortRole(Qt.ItemDataRole.UserRole)
 
-        # строка фильтров: поиск + фильтр по колонке + напечатано/не напечатано
-        self.search = QLineEdit(placeholderText="Поиск по всем полям…")
-        self.search.textChanged.connect(self.proxy.set_search)
-        self.col_box = QComboBox(); self.col_value = QLineEdit(placeholderText="Значение в колонке…")
-        self.col_box.currentIndexChanged.connect(self._apply_col_filter); self.col_value.textChanged.connect(self._apply_col_filter)
-        self.printed_box = QComboBox()
-        for v, t in PRINTED_FILTERS: self.printed_box.addItem(t, v)
-        self.printed_box.currentIndexChanged.connect(lambda _: self.proxy.set_printed(self.printed_box.currentData()))
-        flt = QHBoxLayout(); flt.addWidget(self.search, 2); flt.addWidget(QLabel("Колонка:")); flt.addWidget(self.col_box)
-        flt.addWidget(self.col_value, 1); flt.addWidget(self.printed_box)
-        top = QHBoxLayout()
-        for text, slot in (("Добавить", self.add), ("Изменить", self.edit), ("Удалить", self.delete),
-                           ("Отметить все", lambda: self._mark_all(True)), ("Снять отметки", lambda: self._mark_all(False))):
-            b = QPushButton(text); b.clicked.connect(slot); top.addWidget(b)
+        # блок фильтра (выражение → Backend query_persons); «Дисплей» — set_printed_filter (лента)
+        self.filter = FilterBlock(self)
+        self.printed_filter = None
         self.view = QTableView(); self.view.setModel(self.proxy); self.view.setSortingEnabled(True)
         self.view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -214,32 +269,33 @@ class RecordsWidget(QWidget):
         self.view.horizontalHeader().setStretchLastSection(True)
         self.model.modelReset.connect(lambda: self.view.resizeColumnsToContents())
         self.view.doubleClicked.connect(lambda _: self.edit())
+        self.view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.counter = QLabel()
         self.model.modelReset.connect(self._count); self.model.dataChanged.connect(self._count)
         self.view.verticalHeader().setDefaultSectionSize(THUMB + 6)
-        self.model.modelReset.connect(self._fill_col_box)
+        self.model.modelReset.connect(lambda: self.filter.set_fields(self.api.list_fields()))
         lay = QVBoxLayout(self); lay.setContentsMargins(4, 4, 4, 4)
-        lay.addLayout(flt); lay.addWidget(self.view); lay.addLayout(top); lay.addWidget(self.counter)
-        self._fill_col_box(); self._count()
-
-    def _fill_col_box(self):
-        cur = self.col_box.currentText()
-        self.col_box.blockSignals(True); self.col_box.clear()
-        for c in range(1, self.model.columnCount()):
-            if self.model.col_kind(c) not in ("photo", "logo"):
-                self.col_box.addItem(self.model.headerData(c, Qt.Orientation.Horizontal), c)
-        i = self.col_box.findText(cur); self.col_box.setCurrentIndex(max(i, 0)); self.col_box.blockSignals(False)
-        self._apply_col_filter()
-
-    def _apply_col_filter(self, *_):
-        self.proxy.set_column_filter(self.col_box.currentData() if self.col_box.count() else -1, self.col_value.text())
+        lay.addWidget(self.view); lay.addWidget(self.counter)
+        self.filter.set_fields(self.api.list_fields()); self._count()
 
     def set_printed_filter(self, value):
-        self.printed_box.setCurrentIndex(self.printed_box.findData(value) if value is not None else 0)
+        """«Дисплей»: None — все карты, True — напечатанные, False — ненапечатанные (только отображение)."""
+        self.printed_filter = value; self.proxy.set_printed(value)
+        return dict(PRINTED_FILTERS)[value]
 
-    def cycle_printed_filter(self):
-        self.printed_box.setCurrentIndex((self.printed_box.currentIndex() + 1) % self.printed_box.count())
-        return self.printed_box.currentText()
+    def apply_filter(self):
+        """Применить выражение блока фильтра через Backend query_persons (без SQL в UI)."""
+        where = self.filter.where()
+        if where is None:
+            self.proxy.set_ids(None); return None
+        try:
+            ids = [p["id"] for p in self.api.query_persons(where)]
+        except ValueError as e:
+            QMessageBox.warning(self, "Фильтр", f"Некорректный фильтр: {e}"); return None
+        self.proxy.set_ids(ids); return ids
+
+    def visible_ids(self):
+        return [self.model.person_id(self.proxy.mapToSource(self.proxy.index(r, 0)).row()) for r in range(self.proxy.rowCount())]
 
     def _count(self, *a):
         n = len(self.model.rows); m = sum(p["print_mark"] for p in self.model.rows)
@@ -265,13 +321,14 @@ class RecordsWidget(QWidget):
             self.model.reload()
 
     def delete(self):
+        """Удаление карт — только после подтверждения. Возвращает число удалённых."""
         ids = self.selected_ids()
-        if ids and QMessageBox.question(self, "Удаление", f"Удалить записей: {len(ids)}?") \
-                == QMessageBox.StandardButton.Yes:
-            for pid in ids:
-                self.api.delete_person(pid)
-            self.model.reload()
-
-    def _mark_all(self, value):
-        ids = self.selected_ids() or [p["id"] for p in self.model.rows]
-        self.api.set_print_mark(ids, value); self.model.reload()
+        if not ids: return 0
+        q = f"Удалить карт: {len(ids)}? Действие нельзя отменить."
+        if confirm_delete_hook is not None: yes = bool(confirm_delete_hook(self, len(ids)))
+        else:
+            yes = QMessageBox.question(self, "Удаление карт", q, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                       QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes
+        if not yes: return 0
+        n = self.api.delete_persons(ids)
+        self.model.reload(); return n
