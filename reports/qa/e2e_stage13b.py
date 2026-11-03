@@ -100,6 +100,32 @@ for ans, lbl in ((None, "отмена"), (False, "только существу�
     dd.done(0); a2.close()
 dialogs.confirm_fields_hook = None
 
+# ---- D36 (QA): один столбец фото, превью через resolve_photo_path, photo_path без image-поля ----
+import inspect
+for with_img in (False, True):
+    tag = "с image-полем" if with_img else "без image-поля"
+    a3 = BackendAPI(TMP / f"d36_{int(with_img)}.db", TMP); a3.upsert_field("last_name", "Фамилия", 0, data_type="text")
+    if with_img: a3.upsert_field("foto", "Фото", 1, data_type="image")
+    d = ImportDialog(a3, w); d.set_file(str(xp)); d.photo_dir.setText(str(PH)); d._show_row(0); app.processEvents()
+    labs = [d.table.item(r, 0).text() for r in range(d.table.rowCount())]
+    keys = d._keys(); img_rows = [k for k, _l, t in d.fields if t == dialogs.FIELD_TYPE_NAMES["image"]]
+    chk(f"D36 [{tag}] нет строки «Фото записи (photo_path)»", not any("photo_path" in l for l in labs) and "photo_path" not in keys, labs)
+    chk(f"D36 [{tag}] строк фото в сопоставлении ≤1 (image-поле)", len(img_rows) == (1 if with_img else 0), img_rows)
+    hdr = [d.preview.horizontalHeaderItem(j).text() for j in range(d.preview.columnCount())]
+    chk(f"D36 [{tag}] в превью один столбец «Фото»", sum("фото" in h.lower() for h in hdr) == 1, hdr)
+    pm = d.photo.pixmap(); chk(f"D36 [{tag}] превью фото показано", pm is not None and not pm.isNull(), d.photo.text())
+    d.run(); app.processEvents(); p0 = a3.list_persons()[0]
+    rp = a3.resolve_photo_path(p0, "foto" if with_img else None, base_dir=PH)
+    if with_img: chk(f"D36 [{tag}] импорт: фото в image-поле, photo_path пуст", p0["fields"].get("foto") and not p0.get("photo_path"), (p0["fields"], p0.get("photo_path")))
+    else: chk(f"D36 [{tag}] импорт: фото в photo_path", bool(p0.get("photo_path")), p0.get("photo_path"))
+    chk(f"D36 [{tag}] resolve_photo_path(base=папка фото) → существующий файл", rp is not None and pathlib.Path(rp).is_file(), rp)
+    d.done(0); a3.close()
+chk("D36 BackendAPI.import_file удалён", not hasattr(BackendAPI, "import_file"))
+callers = [f"{f.relative_to(ROOT)}" for f in list((ROOT / "ui").glob("*.py")) + [ROOT / "main.py"] if re.search(r"\bimport_file\(", f.read_text(encoding="utf-8"))]
+chk("D36 import_file нигде в ui/ и main.py не вызывается", not callers, callers)
+srcd = inspect.getsource(ImportDialog._show_row)
+chk("D36 _show_row берёт путь через api.resolve_photo_path, без своей сборки base/p", "resolve_photo_path" in srcd and not re.search(r"pathlib\.Path\(b\)\s*/", srcd), "")
+
 # Дубли
 acts = [a for a in w.findChildren(QAction) if re.search(r"(?i)экспорт|импорт|менеджер полей", a.text())]
 chk("Дубли: QAction импорт/экспорт/менеджер полей по одному", sorted(a.objectName() for a in acts).count("act_export") == 1 and len({a.text() for a in acts}) == len(acts), [(a.objectName(), a.text()) for a in acts])
