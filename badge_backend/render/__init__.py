@@ -222,6 +222,18 @@ def _box(img, el, st, fill_default=None):
                         outline=bc if bw else None, width=bw or 1)
     img.alpha_composite(layer)
 
+def _ellipse(img, el, st):
+    """Эллипс, вписанный в рамку. style как у rect: fill, stroke (= border_color), stroke_width (= border_width); radius игнорируется."""
+    fill = _color(st.get("fill"))
+    bc = _color(st.get("stroke", st.get("border_color")))
+    bw = round(_px(st, "stroke_width") or _px(st, "border_width"))
+    if bc and not bw and ("stroke" in st) and st.get("stroke_width") is None: bw = 1
+    if fill is None and not (bc and bw): return
+    x, y, w, h = el["x"], el["y"], el["w"], el["h"]
+    layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    ImageDraw.Draw(layer).ellipse((x, y, x + w - 1, y + h - 1), fill=fill, outline=bc if bw else None, width=bw or 1)
+    img.alpha_composite(layer)
+
 def _paste_clipped(img, el, tile, st):
     x, y, w, h = el["x"], el["y"], el["w"], el["h"]
     r = round(_px(st, "radius"))
@@ -231,7 +243,12 @@ def _paste_clipped(img, el, tile, st):
         from PIL import ImageChops; mask = ImageChops.multiply(mask, m)
     img.paste(tile.convert("RGB"), (x, y), mask)
 
-def _field_value(person, name):
+def _field_value(person, name, default=None):
+    """Значение поля записи; если пусто/None — default (person_fields.default_value, приходит в el['default_value'])."""
+    v = _raw_field_value(person, name)
+    return default if v in (None, "") and default not in (None, "") else v
+
+def _raw_field_value(person, name):
     if not person: return None
     f = person.get("fields") if isinstance(person.get("fields"), dict) and person.get("fields_json") is None \
         else _json(person.get("fields_json"))
@@ -269,9 +286,11 @@ def render_card(person, elements, side: str = "front", background=None, base_dir
         try:
             if t == "rect":
                 _box(img, el, st, fill_default=None)
+            elif t == "ellipse":
+                _ellipse(img, el, st)
             elif t in ("text", "field"):
                 _box(img, el, st)
-                val = el.get("static_value") if t == "text" else _field_value(person, el.get("field_name"))
+                val = el.get("static_value") if t == "text" else _field_value(person, el.get("field_name"), el.get("default_value"))
                 _draw_text(img, el, val, st)
             elif t == "photo":
                 src = _open(_resolve(person.get("photo_path"), base_dir)) if person.get("photo_path") else None
@@ -290,14 +309,14 @@ def render_card(person, elements, side: str = "front", background=None, base_dir
                     _paste_clipped(img, el, tile, st)
             elif t == "barcode":
                 from .barcode import render_barcode
-                val = el.get("static_value") if not el.get("field_name") else _field_value(person, el["field_name"])
+                val = el.get("static_value") if not el.get("field_name") else _field_value(person, el["field_name"], el.get("default_value"))
                 if val in (None, "") and el.get("field_name") and el.get("static_value"): val = el["static_value"]
                 tile = render_barcode(el["w"], el["h"], val, st, _color(st.get("color"), (0, 0, 0, 255)),
                                       _color(st.get("background", st.get("fill", "#FFFFFF"))), el.get("id"))
                 img.paste(tile, (el["x"], el["y"]), tile)
             elif t == "qr":
                 from .qr import render_qr
-                val = _field_value(person, el["field_name"]) if el.get("field_name") else el.get("static_value")
+                val = _field_value(person, el["field_name"], el.get("default_value")) if el.get("field_name") else el.get("static_value")
                 if val in (None, "") and el.get("field_name") and el.get("static_value"): val = el["static_value"]
                 tile = render_qr(el["w"], el["h"], val, st, _color(st.get("color"), (0, 0, 0, 255)),
                                  _color(st.get("background", st.get("fill", "#FFFFFF"))), el.get("id"))
@@ -315,7 +334,9 @@ def render_card(person, elements, side: str = "front", background=None, base_dir
     return img.convert("RGB")
 
 def load_elements(con, side=None):
-    q = "SELECT * FROM template_elements" + (" WHERE side=?" if side else "") + " ORDER BY z_order, id"
+    """Элементы стороны + default_value привязанного поля (person_fields.default_value) для подстановки в рендер."""
+    q = ("SELECT e.*, f.default_value AS default_value FROM template_elements e "
+         "LEFT JOIN person_fields f ON f.name = e.field_name" + (" WHERE e.side=?" if side else "") + " ORDER BY e.z_order, e.id")
     return [dict(r) for r in con.execute(q, (side,) if side else ())]
 
 def load_background(con, side):

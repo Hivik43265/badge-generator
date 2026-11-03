@@ -35,4 +35,4 @@ def test_background_and_fields(con):
     assert api.get_background(con, "front") == {"side": "front", "image_path": "bg.png", "color": "#00FF00"}
     assert api.get_background(con, "back") is None
     api.upsert_field(con, "last_name", "Фамилия", 0); api.upsert_field(con, "last_name", "Фам.", 1)
-    assert api.list_fields(con) == [{"name": "last_name", "label": "Фам.", "sort_order": 1}]
+    assert api.list_fields(con) == [{"name": "last_name", "label": "Фам.", "sort_order": 1, "default_value": None}]

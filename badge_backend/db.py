@@ -69,7 +69,23 @@ def _v3_line(con):
     con.execute("DROP TABLE _te_old")
     con.execute("CREATE INDEX IF NOT EXISTS idx_te_side_z ON template_elements(side, z_order)")
 
-MIGRATIONS = [SCHEMA, _v2_printed_at, _v3_line]   # индекс + 1 = user_version; str — SQL-скрипт, callable — шаг на Python
+_TE_V4 = _TE_V3.replace("'barcode','line')", "'barcode','line','ellipse')")
+
+def _v4_ellipse_defaults(con):
+    """v4: тип 'ellipse' в CHECK template_elements (пересборка, данные и id сохраняются)
+    + person_fields.default_value TEXT NULL. Идемпотентно."""
+    sql = con.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='template_elements'").fetchone()[0]
+    if "'ellipse'" not in sql:
+        cols = "id,type,x,y,w,h,field_name,static_value,style_json,side,z_order"
+        con.execute("ALTER TABLE template_elements RENAME TO _te_old")
+        con.execute(_TE_V4)
+        con.execute(f"INSERT INTO template_elements({cols}) SELECT {cols} FROM _te_old")
+        con.execute("DROP TABLE _te_old")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_te_side_z ON template_elements(side, z_order)")
+    if "default_value" not in _cols(con, "person_fields"):
+        con.execute("ALTER TABLE person_fields ADD COLUMN default_value TEXT NULL")
+
+MIGRATIONS = [SCHEMA, _v2_printed_at, _v3_line, _v4_ellipse_defaults]   # индекс + 1 = user_version; str — SQL-скрипт, callable — шаг на Python
 LATEST = len(MIGRATIONS)
 
 def now_iso() -> str:

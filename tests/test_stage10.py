@@ -185,14 +185,14 @@ def test_migration_v2_to_v3_with_data(tmp_path):
         raw.execute("INSERT INTO template_elements(type,x,y,w,h) VALUES ('line',0,0,5,5)")
     before = raw.execute("SELECT * FROM template_elements ORDER BY id").fetchall(); raw.close()
     c = api.connect(p)
-    assert api.get_schema_version(c) == 3
+    assert api.get_schema_version(c) == 4  # v3→…→LATEST
     assert [tuple(r) for r in c.execute("SELECT * FROM template_elements ORDER BY id")] == before
     idx = {r[1] for r in c.execute("PRAGMA index_list(template_elements)")}
     assert "idx_te_side_z" in idx
     assert c.execute("SELECT count(*) FROM sqlite_master WHERE name='_te_old'").fetchone()[0] == 0
     assert api.create_element(c, "line", 0, 0, 5, -5) > 42      # новые id после старых
     # повтор: version откатили — шаг идемпотентен, данные на месте
-    c.execute("PRAGMA user_version=2"); assert db.migrate(c) == 3 and db.migrate(c) == 3
+    c.execute("PRAGMA user_version=2"); assert db.migrate(c) == db.LATEST and db.migrate(c) == db.LATEST
     assert c.execute("SELECT count(*) FROM template_elements").fetchone()[0] == 3
 
 def test_legacy_v2_helper(tmp_path):
