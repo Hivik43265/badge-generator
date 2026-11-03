@@ -403,3 +403,15 @@ BackendAPI.discard_photo = _bapi_discard_photo
 BackendAPI.get_photo_edit_defaults = _bapi_get_photo_edit_defaults
 BackendAPI.set_photo_edit_defaults = _bapi_set_photo_edit_defaults
 BackendAPI.apply_and_save_photo = _bapi_apply_and_save_photo
+
+
+def _selftest_face_crop(aspect=0.778):
+    """D47 (приватно, для --self-test): ассет Backend badge_backend/assets/selftest_face.jpg рядом с badge_backend.__file__
+    (работает и в PyInstaller: <_MEIPASS>/badge_backend/…) → load_photo_for_edit → detect_face_crop(img, aspect).
+    → (crop | None, путь). Любые ошибки (нет ассета/функции, RuntimeError без каскада) пробрасываются вызывающему."""
+    import badge_backend
+    path = Path(badge_backend.__file__).resolve().parent / "assets" / "selftest_face.jpg"
+    if not path.is_file(): raise FileNotFoundError(f"нет ассета самотеста: {path}")
+    load, det = getattr(_api, "load_photo_for_edit", None), getattr(_api, "detect_face_crop", None)
+    if not callable(load) or not callable(det): raise LookupError("в Backend нет load_photo_for_edit/detect_face_crop")
+    return det(load(str(path)), aspect), str(path)
