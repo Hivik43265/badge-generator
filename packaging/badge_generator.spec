@@ -41,10 +41,13 @@ import glob, sys
 REQUIRED_QT = [   # (подкаталог Qt6, шаблон файла)
     ("plugins/multimedia", "ffmpegmediaplugin.dll"), ("plugins/multimedia", "windowsmediaplugin.dll"),
     ("plugins/platforms", "qwindows.dll"), ("plugins/imageformats", "qjpeg.dll"),
-    ("plugins/printsupport", "windowsprintersupport.dll"),
+    ("bin", "Qt6PrintSupport.dll"),   # D49: PyQt6-Qt6 6.12 не поставляет plugins/printsupport
     ("bin", "Qt6Multimedia.dll"), ("bin", "Qt6MultimediaWidgets.dll"),
     ("bin", "avcodec*.dll"), ("bin", "avformat*.dll"), ("bin", "avutil*.dll"),
     ("bin", "swresample*.dll"), ("bin", "swscale*.dll"),
+]
+OPTIONAL_QT = [   # D49: есть — кладём; нет — не ошибка (в отчёте OPTIONAL-MISSING, CI не падает)
+    ("plugins/printsupport", "windowsprintersupport.dll"),
 ]
 qt_binaries, _qt_report = [], []
 try:
@@ -56,6 +59,10 @@ for sub, pat in REQUIRED_QT:
     hits = sorted(glob.glob(os.path.join(QT6, *sub.split("/"), pat))) if QT6 else []
     for h in hits: qt_binaries.append((h, "PyQt6/Qt6/" + sub))
     _qt_report.append(("FOUND" if hits else "MISSING", f"{sub}/{pat}", [os.path.basename(h) for h in hits]))
+for sub, pat in OPTIONAL_QT:
+    hits = sorted(glob.glob(os.path.join(QT6, *sub.split("/"), pat))) if QT6 else []
+    for h in hits: qt_binaries.append((h, "PyQt6/Qt6/" + sub))
+    _qt_report.append(("OPTIONAL", f"{sub}/{pat}", [os.path.basename(h) for h in hits]))
 _missing = [r[1] for r in _qt_report if r[0] == "MISSING"]
 if _missing:
     print("WARNING: Qt files not found in " + str(QT6) + ": " + ", ".join(_missing), file=sys.stderr)
@@ -90,7 +97,8 @@ _names = {os.path.basename(str(t[0])).lower() for t in a_app.binaries}   # TOC: 
 with open(os.path.join(_dist, "BadgeGenerator.bundle.txt"), "w", encoding="utf-8") as f:
     for st, pat, files in _qt_report:
         inb = [n for n in files if n.lower() in _names]
-        f.write(f"{'FOUND' if inb else 'MISSING'}\t{pat}\t{','.join(inb)}\n")
+        if st == "OPTIONAL": f.write(f"{'OPTIONAL-FOUND' if inb else 'OPTIONAL-MISSING'}\t{pat}\t{','.join(inb)}\n")
+        else: f.write(f"{'FOUND' if inb else 'MISSING'}\t{pat}\t{','.join(inb)}\n")
     _casc_in = any(str(t[0]).replace("\\", "/").endswith("cv2/data/haarcascade_frontalface_default.xml") for t in a_app.datas)
     f.write(f"{'FOUND' if _casc_in else 'MISSING'}\tcv2/data/haarcascade_frontalface_default.xml\t\n")
     _cv2_in = [os.path.basename(str(t[0])) for t in a_app.binaries
