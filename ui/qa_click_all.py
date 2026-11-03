@@ -185,7 +185,15 @@ def scenario(tmp, chk, out, EXC):
             pe.editor_hook = _drive
             try: QTest.mouseDClick(pb.still, Qt.MouseButton.LeftButton); spin(50)
             finally: pe.editor_hook = None
-            val = pb.text(); pb.stop(); f.reject(); spin(30); a14.close()
+            val = pb.text(); fv = val if f.save() is not False else None; spin(30); pb.stop()
+            # существующая запись: «Применить», затем «Отмена» формы → значение поля в БД не меняется
+            pid = a14.list_persons()[-1]["id"]; db0 = a14.get_person(pid)["fields"].get("foto"); r2 = {}
+            f2 = RecordForm(a14, pid, w2); f2.show(); spin(30); pb2 = f2.edits["foto"]
+            pe.editor_hook = lambda d: (r2.update(ok=d.apply(), path=d.result_path), d.isVisible() and d.reject())
+            try: QTest.mouseDClick(pb2.still, Qt.MouseButton.LeftButton); spin(50)
+            finally: pe.editor_hook = None
+            mid = a14.get_person(pid)["fields"].get("foto"); form2 = pb2.text(); pb2.stop(); f2.reject(); spin(30)
+            db1 = a14.get_person(pid)["fields"].get("foto"); a14.close()
             chk("DLG «Редактировать изображение» по двойному клику на фото формы записи (не открывается сам после файла)",
                 not auto and seen and seen[0][:2] == ("Редактировать изображение", True) and pb.act_edit in pb.still.actions() and len(EXC) == n,
                 seen or "не открылся")
@@ -195,7 +203,9 @@ def scenario(tmp, chk, out, EXC):
                 chk("DLG Редактор фото: «Автоэффект» в параметрах", res.get("auto"), res)
                 chk("DLG Редактор фото: умолчания проекта сохраняются и восстанавливаются (Backend)", res.get("defaults"), res)
                 chk("DLG Редактор фото: «Применить» → новый photos/… в поле image", res.get("apply") is True and str(res.get("path", "")).startswith("photos/")
-                    and val == res["path"] and (tmp / val).is_file() and ph.is_file(), res)
+                    and val == res["path"] and (tmp / val).is_file() and ph.is_file() and db0 == fv, res)
+                chk("DLG Редактор фото: «Применить» + «Отмена» формы существующей записи — значение в БД не меняется",
+                    r2.get("ok") is True and form2 == r2.get("path") != db0 and mid == db0 == db1, {**r2, "db0": db0, "db1": db1})
         except Exception:  # noqa: BLE001
             chk("DLG Импорт/экспорт этапа 13 без исключений", False, traceback.format_exc()[-800:])
         finally:
