@@ -881,6 +881,14 @@ if _ba14.photo_edit_available():
     rf14b.reject(); assert api14.get_person(pid14)["fields"]["foto"] == old and (tmp / old).is_file()
     # D43: «Отмена» формы → discard_photo для каждого файла редактора этой сессии (UI сам не удаляет)
     if _REAL_SESSION: assert rf14b.discarded == [ed14c.result_path] and not (tmp / ed14c.result_path).is_file(), rf14b.discarded
+    # «Из файла…» → PhotoSession.save_photo: копия учитывается и удаляется на «Отмена», исходник цел (и вне, и внутри photos/)
+    if _REAL_SESSION:
+        (tmp / "photos").mkdir(exist_ok=True); shutil.copy(tmp / "p14.jpg", tmp / "photos" / "user_src14.jpg")
+        for srcf in (tmp / "p14.jpg", tmp / "photos" / "user_src14.jpg"):
+            rff = RecordForm(api14, pid14, w); ief = rff.edits["foto"]; assert ief.from_file(str(srcf))
+            cp = ief.text(); assert cp.startswith("photos/") and (tmp / cp).resolve() != srcf.resolve() and (tmp / cp).is_file()
+            assert rff.photo_session.created == [cp], rff.photo_session.created
+            rff.reject(); assert srcf.is_file() and not (tmp / cp).is_file() and rff.discarded == [cp], (srcf, cp, rff.discarded)
     # «Сохранить» → PhotoSession.commit(): файл, на который ссылается запись, остаётся
     rf14c = RecordForm(api14, pid14, w); ie14c = rf14c.edits["foto"]; QTest.mouseDClick(ie14c.still, Qt.MouseButton.LeftButton); spin(30)
     ed14d = got14[-1]; assert ed14d.session is rf14c.photo_session and ed14d.apply() is True; rf14c.save()
