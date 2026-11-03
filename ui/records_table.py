@@ -5,7 +5,7 @@ from PyQt6.QtCore import pyqtSignal, Qt, QAbstractTableModel, QModelIndex, QSort
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QComboBox,
                              QTableView, QAbstractItemView, QMessageBox, QHeaderView, QLabel)
-from .backend_api import BackendAPI
+from .backend_api import BackendAPI, display_value, field_type
 from .record_form import RecordForm
 
 
@@ -53,6 +53,7 @@ class PersonsModel(QAbstractTableModel):
         self._thumbs.clear()
         self.template_logo = next((e.get("static_value") for e in sorted(self.api.list_elements(), key=lambda e: e["side"] != "front")
                                    if e["type"] == "image" and e.get("static_value")), None)
+        self.types = {f["name"]: field_type(f) for f in self.api.list_fields()}
         self.cols = self._build_cols()
         self.endResetModel()
 
@@ -99,7 +100,7 @@ class PersonsModel(QAbstractTableModel):
 
     def text(self, row, c):
         p = self.rows[row]; kind, _l, n = self.cols[c]
-        if kind == "field": return str(p["fields"].get(n, "") or "")
+        if kind == "field": return display_value(self.types.get(n), p["fields"].get(n, ""))
         if kind == "printed": return format_printed_at(p.get("printed_at"))
         if kind == "photo": return os.path.basename(p.get("photo_path") or "")
         if kind == "logo": return os.path.basename(p["fields"].get("logo") or self.template_logo or "")

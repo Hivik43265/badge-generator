@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLi
                              QFileDialog, QTableWidget, QTableWidgetItem, QComboBox, QPlainTextEdit,
                              QDialogButtonBox, QRadioButton, QCheckBox, QLabel, QHeaderView,
                              QButtonGroup, QMessageBox, QProgressDialog, QApplication)
-from .backend_api import (BackendAPI, map_headers, LABELS, MissingPhotosError,
+from .backend_api import (person_caption, BackendAPI, LABELS, MissingPhotosError,
                           export_png_from_snapshot, export_pdf_from_snapshot, print_snapshot)
 
 AUTO, SKIP = "__auto__", "__skip__"
@@ -36,7 +36,7 @@ def confirm_missing_photos(parent, api: BackendAPI, ids):
     names = []
     for pid in miss:
         p = api.get_person(pid) or {"fields": {}}
-        f = p["fields"]; names.append(f"#{pid} {f.get('last_name', '')} {f.get('first_name', '')}".strip())
+        names.append(person_caption(api, p).strip())
     if confirm_hook is not None:
         return bool(confirm_hook(parent, miss, names)), True
     text = ("У следующих записей нет фото или файл недоступен — на карточке будет плейсхолдер «нет фото»:\n\n"
@@ -66,8 +66,16 @@ class ImportDialog(QDialog):
         self.log = QPlainTextEdit(readOnly=True); self.log.setPlaceholderText("Здесь будет отчёт об импорте")
         self.btn = QPushButton("Импортировать"); self.btn.clicked.connect(self.run); self.btn.setEnabled(False)
         close = QPushButton("Закрыть"); close.clicked.connect(self.accept)
-        lay = QVBoxLayout(self); lay.addLayout(form); lay.addWidget(QLabel("Сопоставление колонок:"))
+        self.b_fields = QPushButton("Открыть менеджер полей…"); self.b_fields.clicked.connect(lambda: self.open_fields())
+        lay = QVBoxLayout(self); lay.addLayout(form); lay.addLayout(self._row(QLabel("Сопоставление колонок (только поля БД):"), self.b_fields))
         lay.addWidget(self.table, 2); lay.addWidget(self.log, 1); lay.addLayout(self._row(self.btn, close, stretch=False))
+
+    def open_fields(self):
+        from .main_view import FieldManager, field_manager_hook
+        fm = FieldManager(self.api, self)
+        if field_manager_hook is None: fm.exec()
+        if self.file.text(): self.set_file(self.file.text())
+        return fm
 
     @staticmethod
     def _row(*ws, stretch=True):
@@ -89,10 +97,12 @@ class ImportDialog(QDialog):
             headers = [str(h) if h is not None else "" for h in self.api.read_headers(path)]
         except Exception as e:  # noqa: BLE001
             QMessageBox.warning(self, "Импорт", f"Не удалось прочитать файл: {e}"); return
-        auto = map_headers(headers)
+        auto = self.api.auto_match(headers)            # Backend de864fc: только существующие поля БД
         existing = {f["name"]: f["label"] for f in self.api.list_fields()}
-        names = {**existing, **LABELS, "photo_path": "Фото (путь)", "photo_config": "Настройки фото", "__fio__": "ФИО (разбить)"}
-        targets = list(dict.fromkeys([*LABELS, "photo_path", "photo_config", "__fio__", *existing]))
+        # D24: сопоставлять можно только с существующими полями (Менеджер полей) + служебные фото-колонки
+        names = {**existing, "photo_path": "Фото (путь)", "photo_config": "Настройки фото", "print_mark": "Отметка печати",
+                 "__fio__": "ФИО (разбить на поля БД)"}
+        targets = [*existing, "photo_path", "photo_config", "print_mark", "__fio__"]
         self.table.setRowCount(len(headers)); self.headers = headers
         for r, (h, k) in enumerate(zip(headers, auto)):
             it = QTableWidgetItem(h); it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable); self.table.setItem(r, 0, it)
@@ -100,6 +110,7 @@ class ImportDialog(QDialog):
             cb.addItem(f"(авто: {names.get(k, k) if k else 'игнор'})", AUTO)
             cb.addItem("— не импортировать —", SKIP)
             for t in targets: cb.addItem(f"{names.get(t, t)} [{t}]", t)
+            if k and k not in names: cb.setCurrentIndex(1)   # авто-поля нет в БД → не импортировать
             self.table.setCellWidget(r, 1, cb)
             self.table.setItem(r, 2, QTableWidgetItem(""))   # пусто = label по умолчанию Backend
         self.table.setToolTip("Третья колонка: свой заголовок поля (необязательно)")
@@ -145,8 +156,13 @@ class ImportDialog(QDialog):
         lines = ["ИМПОРТ ОТМЕНЁН — изменения откатаны." if getattr(rep, "cancelled", False) else "Импорт завершён.",
                  f"Добавлено: {rep.added}", f"Пропущено: {rep.skipped}", f"Валидатор: {rep.validator}"]
         fmt = lambda e: f"  строка {e.get('row')}: {e.get('field')} — {e.get('code')} {e.get('details') or ''}"
-        if rep.errors: lines += ["Ошибки (строки не импортированы):", *map(fmt, rep.errors)]
-        if getattr(rep, "warnings", None): lines += ["Предупреждения (строки импортированы):", *map(fmt, rep.warnings)]
+        if rep.errors: lines += [f"Отклонено строк: {len({e.get('row') for e in rep.errors})} (не импортированы; FIELD_TYPE — неверный тип значения):", *map(fmt, rep.errors)]
+        ws = list(getattr(rep, "warnings", None) or [])
+        if ws: lines += ["Предупреждения (строки импортированы, напр. пустое значение):", *map(fmt, ws)]
+        if getattr(rep, "photo_issues", None):
+            lines += ["Проблемы с фото:", *(f"  {x}" if not isinstance(x, dict) else fmt(x) for x in rep.photo_issues)]
+        if getattr(rep, "skipped_columns", None):
+            lines += ["Колонки файла не импортированы (нет такого поля БД): " + ", ".join(map(str, rep.skipped_columns))]
         self.log.setPlainText("\n".join(lines))
         if not getattr(rep, "cancelled", False): self.btn.setEnabled(False)
 

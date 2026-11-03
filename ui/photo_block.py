@@ -1,0 +1,143 @@
+"""Блок фото формы записи (D22): живая камера (QtMultimedia) с выбором устройства, «Сфотографировать»,
+«Переснять», «Из файла…». Без камеры/QtMultimedia — понятная надпись, работает «Из файла…».
+
+Снимок сразу попадает в превью (временный файл). При сохранении записи commit() кладёт его в папку фото проекта
+(<base_dir>/photos/), в запись — относительный photo_path. Сервиса Backend для этого пока нет (см. отчёт D22:
+save_photo(con|base_dir, image_bytes, *, person_id=None, ext="jpg") -> str).
+"""
+import os, tempfile, uuid
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QImage
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QPushButton, QFileDialog, QStackedWidget
+
+file_hook = None          # тесты: file_hook(block) -> путь вместо QFileDialog
+
+
+def multimedia():
+    """(QMediaDevices, ok, сообщение). Любая ошибка импорта/устройств — без исключения."""
+    try:
+        from PyQt6.QtMultimedia import QMediaDevices
+    except Exception as e:  # noqa: BLE001
+        return None, False, f"Камера недоступна: модуль QtMultimedia не загружен ({e.__class__.__name__})"
+    try:
+        devs = list(QMediaDevices.videoInputs())
+    except Exception as e:  # noqa: BLE001
+        return QMediaDevices, False, f"Камера недоступна: {e}"
+    return QMediaDevices, bool(devs), "" if devs else "Камера не найдена — используйте «Из файла…»"
+
+
+class PhotoBlock(QWidget):
+    changed = pyqtSignal(str)         # путь для превью (абсолютный или относительный base_dir) или ""
+
+    def __init__(self, base_dir, photo_path="", parent=None):
+        super().__init__(parent)
+        self.base_dir, self.path, self.captured = base_dir or ".", photo_path or "", None
+        self.cam = self.session = self.cap = self.video = None
+        self.camera_combo = QComboBox(); self.camera_combo.setMinimumWidth(180)
+        self.status = QLabel(); self.status.setWordWrap(True); self.status.setStyleSheet("color:#6B7280;")
+        self.stack = QStackedWidget(); self.stack.setMinimumSize(240, 180)
+        self.still = QLabel(alignment=Qt.AlignmentFlag.AlignCenter); self.still.setStyleSheet("background:#F4F7F7; border:1px solid #D5DCDA;")
+        self.stack.addWidget(self.still)
+        self.b_shot, self.b_retake, self.b_file = QPushButton("Сфотографировать"), QPushButton("Переснять"), QPushButton("Из файла…")
+        self.b_shot.clicked.connect(lambda: self.shoot()); self.b_retake.clicked.connect(lambda: self.retake())
+        self.b_file.clicked.connect(lambda: self.from_file())
+        top = QHBoxLayout(); top.addWidget(QLabel("Камера:")); top.addWidget(self.camera_combo, 1)
+        bl = QHBoxLayout()
+        for b in (self.b_shot, self.b_retake, self.b_file): b.setMinimumWidth(b.sizeHint().width()); bl.addWidget(b)
+        lay = QVBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0)
+        lay.addLayout(top); lay.addWidget(self.stack, 1); lay.addWidget(self.status); lay.addLayout(bl)
+        QMD, ok, msg = multimedia()
+        self.has_camera = ok
+        if ok:
+            for d in QMD.videoInputs(): self.camera_combo.addItem(d.description(), d)
+            self.camera_combo.currentIndexChanged.connect(lambda *_: self._start())
+            self._setup_camera()
+        else:
+            self.camera_combo.addItem("— нет камеры —"); self.camera_combo.setEnabled(False)
+            self.status.setText(msg)
+        self._update_buttons(); self._show_still()
+
+    # ---- камера ----
+    def _setup_camera(self):
+        try:
+            from PyQt6.QtMultimedia import QMediaCaptureSession, QImageCapture
+            from PyQt6.QtMultimediaWidgets import QVideoWidget
+            self.session = QMediaCaptureSession(); self.cap = QImageCapture(); self.session.setImageCapture(self.cap)
+            self.video = QVideoWidget(); self.session.setVideoOutput(self.video); self.stack.addWidget(self.video)
+            self.cap.imageCaptured.connect(lambda _id, img: self.set_captured(img))
+            self.cap.errorOccurred.connect(lambda *_a: self.status.setText(f"Ошибка камеры: {self.cap.errorString()}"))
+            self._start()
+        except Exception as e:  # noqa: BLE001
+            self.has_camera = False; self.status.setText(f"Камера недоступна: {e}"); self._update_buttons()
+
+    def _start(self):
+        from PyQt6.QtMultimedia import QCamera
+        if self.cam is not None: self.cam.stop()
+        dev = self.camera_combo.currentData()
+        self.cam = QCamera(dev) if dev is not None else QCamera()
+        self.cam.errorOccurred.connect(lambda *_a: self.status.setText(f"Ошибка камеры: {self.cam.errorString()}"))
+        self.session.setCamera(self.cam); self.cam.start()
+        if self.captured is None: self.stack.setCurrentWidget(self.video)
+        self.status.setText("Живое изображение — нажмите «Сфотографировать»")
+
+    def shoot(self):
+        if not self.has_camera or self.cap is None: return False
+        if not self.cap.isReadyForCapture():
+            self.status.setText("Камера ещё не готова"); return False
+        self.cap.capture(); return True
+
+    def retake(self):
+        self.captured = None
+        if self.has_camera and self.video is not None:
+            self.stack.setCurrentWidget(self.video)
+            if self.cam is not None and not self.cam.isActive(): self.cam.start()
+        self._update_buttons(); return True
+
+    def stop(self):
+        if self.cam is not None: self.cam.stop()
+
+    # ---- снимок / файл ----
+    def set_captured(self, img: QImage):
+        """Снимок (или тестовое изображение) → временный файл → превью."""
+        if img is None or img.isNull(): return False
+        tmp = os.path.join(tempfile.gettempdir(), f"bg_capture_{uuid.uuid4().hex}.png"); img.save(tmp)
+        self.captured, self.path = tmp, tmp
+        if self.cam is not None: self.cam.stop()
+        self._show_still(); self._update_buttons(); self.status.setText("Снимок сделан — «Переснять» или сохраните запись")
+        self.changed.emit(tmp); return True
+
+    def from_file(self, path=None):
+        if path is None:
+            path = file_hook(self) if file_hook is not None else \
+                QFileDialog.getOpenFileName(self, "Фото записи", self.base_dir, "Изображения (*.png *.jpg *.jpeg *.bmp)")[0]
+        if not path: return False
+        self.captured = None
+        try:
+            rel = os.path.relpath(path, self.base_dir); path = path if rel.startswith("..") else rel
+        except ValueError:
+            pass
+        self.path = path; self._show_still(); self._update_buttons(); self.changed.emit(path); return True
+
+    def _abs(self, p):
+        return p if not p or os.path.isabs(p) else os.path.join(self.base_dir, p)
+
+    def _show_still(self):
+        from PyQt6.QtGui import QPixmap
+        pm = QPixmap(self._abs(self.path)) if self.path else QPixmap()
+        if pm.isNull(): self.still.setPixmap(QPixmap()); self.still.setText("нет фото")
+        else: self.still.setPixmap(pm.scaled(220, 170, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        if self.captured is not None or not self.has_camera or self.video is None: self.stack.setCurrentWidget(self.still)
+
+    def _update_buttons(self):
+        self.b_shot.setEnabled(self.has_camera and self.captured is None); self.b_retake.setEnabled(self.has_camera and self.captured is not None)
+
+    def commit(self):
+        """Перенести снимок в <base_dir>/photos/ и вернуть относительный photo_path (или текущий путь/None)."""
+        if self.captured:
+            d = os.path.join(self.base_dir, "photos"); os.makedirs(d, exist_ok=True)
+            name = f"capture_{uuid.uuid4().hex[:12]}.jpg"
+            QImage(self.captured).save(os.path.join(d, name), "JPG", 92)
+            try: os.remove(self.captured)
+            except OSError: pass
+            self.captured = None; self.path = os.path.join("photos", name).replace("\\", "/")
+        return self.path or None

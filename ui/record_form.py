@@ -2,10 +2,64 @@
 import os
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QPixmap
-from PyQt6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QGroupBox, QPushButton, QSpinBox,
+from PyQt6.QtWidgets import (QWidget, QDialog, QFormLayout, QLineEdit, QGroupBox, QPushButton, QSpinBox,
                              QDoubleSpinBox, QLabel, QDialogButtonBox, QVBoxLayout, QHBoxLayout,
                              QFileDialog, QCheckBox, QComboBox, QMessageBox)
-from .backend_api import BackendAPI, PhotoConfig, DEFAULT_PHOTO_CONFIG
+from .backend_api import BackendAPI, PhotoConfig, DEFAULT_PHOTO_CONFIG, field_type
+from .photo_block import PhotoBlock
+
+
+# ---- D24: редактор по типу данных поля (data_type; нет в Backend → «Строка») ----
+DATE_FMT = "dd.MM.yyyy"
+validate_hook = None   # тесты: validate_hook(text) вместо QMessageBox
+
+
+class ImageFieldEdit(QWidget):
+    """Поле типа «Изображение»: путь + «Из файла…» (камера — в блоке «Фото» записи)."""
+    def __init__(self, value, base_dir, parent=None):
+        super().__init__(parent); self.base_dir = base_dir
+        self.edit = QLineEdit(value); b = QPushButton("Из файла…"); b.clicked.connect(self._pick)
+        l = QHBoxLayout(self); l.setContentsMargins(0, 0, 0, 0); l.addWidget(self.edit, 1); l.addWidget(b)
+        self.textChanged = self.edit.textChanged
+    def _pick(self):
+        p, _ = QFileDialog.getOpenFileName(self, "Изображение", self.base_dir or "", "Изображения (*.png *.jpg *.jpeg *.bmp)")
+        if p: self.edit.setText(p)
+    def text(self): return self.edit.text()
+    def setText(self, t): self.edit.setText(t)
+
+
+def make_editor(kind, value, base_dir=None):
+    from PyQt6.QtCore import QDate
+    from PyQt6.QtWidgets import QDateEdit
+    if kind == "number":
+        e = QDoubleSpinBox(); e.setRange(-1e12, 1e12); e.setDecimals(0 if not value or value.lstrip("-").isdigit() else 2)
+        try: e.setValue(float(value.replace(",", ".")) if value else 0)
+        except ValueError: pass
+        e.kind = kind; return e
+    if kind == "date":
+        e = QDateEdit(); e.setCalendarPopup(True); e.setDisplayFormat(DATE_FMT); e.setSpecialValueText(" ")
+        e.setMinimumDate(QDate(1900, 1, 1)); d = QDate.fromString(value, DATE_FMT)
+        if not d.isValid(): d = QDate.fromString(value, "yyyy-MM-dd")
+        e.setDate(d if d.isValid() else e.minimumDate()); e.kind = kind; return e
+    if kind == "bool":
+        e = QCheckBox("Да"); e.setChecked(value.strip().lower() in ("1", "да", "true", "yes", "y")); e.kind = kind; return e
+    if kind == "image":
+        e = ImageFieldEdit(value, base_dir); e.kind = kind; return e
+    e = QLineEdit(value); e.kind = "string"; return e
+
+
+def editor_value(e):
+    k = getattr(e, "kind", "string")
+    if k == "number":
+        v = e.value(); return str(int(v)) if e.decimals() == 0 else str(v)
+    if k == "date": return "" if e.date() == e.minimumDate() else e.date().toString("yyyy-MM-dd")   # Backend хранит ISO
+    if k == "bool": return "1" if e.isChecked() else "0"
+    return e.text().strip()
+
+
+def editor_signal(e):
+    k = getattr(e, "kind", "string")
+    return {"number": lambda: e.valueChanged, "date": lambda: e.dateChanged, "bool": lambda: e.toggled}.get(k, lambda: e.textChanged)()
 
 
 class RecordForm(QDialog):
@@ -25,7 +79,7 @@ class RecordForm(QDialog):
         self._new_fields = [{"name": n, "label": n, "sort_order": base + i} for i, n in enumerate(tmpl)]
         form = QFormLayout(); self.edits = {}
         for f in fields + self._new_fields:
-            e = QLineEdit(str(self.person["fields"].get(f["name"], "") or ""))
+            e = make_editor(field_type(f), str(self.person["fields"].get(f["name"], "") or ""), api.base_dir)
             new = f in self._new_fields
             if new: e.setToolTip("Поле есть в шаблоне, но нет в person_fields — будет создано при сохранении")
             self.edits[f["name"]] = e; form.addRow((f["label"] or f["name"]) + (" (новое)" if new else "") + ":", e)
@@ -35,9 +89,9 @@ class RecordForm(QDialog):
         cfg = PhotoConfig.parse(self.person["photo_config"])
         box = QGroupBox("Фото"); pf = QFormLayout(box)
         self.photo_path = QLineEdit(self.person["photo_path"] or ""); self.photo_path.setReadOnly(True)
-        load = QPushButton("Загрузить фото…"); load.clicked.connect(self._load_photo)
-        ph = QHBoxLayout(); ph.addWidget(self.photo_path, 1); ph.addWidget(load)
-        pf.addRow("Файл:", ph)
+        self.photo_block = PhotoBlock(api.base_dir, self.person["photo_path"] or "", self)       # D22: камера / файл
+        self.photo_block.changed.connect(lambda p: (self.photo_path.setText(p), self.update_preview()))
+        pf.addRow(self.photo_block); pf.addRow("Файл:", self.photo_path)
 
         def spin(v, lo=-3000, hi=3000):
             s = QSpinBox(); s.setRange(lo, hi); s.setSuffix(" px"); s.setValue(v); return s
@@ -59,7 +113,7 @@ class RecordForm(QDialog):
         self._timer = QTimer(self, singleShot=True, interval=150, timeout=self.update_preview)
         for w in (self.sx, self.sy, self.cx, self.cy): w.valueChanged.connect(lambda *_: self._timer.start())
         for w in (self.scale, self.angle): w.valueChanged.connect(lambda *_: self._timer.start())
-        for e in self.edits.values(): e.textChanged.connect(lambda *_: self._timer.start())
+        for e in self.edits.values(): editor_signal(e).connect(lambda *_: self._timer.start())
         self.side.currentIndexChanged.connect(lambda *_: self.update_preview())
 
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
@@ -81,19 +135,12 @@ class RecordForm(QDialog):
                      (self.cy, c.crop_y), (self.angle, c.angle)): w.setValue(v)
 
     def _load_photo(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Выбор фото", self.api.base_dir, "Изображения (*.png *.jpg *.jpeg *.bmp)")
-        if path:
-            try:
-                rel = os.path.relpath(path, self.api.base_dir)
-                path = path if rel.startswith("..") else rel   # README: photo_path относительно base_dir
-            except ValueError:
-                pass
-            self.photo_path.setText(path); self.update_preview()
+        return self.photo_block.from_file()
 
     def draft_person(self) -> dict:
         """Несохранённое состояние формы для превью (рендерит Backend)."""
         import json
-        fields = {**self.person["fields"], **{n: e.text().strip() for n, e in self.edits.items()}}
+        fields = {**self.person["fields"], **{n: editor_value(e) for n, e in self.edits.items()}}
         return {"id": self.person["id"], "fields_json": json.dumps(fields, ensure_ascii=False),
                 "photo_path": self.photo_path.text() or None, "photo_config": self.config_string()}
 
@@ -105,8 +152,16 @@ class RecordForm(QDialog):
             self.preview.setText(f"Ошибка рендера: {e}")
 
     def save(self):
-        fields = {n: e.text().strip() for n, e in self.edits.items()}
-        photo = self.photo_path.text() or None
+        fields = {n: editor_value(e) for n, e in self.edits.items()}
+        try:
+            bad = self.api.validate_fields(fields)          # Backend de864fc: проверка по data_type
+        except Exception:  # noqa: BLE001
+            bad = []
+        if bad:
+            msg = "\n".join(f"• {b.get('field')}: {b.get('details') or b.get('code')}" for b in bad)
+            if validate_hook is not None: validate_hook(msg); return False
+            QMessageBox.warning(self, "Проверка полей", f"Значения не соответствуют типу поля:\n{msg}"); return False
+        photo = self.photo_block.commit() if self.photo_block.captured else (self.photo_path.text() or None)
         try:
             for f in self._new_fields:
                 self.api.upsert_field(f["name"], f["label"], f["sort_order"])   # D19: поле шаблона → person_fields
@@ -117,4 +172,4 @@ class RecordForm(QDialog):
             self.api.update_photo_config(self.person_id, self.config_string())   # только эта запись
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "Ошибка сохранения", str(e)); return
-        self.accept()
+        self.photo_block.stop(); self.accept()

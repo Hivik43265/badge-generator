@@ -69,7 +69,7 @@
 | 28 | Повторить `act_redo` | Редактировать / История | Ctrl+Y | то же |
 | 29 | Удалить объект `act_delete_element` | Редактировать / Объект | Del; КМ: объект | `delete_element` |
 | 30 | Положение… `act_position` | Редактировать / Объект | Ctrl+K; КМ: объект | `update_element` через PropertyModel |
-| 31 | Захват изображения `act_capture` | Редактировать / Объект | КМ: фото-объект | `update_person(photo_path=…)` |
+| 31 | ~~Захват изображения~~ — удалено (D22): камера в форме карты `act_card_edit` | Добавить/Изменить карту → блок «Фото» | — | `update_person(photo_path=…)` |
 | 32 | Выше `act_z_up` | Редактировать / Порядок | Ctrl+]; КМ: объект | `update_element(z_order)` |
 | 33 | Ниже `act_z_down` | Редактировать / Порядок | Ctrl+[; КМ: объект | `update_element(z_order)` |
 

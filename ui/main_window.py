@@ -10,7 +10,7 @@ from .backend_api import BackendAPI, DEFAULT_DB_PATH, TYPE_NAMES
 from .records_table import RecordsWidget, PRINTED_FILTERS
 from .layout_editor import LayoutEditor
 from .main_view import (PreviewPanel, PrintQueueDialog, PositionDialog, SettingsDialog, FieldManager, ALIGN,
-                        aligned_geometry, camera_available, CameraDialog)
+                        aligned_geometry)
 from .ribbon import Ribbon, glyph
 from .dialogs import ImportDialog, ExportDialog, confirm_missing_photos, run_snapshot_job, describe_result, show_result_warnings
 from .backend_api import print_snapshot
@@ -120,7 +120,10 @@ class MainWindow(QMainWindow):
             a.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         a.setToolTip(tip or (text + (f" ({a.shortcut().toString()})" if shortcut else "")))
         a.setCheckable(checkable)
-        if slot is not None: a.triggered.connect(slot)
+        if slot is not None:
+            # D20/D21: triggered(bool) НЕ передаётся в слот — иначе checked=False попадал в values/exec_ и т.п.
+            if checkable: a.triggered.connect(lambda checked, f=slot: f(checked))
+            else: a.triggered.connect(lambda _checked=False, f=slot: f())
         self.addAction(a); return a
 
     def _build_actions(self):
@@ -162,7 +165,6 @@ class MainWindow(QMainWindow):
         self.act_redo = A("act_redo", "Повторить", self.redo, "redo", ["Ctrl+Y", "Ctrl+Shift+Z"])
         self.act_delete_element = A("act_delete_element", "Удалить объект", self.delete_element, "delete", "Del", icon_text="Удалить")
         self.act_position = A("act_position", "Положение…", self.edit_position, "position", "Ctrl+K", icon_text="Положение")
-        self.act_capture = A("act_capture", "Захват изображения…", self.capture_image, "capture", icon_text="Захват")
         self.act_z_up = A("act_z_up", "Выше", lambda: self._z(1), "z_up", "Ctrl+]")
         self.act_z_down = A("act_z_down", "Ниже", lambda: self._z(-1), "z_down", "Ctrl+[")
         # Просмотр
@@ -214,7 +216,7 @@ class MainWindow(QMainWindow):
                                 self.act_style_stroke_w]
         self.editor_actions = le.selection_actions + [self.act_paste, self.act_undo, self.act_redo] + list(self.tool_actions.values())
         self.db_actions = [self.act_queue_toggle, self.act_card_edit, self.act_card_delete, self.act_mark_printed,
-                           self.act_mark_unprinted, self.act_capture]
+                           self.act_mark_unprinted]
 
     def _build_ribbon(self):
         R, T = self.ribbon, self.tool_actions
@@ -227,7 +229,7 @@ class MainWindow(QMainWindow):
         R.add_group("Рисование", "Фигуры", [T["text"], T["rect"], T["ellipse"], T["line"], T["image"]])
         R.add_group("Рисование", "Стиль", [[self.act_style_fill, self.act_style_stroke], self.act_style_stroke_w, self.act_align])
         R.add_group("Редактировать", "История", [self.act_undo, self.act_redo])
-        R.add_group("Редактировать", "Объект", [self.act_delete_element, self.act_position, self.act_capture])
+        R.add_group("Редактировать", "Объект", [self.act_delete_element, self.act_position])
         R.add_group("Редактировать", "Порядок", [self.act_z_up, self.act_z_down])
         R.add_group("Просмотр", "Масштаб", [self.act_zoom_in, self.act_zoom_out, self.act_zoom_fit])
         R.add_group("Просмотр", "Показать", [self.act_grid, self.act_rulers, self.act_show_render])
@@ -252,11 +254,11 @@ class MainWindow(QMainWindow):
             self.removeAction(a); w.addAction(a); a.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.canvas_menu_actions = [self.act_cut, self.act_copy, self.act_paste, self.act_duplicate, None,
                                     self.act_delete_element, self.act_position, self.act_align, self.act_z_up, self.act_z_down,
-                                    None, self.act_capture, self.act_background]
+                                    None, self.act_background]
         self.list_menu_actions = [self.act_cut, self.act_copy, self.act_duplicate, None, self.act_delete_element,
                                   self.act_position, self.act_z_up, self.act_z_down]
         self.table_menu_actions = [self.act_card_add, self.act_card_edit, self.act_card_delete, None, self.act_queue_toggle,
-                                   self.act_mark_printed, self.act_mark_unprinted, None, self.act_print, self.act_capture]
+                                   self.act_mark_printed, self.act_mark_unprinted, None, self.act_print]
         for w, acts in ((le.view, self.canvas_menu_actions), (le.el_list, self.list_menu_actions),
                         (self.records.view, self.table_menu_actions)):
             w.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -482,28 +484,6 @@ class MainWindow(QMainWindow):
                           QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows)
         self._sync_selection()
 
-    def capture_image(self, path=None):
-        pid = self.selected_person_id()
-        if pid is None:
-            self.statusBar().showMessage("Выберите запись для захвата фото (вкладка «База данных»)"); return None
-        if path is None:
-            if camera_available():
-                os.makedirs(os.path.join(self.api.base_dir, "photos"), exist_ok=True)
-                d = CameraDialog(os.path.join(self.api.base_dir, "photos", f"capture_{pid}.png"), self)
-                path = d.path if d.exec() else None
-            else:
-                path, _ = QFileDialog.getOpenFileName(self, "Фото записи", self.api.base_dir,
-                                                      "Изображения (*.png *.jpg *.jpeg *.bmp)")
-            if not path: return None
-        try:
-            rel = os.path.relpath(path, self.api.base_dir); path = path if rel.startswith("..") else rel
-        except ValueError:
-            pass
-        self.api.update_person(pid, photo_path=path)
-        self.records.reload(); self._select_person(pid)
-        self.statusBar().showMessage(f"Фото записи #{pid}: {path}"); return path
-
-    # --- БД / проект ---
     def _ask_path(self, kind, title, save=True, filt="SQLite (*.db *.sqlite)"):
         if ask_hook is not None: return ask_hook(kind, self)
         f = QFileDialog.getSaveFileName if save else QFileDialog.getOpenFileName

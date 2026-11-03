@@ -14,9 +14,15 @@ from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QGraphicsView, Q
                              QFormLayout, QLabel, QComboBox, QPushButton, QSpinBox, QLineEdit,
                              QPlainTextEdit, QMessageBox, QCheckBox, QToolButton, QGridLayout,
                              QInputDialog, QFileDialog, QColorDialog, QScrollArea, QSizePolicy, QListWidget, QListWidgetItem)
-from .backend_api import BackendAPI, CARD_W_PX, CARD_H_PX, TYPE_NAMES, SIDE_NAMES
+from .backend_api import BackendAPI, CARD_W_PX, CARD_H_PX, TYPE_NAMES, SIDE_NAMES, person_caption
 
 SIDE_LABELS = SIDE_NAMES
+NEW_FIELD = "Новое поле…"
+
+
+def fm_hook_active():
+    from . import main_view
+    return main_view.field_manager_hook is not None
 TYPE_LABELS = TYPE_NAMES
 MM_PER_PX = 85.6 / CARD_W_PX
 # Типы, создаваемые инструментами ленты «Рисование» (ключ = тип элемента); фон — отдельное действие
@@ -286,7 +292,7 @@ class LayoutEditor(QWidget):
         self._draw_grid()
         fields = self.api.list_fields()
         self.labels = {f["name"]: f.get("label") for f in fields}
-        self.p_field.clear(); self.p_field.addItem(""); self.p_field.addItems([f["name"] for f in fields])
+        self._fill_fields(fields)
         els = self.api.list_elements(side)
         self.el_list.clear()
         for el in els:
@@ -319,7 +325,7 @@ class LayoutEditor(QWidget):
         self.person_id = person_id
         p = self.api.get_person(person_id) if person_id is not None else None
         if p:
-            f = p["fields"]; name = f"#{p['id']} {f.get('last_name', '')} {f.get('first_name', '')}".strip()
+            name = person_caption(self.api, p).strip()
         else:
             name = "пустой шаблон"
         self.person_label.setText(f"Запись на холсте: {name}")
@@ -371,7 +377,7 @@ class LayoutEditor(QWidget):
         for w in (self.p_x, self.p_y, self.p_w, self.p_h, self.p_z, self.p_font, self.p_stroke_w, self.p_radius,
                   self.p_quiet, self.p_qborder, self.p_static, self.p_color, self.p_bg, self.p_fill, self.p_stroke):
             w.editingFinished.connect(live)
-        self.p_field.activated.connect(lambda *_: live()); self.p_field.lineEdit().editingFinished.connect(live)
+        self.p_field.activated.connect(lambda *_: self._field_chosen() and live()); self.p_field.lineEdit().editingFinished.connect(live)
         self.p_format.activated.connect(lambda *_: live()); self.p_ec.activated.connect(lambda *_: live())
         self.p_show_text.toggled.connect(lambda *_: live())
         self._style_timer = QTimer(self, singleShot=True, interval=700, timeout=live)
@@ -446,7 +452,7 @@ class LayoutEditor(QWidget):
         except ValueError as e:
             _warn(self, "Стиль", f"Некорректный JSON: {e}"); return False
         changes = dict(x=self.p_x.value(), y=self.p_y.value(), w=self.p_w.value(), h=self.p_h.value(),
-                       z_order=self.p_z.value(), field_name=self.p_field.currentText() or None,
+                       z_order=self.p_z.value(), field_name=(self.p_field.currentText() if self.p_field.currentText() != NEW_FIELD else None) or None,
                        static_value=self.p_static.text() or None, style=style)
         el = self.current.el
         changes = {k: v for k, v in changes.items() if el.get(k) != v}
@@ -466,11 +472,36 @@ class LayoutEditor(QWidget):
         except _Cancelled:
             return None
 
+    def _fill_fields(self, fields=None):
+        """Комбо поля объекта: только list_fields() + последний пункт «Новое поле…» (D24)."""
+        fields = self.api.list_fields() if fields is None else fields
+        cur = self.p_field.currentText(); self.p_field.blockSignals(True); self.p_field.clear(); self.p_field.addItem("")
+        for f in fields: self.p_field.addItem(f["name"]); self.p_field.setItemData(self.p_field.count() - 1, f["label"] or f["name"], Qt.ItemDataRole.ToolTipRole)
+        self.p_field.addItem(NEW_FIELD); self.p_field.setCurrentText(cur); self.p_field.blockSignals(False)
+
+    def _field_chosen(self):
+        if self.p_field.currentText() == NEW_FIELD:
+            name = self._new_field(); self.p_field.setCurrentText(name or "")
+            return bool(name)
+        return True
+
     def _ask_field(self):
-        names = [f["name"] for f in self.api.list_fields()] or ["last_name"]
-        name, ok = QInputDialog.getItem(self, "Поле", "Поле записи:", names, 0, True)
+        names = [f["name"] for f in self.api.list_fields()] + [NEW_FIELD]
+        name, ok = QInputDialog.getItem(self, "Поле", "Поле записи:", names, 0, False)
         if not ok or not name: raise _Cancelled
+        if name == NEW_FIELD:
+            name = self._new_field()
+            if not name: raise _Cancelled
         return name
+
+    def _new_field(self):
+        """«Новое поле…» → Менеджер полей; возвращает имя только что созданного поля (или None)."""
+        from .main_view import FieldManager
+        before = {f["name"] for f in self.api.list_fields()}
+        fm = FieldManager(self.api, self); fm.add_field()
+        if not fm_hook_active(): fm.exec()
+        new = [f["name"] for f in self.api.list_fields() if f["name"] not in before]
+        self._fill_fields(); return new[0] if new else None
 
     def _ask_file(self, title):
         p, _ = QFileDialog.getOpenFileName(self, title, self.api.base_dir, "Изображения (*.png *.jpg *.jpeg *.bmp *.svg)")

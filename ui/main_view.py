@@ -7,12 +7,13 @@ from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen, QBrush, QPolygon
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTabWidget, QListWidget, QListWidgetItem,
                              QTableWidget, QTableWidgetItem, QHeaderView, QDialog, QDialogButtonBox, QFormLayout,
                              QLineEdit, QPushButton, QSpinBox, QGridLayout, QFileDialog, QSplitter, QSizePolicy,
-                             QAbstractItemView, QDoubleSpinBox, QMessageBox)
+                             QAbstractItemView, QDoubleSpinBox, QMessageBox, QComboBox)
 from .backend_api import BackendAPI, CARD_W_PX, CARD_H_PX
 from .layout_editor import element_caption
 from .records_table import format_printed_at
 
-from .backend_api import TYPE_NAMES, SIDE_NAMES, field_desync, desync_text
+from .backend_api import TYPE_NAMES, SIDE_NAMES, field_desync, desync_text, FIELD_TYPES, FIELD_TYPE_NAMES, field_type, new_field_name, display_value
+from .backend_api import _UPSERT_HAS_TYPE as BACKEND_HAS_TYPE
 EMPTY_VALUE = "(пусто)"
 from .ribbon import glyph
 
@@ -59,7 +60,8 @@ class PreviewPanel(QWidget):
             self.pixmaps[side] = QPixmap.fromImage(self.api.render_card(self.person_id, side))   # рендер Backend
         self._fit()
         self.caption.setText(f"Запись #{p['id']}" if p else "Пустой шаблон (запись не выбрана)")
-        labels = {f["name"]: f["label"] or f["name"] for f in self.api.list_fields()}
+        _fl = self.api.list_fields(); labels = {f["name"]: f["label"] or f["name"] for f in _fl}
+        types = {f["name"]: field_type(f) for f in _fl}
         vals = (p or {}).get("fields") or {}
         rows = []
         for e in self.api.list_elements():
@@ -67,7 +69,7 @@ class PreviewPanel(QWidget):
                 rows.append((f"{TYPE_NAMES['photo']} · {SIDE_NAMES[e['side']].lower()}", (p or {}).get("photo_path") or "—"))
             elif e.get("field_name"):
                 rows.append((f"{labels.get(e['field_name'], e['field_name'])} · {TYPE_NAMES.get(e['type'], e['type'])} · "
-                             f"{SIDE_NAMES[e['side']].lower()}", str(vals.get(e["field_name"], "") or "")))
+                             f"{SIDE_NAMES[e['side']].lower()}", display_value(types.get(e["field_name"]), vals.get(e["field_name"], ""))))
         self.fields.setRowCount(len(rows))
         for r, (k, v) in enumerate(rows):
             self.fields.setItem(r, 0, QTableWidgetItem(k))
@@ -102,32 +104,61 @@ def _two_icons(side, kind):
 field_manager_hook = None    # тесты: field_manager_hook(kind, dialog) -> значение вместо модального вопроса
 
 
+class FieldEditDialog(QDialog):
+    """Поле БД: имя (подпись), тип данных (D24), значение по умолчанию."""
+
+    def __init__(self, parent=None, label="", data_type="text", default="", title="Поле БД"):
+        super().__init__(parent); self.setWindowTitle(title)
+        self.label = QLineEdit(label); self.type = QComboBox()
+        for k, t in FIELD_TYPES: self.type.addItem(t, k)
+        self.type.setCurrentIndex(max(0, self.type.findData(data_type)))
+        if not BACKEND_HAS_TYPE: self.type.setToolTip("Backend пока не хранит data_type — сохраняется как «Строка»")
+        self.default = QLineEdit(default or "")
+        form = QFormLayout(); form.addRow("Имя поля:", self.label); form.addRow("Тип данных:", self.type); form.addRow("По умолчанию:", self.default)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
+        bb.accepted.connect(lambda: self.accept() if self.label.text().strip() else None); bb.rejected.connect(self.reject)
+        lay = QVBoxLayout(self); lay.addLayout(form); lay.addWidget(bb)
+
+    def values(self):
+        return self.label.text().strip(), self.type.currentData(), self.default.text().strip() or None
+
+
 class FieldManager(QDialog):
-    """Менеджер полей: «Поле | Значение по умолчанию»; у поля — связанные объекты шаблона.
-    Данные: list_fields (default_value), list_field_links; изменения — set_field_default, link_field, unlink_field."""
+    """Менеджер полей (эталон reports/mockup/reference_field_manager.png): «Поле | Тип данных | Значение по умолчанию»;
+    у поля — иконки стороны (F/B) и типа объекта; ниже «Описание» с легендой.
+    Данные: list_fields / list_field_links; изменения — upsert_field, delete_field, set_field_default, link_field, unlink_field."""
     LINKABLE = ("field", "text", "barcode", "qr")   # Backend 01a1768: text → field при связывании
 
     def __init__(self, api: BackendAPI, parent=None):
-        super().__init__(parent); self.api = api; self.setWindowTitle("Менеджер полей"); self.resize(640, 520)
-        from PyQt6.QtWidgets import QTreeWidget
-        self.tree = QTreeWidget(); self.tree.setHeaderLabels(["Поле", "Значение по умолчанию"]); self.tree.setIconSize(QSize(44, 22))
+        super().__init__(parent); self.api = api; self.setWindowTitle("Менеджер полей"); self.resize(720, 560)
+        from PyQt6.QtWidgets import QTreeWidget, QGroupBox, QGridLayout
+        self.tree = QTreeWidget(); self.tree.setHeaderLabels(["Поле", "Тип данных", "Значение по умолчанию"]); self.tree.setIconSize(QSize(44, 22))
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.tree.itemChanged.connect(self._edited); self.tree.currentItemChanged.connect(lambda *_: self._sel())
-        leg = QHBoxLayout(); leg.addWidget(QLabel("Легенда:"))
-        for k, t in (("front", SIDE_NAMES["front"]), ("back", SIDE_NAMES["back"]), ("text", TYPE_NAMES["field"]),
-                     ("barcode", TYPE_NAMES["barcode"]), ("qr", TYPE_NAMES["qr"]), ("photo", "Фото / изображение")):
-            i = QLabel(); i.setPixmap(glyph(k).pixmap(18, 18)); leg.addWidget(i); leg.addWidget(QLabel(t))
-        leg.addStretch(1)
+        desc = QGroupBox("Описание: объект, связанный с полем"); g = QGridLayout(desc)
+        for i, (k, t) in enumerate((("front", "на лицевой стороне (F)"), ("back", "на оборотной стороне (B)"), ("text", "Текстовый объект / поле"),
+                                    ("barcode", "Штрихкод"), ("qr", "QR-код"), ("photo", "Изображение / фото"))):
+            ic = QLabel(); ic.setPixmap(glyph(k).pixmap(18, 18)); cell = QHBoxLayout(); cell.addWidget(ic); cell.addWidget(QLabel(t)); cell.addStretch(1)
+            g.addLayout(cell, i % 2, i // 2)
+        self.b_add, self.b_rename, self.b_delete = QPushButton("Добавить поле"), QPushButton("Переименовать поле"), QPushButton("Удалить поле")
         self.b_print, self.b_link = QPushButton("Печать списка полей"), QPushButton("Связать поле")
         self.b_unlink, self.b_close = QPushButton("Отвязать поле"), QPushButton("Закрыть")
-        self.b_print.clicked.connect(self.print_list); self.b_link.clicked.connect(lambda: self.link())
+        self.b_add.clicked.connect(lambda: self.add_field()); self.b_rename.clicked.connect(lambda: self.rename_field())
+        self.b_delete.clicked.connect(lambda: self.delete_field())
+        self.b_print.clicked.connect(lambda: self.print_list()); self.b_link.clicked.connect(lambda: self.link())
         self.b_unlink.clicked.connect(lambda: self.unlink()); self.b_close.clicked.connect(self.accept)
+        b1 = QHBoxLayout()
+        for b in (self.b_add, self.b_rename, self.b_delete): b1.addWidget(b)
+        b1.addStretch(1)
         bl = QHBoxLayout()
         for b in (self.b_print, self.b_link, self.b_unlink): bl.addWidget(b)
         bl.addStretch(1); bl.addWidget(self.b_close)
+        for b in (self.b_add, self.b_rename, self.b_delete, self.b_print, self.b_link, self.b_unlink, self.b_close):
+            b.setMinimumWidth(b.sizeHint().width())
         lay = QVBoxLayout(self)
         lay.addWidget(QLabel("Значение по умолчанию подставляется в рендер, если у записи поле пустое (двойной клик — изменить)."))
-        lay.addWidget(self.tree, 1); lay.addLayout(leg); lay.addLayout(bl)
+        lay.addWidget(self.tree, 1); lay.addLayout(b1); lay.addWidget(desc); lay.addLayout(bl)
         self.reload()
 
     def reload(self):
@@ -135,22 +166,80 @@ class FieldManager(QDialog):
         self.tree.blockSignals(True); self.tree.clear()
         links = self.api.list_field_links()
         for f in self.api.list_fields():
-            it = QTreeWidgetItem(self.tree, [f["label"] or f["name"], f.get("default_value") or ""])
-            it.setData(0, Qt.ItemDataRole.UserRole, ("field", f["name"]))
+            it = QTreeWidgetItem(self.tree, [f["label"] or f["name"], FIELD_TYPE_NAMES[field_type(f)], display_value(field_type(f), f.get("default_value"))])
+            it.setData(0, Qt.ItemDataRole.UserRole, ("field", f["name"])); it.setToolTip(0, f["name"])
             it.setFlags(it.flags() | Qt.ItemFlag.ItemIsEditable)
-            for e in links.get(f["name"], []):
+            ls = links.get(f["name"], [])
+            if ls: it.setIcon(0, _two_icons(ls[0]["side"], ls[0]["type"]))
+            for e in ls:
                 cap = f"{TYPE_NAMES.get(e['type'], e['type'])} · {SIDE_NAMES[e['side']]} · #{e['element_id']}"
-                ch = QTreeWidgetItem(it, [cap, ""]); ch.setIcon(0, _two_icons(e["side"], e["type"]))
+                ch = QTreeWidgetItem(it, [cap, "", ""]); ch.setIcon(0, _two_icons(e["side"], e["type"]))
                 ch.setData(0, Qt.ItemDataRole.UserRole, ("element", e["element_id"], e["type"]))
             it.setExpanded(True)
         free = [e for e in self.api.list_elements() if e["type"] in self.LINKABLE and not e.get("field_name")]
         if free:
-            it = QTreeWidgetItem(self.tree, ["Не связаны", ""]); it.setData(0, Qt.ItemDataRole.UserRole, ("free", None))
+            it = QTreeWidgetItem(self.tree, ["Не связаны", "", ""]); it.setData(0, Qt.ItemDataRole.UserRole, ("free", None))
             for e in free:
-                ch = QTreeWidgetItem(it, [f"{TYPE_NAMES.get(e['type'], e['type'])} · {SIDE_NAMES[e['side']]} · #{e['id']}", ""])
+                ch = QTreeWidgetItem(it, [f"{TYPE_NAMES.get(e['type'], e['type'])} · {SIDE_NAMES[e['side']]} · #{e['id']}", "", ""])
                 ch.setIcon(0, _two_icons(e["side"], e["type"])); ch.setData(0, Qt.ItemDataRole.UserRole, ("element", e["id"], e["type"]))
             it.setExpanded(True)
         self.tree.blockSignals(False); self._sel()
+
+    def selected_field(self):
+        it = self.tree.currentItem(); d = it.data(0, Qt.ItemDataRole.UserRole) if it else None
+        return d[1] if d and d[0] == "field" else None
+
+    def _field(self, name):
+        return next((f for f in self.api.list_fields() if f["name"] == name), None)
+
+    def add_field(self, label=None, data_type="text", default=None):
+        """Новое поле БД (upsert_field). Возвращает имя (ключ) или None."""
+        if label is None:
+            d = FieldEditDialog(self, title="Добавить поле")
+            if field_manager_hook is not None:
+                v = field_manager_hook("add", d)
+                if not v: return None
+                label, data_type, default = v
+            elif d.exec(): label, data_type, default = d.values()
+            else: return None
+        fields = self.api.list_fields()
+        name = new_field_name(label, {f["name"] for f in fields})
+        self.api.upsert_field(name, label, max([f.get("sort_order") or 0 for f in fields] or [0]) + 1, data_type=data_type)
+        if default: self.api.set_field_default(name, default)
+        self.reload(); self._select_field(name); return name
+
+    def rename_field(self, label=None, data_type=None):
+        name = self.selected_field()
+        if name is None: return False
+        f = self._field(name)
+        if label is None:
+            d = FieldEditDialog(self, f["label"] or name, field_type(f), f.get("default_value"), title="Переименовать поле")
+            if field_manager_hook is not None:
+                v = field_manager_hook("rename", d)
+                if not v: return False
+                label, data_type, _ = v
+            elif d.exec(): label, data_type, _ = d.values()
+            else: return False
+        self.api.upsert_field(name, label, f.get("sort_order") or 0, data_type=data_type)
+        self.reload(); self._select_field(name); return True
+
+    def delete_field(self, confirm=None):
+        name = self.selected_field()
+        if name is None: return False
+        n = len(self.api.list_field_links().get(name, []))
+        q = f"Удалить поле «{(self._field(name) or {}).get('label') or name}»?" + (f" Связанные объекты ({n}) будут отвязаны." if n else "") \
+            + " Данные записей не удаляются."
+        if confirm is None:
+            confirm = field_manager_hook("delete", q) if field_manager_hook is not None else \
+                QMessageBox.question(self, "Удалить поле", q) == QMessageBox.StandardButton.Yes
+        if not confirm: return False
+        r = self.api.delete_field(name, unlink=True); self.reload(); return r
+
+    def _select_field(self, name):
+        for i in range(self.tree.topLevelItemCount()):
+            it = self.tree.topLevelItem(i)
+            if it.data(0, Qt.ItemDataRole.UserRole) == ("field", name): self.tree.setCurrentItem(it); return True
+        return False
 
     def selected_element(self):
         it = self.tree.currentItem(); d = it.data(0, Qt.ItemDataRole.UserRole) if it else None
@@ -159,13 +248,14 @@ class FieldManager(QDialog):
     def _sel(self):
         it = self.tree.currentItem(); d = it.data(0, Qt.ItemDataRole.UserRole) if it else None
         obj = bool(d and d[0] == "element")
+        fld = bool(d and d[0] == "field"); self.b_rename.setEnabled(fld); self.b_delete.setEnabled(fld)
         self.b_link.setEnabled(obj and d[2] in self.LINKABLE)
         self.b_unlink.setEnabled(obj and it.parent() is not None and it.parent().data(0, Qt.ItemDataRole.UserRole)[0] == "field")
 
     def _edited(self, item, col):
         d = item.data(0, Qt.ItemDataRole.UserRole)
-        if col == 1 and d and d[0] == "field":
-            self.api.set_field_default(d[1], item.text(1).strip() or None)
+        if col == 2 and d and d[0] == "field":
+            self.api.set_field_default(d[1], item.text(2).strip() or None)
 
     def set_default(self, name, value):
         self.api.set_field_default(name, value); self.reload()
@@ -291,34 +381,3 @@ class SettingsDialog(QDialog):
         if self.base_dir.text().strip(): self.api.base_dir = self.base_dir.text().strip()
         self.settings.setValue("editor/grid", self.grid.value())
         return {"base_dir": self.api.base_dir, "grid": self.grid.value()}
-
-
-def camera_available():
-    """Камера — только если установлен QtMultimedia и есть устройство; иначе захват из файла."""
-    try:
-        from PyQt6.QtMultimedia import QMediaDevices
-    except Exception:  # noqa: BLE001
-        return False
-    try:
-        return bool(QMediaDevices.videoInputs())
-    except Exception:  # noqa: BLE001
-        return False
-
-
-class CameraDialog(QDialog):
-    """Снимок с веб-камеры (QtMultimedia). Создаётся только если camera_available()."""
-
-    def __init__(self, target_path, parent=None):
-        from PyQt6.QtMultimedia import QCamera, QMediaCaptureSession, QImageCapture
-        from PyQt6.QtMultimediaWidgets import QVideoWidget
-        super().__init__(parent); self.setWindowTitle("Захват изображения"); self.path = None; self.target = target_path
-        self.cam = QCamera(); self.session = QMediaCaptureSession(); self.cap = QImageCapture()
-        self.video = QVideoWidget(); self.session.setCamera(self.cam); self.session.setImageCapture(self.cap)
-        self.session.setVideoOutput(self.video)
-        self.cap.imageCaptured.connect(self._got)
-        shot = QPushButton("Сделать снимок"); shot.clicked.connect(lambda: self.cap.capture())
-        lay = QVBoxLayout(self); lay.addWidget(self.video, 1); lay.addWidget(shot); self.resize(640, 520)
-        self.cam.start()
-
-    def _got(self, _id, image):
-        image.save(self.target); self.path = self.target; self.cam.stop(); self.accept()

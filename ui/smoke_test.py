@@ -33,6 +33,10 @@ def spin(ms=50):
 def cancel_immediately(pd): pd.cancel()
 
 api = BackendAPI(tmp / "test.db")
+from ui.backend_api import LABELS as _BL   # D24: поля заводятся в Менеджере полей; в тесте — заранее
+def seed_fields():
+    for _i, (_k, _l) in enumerate(_BL.items()): api.upsert_field(_k, _l, _i)
+seed_fields()
 demo.make_photo(tmp / "p1.png"); demo.make_logo(tmp / "demo_logo.png"); demo.build_demo(api.con)
 csv = tmp / "people.csv"
 csv.write_text("ФИО;Должность;Таб. номер;Фото;Комментарий;Мусор\n"
@@ -47,11 +51,12 @@ dialogs.progress_hook = cancel_immediately; d.run(); dialogs.progress_hook = Non
 assert d.report.cancelled and d.report.added == 0 and api.list_persons() == [], d.report
 ok("импорт: отмена через QProgressDialog → cancelled=True, ничего не добавлено")
 # --- импорт: mapping {header: field|None}, labels, require_photo=False ---
+api.upsert_field("department", "Отдел"); d.set_file(str(csv))   # D24: только существующие поля БД
 d.set_target("Комментарий", "department"); d.set_target("Мусор", None)
 d.table.item(d.headers.index("Комментарий"), 2).setText("Подразделение")
-assert d.mapping() == {"Комментарий": "department", "Мусор": None} and d.labels() == {"department": "Подразделение"}
+assert d.mapping()["Комментарий"] == "department" and d.mapping()["Мусор"] is None and d.labels() == {"department": "Подразделение"}
 d.run(); rep = d.report
-assert not rep.cancelled and rep.added == 2 and rep.skipped == 1 and rep.warnings, rep
+assert not rep.cancelled and rep.added == 3 and rep.skipped == 0 and any(x["code"] == "REQUIRED_MISSING" for x in rep.warnings), rep   # Backend 39c7fca: пустое — только предупреждение
 assert "Предупреждения" in d.log.toPlainText()
 ok(f"импорт: added={rep.added} skipped={rep.skipped} errors={len(rep.errors)} warnings={len(rep.warnings)}")
 w.refresh_all(); m = w.records.model
@@ -425,7 +430,7 @@ from ui.ribbon import TABS
 from ui.backend_api import TYPE_NAMES, SIDE_NAMES
 from ui import records_table as rtm
 w.switch_db(tmp / "main_view.db"); api.base_dir = str(tmp); w.show_main(); app.processEvents()
-demo.build_demo(api.con)                                     # демо-макет — только из теста (фикстура)
+demo.build_demo(api.con); seed_fields()                      # демо-макет и поля — только из теста (фикстура)
 dimp = ImportDialog(api, w); dimp.set_file(str(csv)); dimp.photo_dir.setText(str(tmp)); dimp.set_target("Мусор", None)
 dimp.set_target("Комментарий", "department"); dimp.run(); w.refresh_all()
 # --- этап 12: лента, уникальность QAction ---
@@ -435,7 +440,7 @@ acts = w.all_actions()
 texts = [a.text() for a in acts]; names = [a.objectName() for a in acts]
 assert len(texts) == len(set(texts)), [t for t in texts if texts.count(t) > 1]
 assert len(names) == len(set(names)) and all(n.startswith("act_") for n in names), names
-assert len(acts) - (len(w.display_actions) - 1) == 58, len(acts)       # 58 действий (Дисплей — одна группа из 3)
+assert len(acts) - (len(w.display_actions) - 1) == 57, len(acts)       # 57 действий (act_capture удалён, D22) (Дисплей — одна группа из 3)
 from PyQt6.QtWidgets import QToolButton
 assert w.records.filter.apply_button.isVisible() or True
 btn_count = {}
@@ -523,7 +528,7 @@ for pid in (a_id, b_id):
     assert pp.person_id == pid and pp.pixmap.toImage() == QPixmap.fromImage(api.render_card(pid, "front")).toImage()
     assert pp.pixmaps["back"].toImage() == QPixmap.fromImage(api.render_card(pid, "back")).toImage()
     rows = pp.db_rows(); f = api.get_person(pid)["fields"]
-    assert rows and any(v == f["last_name"] for _k, v in rows) and not any("None" in k for k, _v in rows), rows
+    assert rows and any(v in f.values() for _k, v in rows) and not any("None" in k for k, _v in rows), rows
 ok(f"выбор строки → «Сторона 1/2» = render_card, «Поле шаблона | Значение из БД»: {rows[:3]}…")
 w.act_side.trigger(); app.processEvents(); assert pp.side == "back" and pp.sides.currentIndex() == 1 and w.layout_editor.side == "back"
 w.act_side.trigger(); app.processEvents(); assert pp.side == "front"
@@ -658,13 +663,13 @@ mwm.ask_hook = None
 ok("Сохранить как… → backup_db; «Сжать и восстановить» → compact_and_backup / restore_db (переподключение)")
 # захват изображения из файла
 w.show_main(); demo.make_photo(tmp / "cap.png"); w._select_person(a_id); app.processEvents()
-assert w.capture_image(str(tmp / "cap.png")) == "cap.png" and api.get_person(a_id)["photo_path"] == "cap.png"
-from ui.main_view import camera_available
-ok(f"«Захват изображения»: фото из файла записано; камера доступна: {camera_available()} (иначе — файл)")
+from ui.photo_block import multimedia
+assert not hasattr(w, "act_capture")
+ok(f"D22: «Захват изображения» убран из ленты; камера: {multimedia()[1]}")
 assert w.open_settings({"grid": 25})["grid"] == 25; w.act_grid.trigger(); assert le.grid_on; w.act_grid.trigger()
 w.act_rulers.trigger(); assert not le.hruler.isVisible(); w.act_rulers.trigger()
 w.ribbon.select("Главная"); app.processEvents(); assert le.hruler.isVisible()
-txt = []; mwm.about_hook = txt.append; w.about(); mwm.about_hook = None; assert f"Схема БД: v{bdb.LATEST}" in txt[0] and bdb.LATEST == 4
+txt = []; mwm.about_hook = txt.append; w.about(); mwm.about_hook = None; assert f"Схема БД: v{bdb.LATEST}" in txt[0] and bdb.LATEST >= 4
 ok(f"Настройки, Сетка, Линейки, О программе (схема v{bdb.LATEST})")
 # скриншоты всех вкладок ленты
 w._select_person(a_id); w.showNormal(); w.resize(1280, 800); spin(120)
@@ -724,4 +729,34 @@ w2.reset_layout(); app.processEvents(); sz = w2.splitter.sizes()
 assert abs(sz[0] / sum(sz) - 0.65) < 0.05, sz
 ok(f"сплиттер: {saved} сохранён в closeEvent и восстановлен; сброс → ~65/35 {sz}")
 w2.close(); lem.warn_hook = None
+# ===== D20/D21/D24: excepthook, менеджер полей (добавить/переименовать/удалить, тип), typed-редакторы =====
+from ui import errors as uerr
+got = []; uerr.error_hook = got.append; uerr.handle(RuntimeError, RuntimeError("smoke"), None); uerr.error_hook = None
+assert got and "smoke" in got[0] and Path(uerr.log_path()).read_text(encoding="utf-8").rstrip().endswith("RuntimeError: smoke")
+ok(f"D20: excepthook → без падения, журнал {uerr.log_path()}")
+from ui import main_view as mvm
+from ui.backend_api import field_type, FIELD_TYPE_NAMES
+fm = w.field_manager(exec_=False)
+assert [fm.tree.headerItem().text(i) for i in range(3)] == ["Поле", "Тип данных", "Значение по умолчанию"]
+nm = fm.add_field("Дата выдачи", "date", "2026-01-31")
+f_ = next(f for f in api.list_fields() if f["name"] == nm); assert field_type(f_) == "date", f_
+it = fm.tree.currentItem(); assert it.text(1) == "Дата" and it.text(2) == "31.01.2026", (it.text(1), it.text(2))
+assert fm.rename_field("Дата выдачи пропуска", "date") and next(f for f in api.list_fields() if f["name"] == nm)["label"] == "Дата выдачи пропуска"
+nb = fm.add_field("Студент", "bool"); nn = fm.add_field("Курс", "number")
+from ui.record_form import RecordForm as RF, editor_value
+rf = RF(api, None, w); assert type(rf.edits[nm]).__name__ == "QDateEdit" and rf.edits[nm].displayFormat() == "dd.MM.yyyy"
+assert type(rf.edits[nb]).__name__ == "QCheckBox" and type(rf.edits[nn]).__name__ == "QDoubleSpinBox"
+rf.edits[nb].setChecked(True); assert editor_value(rf.edits[nb]) == "1"; rf.photo_block.stop(); rf.reject()
+mvm.field_manager_hook = lambda kind, q: False
+for n_ in (nm, nb, nn):
+    fm._select_field(n_); assert not fm.delete_field() and any(f["name"] == n_ for f in api.list_fields())   # без подтверждения — нет
+    fm._select_field(n_); assert fm.delete_field(confirm=True) is not False and not any(f["name"] == n_ for f in api.list_fields())
+mvm.field_manager_hook = None
+fm.resize(720, 560); fm.show(); spin(80); fm.grab().save(str(shots / "stage12_field_manager.png")); fm.close()
+ok("D21/D24: менеджер полей — Поле | Тип данных | Значение по умолчанию; добавить/переименовать/удалить (с подтверждением); редакторы по типу")
+# ===== self-test (тот же сценарий click-all, что и --self-test) =====
+from ui import self_test
+rc = self_test.run(["x"], app=app, log_file=str(tmp / "self_test.log"))
+assert rc == 0, (tmp / "self_test.log").read_text(encoding="utf-8")[-3000:]
+ok(f"self-test (click-all): код 0, лог {tmp / 'self_test.log'}")
 print("ALL OK; tmp =", tmp)

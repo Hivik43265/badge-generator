@@ -34,6 +34,43 @@ def pil_to_qimage(img):
     return QImage(data, img.width, img.height, 3 * img.width, QImage.Format.Format_RGB888).copy()
 
 
+import inspect as _inspect
+_UPSERT_HAS_TYPE = "data_type" in _inspect.signature(_api.upsert_field).parameters
+# D24: типы данных полей (значения data_type в Backend) → подписи UI
+FIELD_TYPES = [("text", "Строка"), ("number", "Число"), ("date", "Дата"), ("image", "Изображение"), ("bool", "Да/Нет")]
+FIELD_TYPE_NAMES = dict(FIELD_TYPES)
+
+
+def field_type(f):
+    """Тип поля из list_fields(); нет data_type в Backend → «text» (Строка)."""
+    t = (f or {}).get("data_type") or "text"
+    return t if t in FIELD_TYPE_NAMES else "text"
+
+
+def display_value(data_type, value):
+    """Показ значения: даты ДД.ММ.ГГГГ, булево Да/Нет — только через badge_backend.fields.format_value."""
+    if value in (None, ""): return ""
+    try:
+        from badge_backend.fields import format_value
+        return str(format_value(data_type or "text", value))
+    except Exception:  # noqa: BLE001
+        return str(value)
+
+
+def new_field_name(label, existing):
+    from badge_backend.services.headers import slugify
+    base = slugify(label) or "field"; n, i = base, 2
+    while n in existing: n, i = f"{base}_{i}", i + 1
+    return n
+
+
+def person_caption(api, p):
+    """«#id <первые два непустых поля в порядке list_fields()>» — без жёстко заданных ключей (D24)."""
+    if not p: return ""
+    vals = [str(p["fields"].get(f["name"]) or "") for f in api.list_fields()]
+    return f"#{p['id']} " + " ".join([v for v in vals if v][:2])
+
+
 class BackendAPI:
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH, base_dir: str | Path | None = None):
         self.con = None
@@ -65,7 +102,20 @@ class BackendAPI:
 
     # --- записи ---
     def list_fields(self): return _api.list_fields(self.con)
-    def upsert_field(self, name, label, sort_order=0): return _api.upsert_field(self.con, name, label, sort_order)
+    def auto_match(self, columns, mapping=None):
+        return _api.auto_match(columns, mapping, fields=self.con)
+
+    def set_field_type(self, name, data_type):
+        return _api.set_field_type(self.con, name, data_type)
+
+    def validate_fields(self, fields):
+        return _api.validate_fields(self.con, fields)
+
+    def upsert_field(self, name, label, sort_order=0, data_type=None):
+        """D24: data_type передаётся, только если Backend его принимает (иначе — тип «Строка» по умолчанию)."""
+        if data_type is not None and _UPSERT_HAS_TYPE:
+            return _api.upsert_field(self.con, name, label, sort_order, data_type=data_type)
+        return _api.upsert_field(self.con, name, label, sort_order)
     def list_persons(self, only_marked=False): return _api.list_persons(self.con, only_marked)
     def get_person(self, pid): return _api.get_person(self.con, pid)
     def create_person(self, fields, photo_path=None, photo_config=None, print_mark=0):
