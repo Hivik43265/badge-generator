@@ -21,9 +21,10 @@ def g(cmd): return subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT)
 con = api.connect(str(TMP / "fresh.db"))
 n_el = con.execute("SELECT count(*) FROM template_elements").fetchone()[0]; uv = con.execute("PRAGMA user_version").fetchone()[0]
 nbg = con.execute("SELECT count(*) FROM template_backgrounds").fetchone()[0]
-chk("1a Свежая БД: 0 template_elements, user_version=3", n_el == 0 and uv == 3, f"elements={n_el}, backgrounds={nbg}, user_version={uv}")
+# этапы 12–13: версия из LATEST (v4 ellipse, v5 data_type)
+chk(f"1a Свежая БД: 0 template_elements, user_version=LATEST={bdb.LATEST}", n_el == 0 and uv == bdb.LATEST, f"elements={n_el}, backgrounds={nbg}, user_version={uv}")
 seed = g(["grep", "-rnE", "INSERT INTO template_elements|build_demo\\(|apply_layout\\(", "--include=*.py", "--include=*.sql", "badge_backend"])
-seed_calls = [l for l in seed.splitlines() if not re.search(r"demo\.py:\d+:\s*(def |return apply_layout)|db\.py:\d+:.*SELECT \{cols\} FROM _te_old|api\.py:\d+:.*VALUES \(\{", l)]  # копирование при миграции и CRUD create_element — не seed
+seed_calls = [l for l in seed.splitlines() if not re.search(r"demo\.py:\d+:\s*(def |return apply_layout)|db\.py:\d+:.*SELECT \{cols\} FROM _te_old|api\.py:\d+:.*VALUES \(\{|table_export\.py:\d+:.*new\.execute\(f.INSERT INTO template_elements\(\{cols\}\)", l)]  # этап 13: export_persons(.db) копирует макет проекта, не seed  # копирование при миграции и CRUD create_element — не seed
 chk("1b Нет seed-макетов в badge_backend/ и миграциях", not seed_calls and "INSERT" not in bdb.SCHEMA.upper().split("CREATE TRIGGER")[0], f"вызовы вне определений: {seed_calls or 'нет'}")
 hits = g(["grep", "-rlE", "Гость|ООО «Пример»|ООО Пример", ".", "--exclude-dir=.venv", "--exclude-dir=__pycache__", "--exclude-dir=.pytest_cache", "--exclude-dir=.git"]).splitlines()
 # Исключение: юнит-assert element_caption в ui/smoke_test.py (строка «Гость» — тестовое значение, не демо-данные)
@@ -135,8 +136,8 @@ for ver in (2, 1):
     idx = c.execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='template_elements'").fetchall()
     fk = c.execute("PRAGMA integrity_check").fetchone()[0]; c.close()
     v2 = api.connect(str(p)).execute("PRAGMA user_version").fetchone()[0]
-    ok = v == 3 and v2 == 3 and [tuple(r[:7]) for r in pb] == pa and [tuple(r) for r in eb] == ea and "'line'" in sql and idx and fk == "ok"
-    chk(f"6 Миграция v{ver}→v3: persons/template_elements и id сохранены", ok, f"user_version {ver}→{v} (повторно {v2}); persons ids={[r[0] for r in pa]}, elements ids={[r[0] for r in ea]}; данные совпали={[tuple(r[:7]) for r in pb] == pa and [tuple(r) for r in eb] == ea}; индекс={idx}; integrity={fk}")
+    ok = v == bdb.LATEST and v2 == bdb.LATEST and [tuple(r[:7]) for r in pb] == pa and [tuple(r) for r in eb] == ea and "'line'" in sql and idx and fk == "ok"
+    chk(f"6 Миграция v{ver}→v{bdb.LATEST}: persons/template_elements и id сохранены", ok, f"user_version {ver}→{v} (повторно {v2}); persons ids={[r[0] for r in pa]}, elements ids={[r[0] for r in ea]}; данные совпали={[tuple(r[:7]) for r in pb] == pa and [tuple(r) for r in eb] == ea}; индекс={idx}; integrity={fk}")
 
 # 7 background
 c = api.connect(":memory:"); bgp = TMP / "bg.png"; Image.new("RGB", (50, 50), (200, 0, 0)).save(bgp)
@@ -153,7 +154,7 @@ types = re.findall(r"'(\w+)'", re.search(r"type IN \(([^)]*)\)", sql).group(1))
 logo = TMP / "logo.png"; Image.new("RGB", (80, 80), "red").save(logo)
 pid = api.create_person(c, {"last_name": "Иванов", "code": "BG-1"})
 spec = {"text": dict(static_value="Текст"), "field": dict(field_name="last_name"), "photo": {}, "image": dict(static_value=str(logo)),
-        "rect": dict(style={"fill": "#EEE"}), "qr": dict(static_value="QR-1"), "barcode": dict(field_name="code"), "line": {}}
+        "rect": dict(style={"fill": "#EEE"}), "qr": dict(static_value="QR-1"), "barcode": dict(field_name="code"), "line": {}, "ellipse": dict(style={"stroke": "#000", "stroke_width": 2})}  # этап 12: ellipse (v4)
 y = 0; miss = [t for t in types if t not in spec]
 for t in types:
     api.create_element(c, t, 10 + (y % 3) * 330, 10 + (y // 3) * 210, 300 if t != "line" else 300, 200 if t != "line" else 0, **spec.get(t, {})); y += 1
@@ -166,9 +167,12 @@ chk("8 Все типы CHECK рендерятся без warning «reserved/пр
 sq = g(["grep", "-rnEi", r"import sqlite3|\.execute\(|\b(SELECT|INSERT|UPDATE|DELETE)\b .*(FROM|INTO|SET)|PRAGMA", "--include=*.py", "ui", "--exclude=smoke_test.py"])
 chk("9a Нет SQL в ui/ (кроме smoke_test)", not sq, sq or "grep пусто")
 src = (ROOT / "ui/layout_editor.py").read_text(encoding="utf-8")
-tools = dict((k, t) for k, _, t in re.findall(r'\("(\w+)", "([^"]+)", "?(\w+|None)"?\)', src.split("DEFAULT_SIZE")[0]))
+# этап 12: инструменты — QAction act_tool_<type> в ui/main_window.py (keys = {...} в _build_actions)
+mw = (ROOT / "ui/main_window.py").read_text(encoding="utf-8")
+km = re.search(r"keys = \{(.*?)\}\s*\n\s*icons", mw, re.S)
+tools = {t: t for t in re.findall(r'"(\w+)":\s*"\w"', km.group(1))} if km and 'A(f"act_tool_{t}"' in mw else {}
 missing = [t for t in types if t not in tools.values()]
-chk("9b UI: кнопка добавления для каждого типа + удалить + z_order", not missing and "act_delete" in src and "move_z(+1)" in src and "move_z(-1)" in src,
+chk("9b UI: кнопка добавления для каждого типа + удалить + z_order", not missing and ("act_delete" in src or "act_delete" in mw) and ("move_z(+1)" in src or "move_z(d)" in mw) and ("move_z(-1)" in src or "def move_z" in src),
     f"TOOLS→types={sorted(set(tools.values()) - {'None'})}; нет кнопки для {missing or '—'}; act_delete/«Выше»/«Ниже» есть")
 print(f"\nИТОГО: {sum(r[1] for r in RES)}/{len(RES)} PASS; tmp={TMP}")
 json.dump([dict(name=a, ok=b, ev=c) for a, b, c in RES], open(QA / "e2e_stage10_results.json", "w"), ensure_ascii=False, indent=1)

@@ -50,34 +50,42 @@ for enc in ("utf-8-sig", "utf-8", "cp1251"):
 import openpyxl
 wb = openpyxl.Workbook(); ws = wb.active; ws.append(hdr); [ws.append(list(r.values())) for r in src]
 xf = TMP/"imp.xlsx"; wb.save(xf); variants.append(xf)
+# этап 13 (D24, утверждено): новая БД без полей, импорт поля не создаёт → поля заводятся заранее, как через «Менеджер полей»
+from badge_backend.services.headers import LABELS as _LBL
+def fc():
+    c_ = api.connect(":memory:")
+    for i_, (n_, l_) in enumerate(_LBL.items()): api.upsert_field(c_, n_, l_, i_)
+    return c_
 res = []
 for f in variants:
-    c = api.connect(":memory:"); rep, _ = W(api.import_file, c, f, photo_dir=SETS/"large/photos")
+    c = fc(); rep, _ = W(api.import_file, c, f, photo_dir=SETS/"large/photos")
     n = c.execute("SELECT count(*) FROM persons").fetchone()[0]; bad = cmp(c, rep.ids)
     res.append((f.name, rep.added, rep.skipped, n, bad, rep.validator))
 chk("Импорт 600 строк csv UTF-8±BOM/cp1251 (; ,) + xlsx без потерь", all(a == 600 and n == 600 and b == 0 for _, a, s, n, b, _ in res),
     "; ".join(f"{a}:{b} added/{c} skip/{d} rows/{e} mismatch/{v}" for a, b, c, d, e, v in res))
-c = api.connect(":memory:"); rep, _ = W(api.import_file, c, SETS/"large/persons.csv", photo_dir=SETS/"large/photos")
+c = fc(); rep, _ = W(api.import_file, c, SETS/"large/persons.csv", photo_dir=SETS/"large/photos")
 chk("Импорт large (1000 строк)", rep.added + rep.skipped == 1000 and rep.added >= 500, f"added={rep.added} skipped={rep.skipped} errors={rep.errors[:2]}")
 # rollback
-c = api.connect(":memory:")
+c = fc()
 def boom(done, total):
     if done == 300: raise RuntimeError("fail@300")
 try: api.import_file(c, variants[0], progress=boom); e = None
 except RuntimeError as ex: e = ex
 n = c.execute("SELECT count(*) FROM persons").fetchone()[0]
 chk("Транзакция: сбой на 300-й → откат", e and n == 0, f"exc={e!r}; persons={n}")
-c = api.connect(":memory:"); rep, _ = W(api.import_file, c, variants[0], progress=lambda d, t: d < 300)
+c = fc(); rep, _ = W(api.import_file, c, variants[0], progress=lambda d, t: d < 300)
 chk("Отмена импорта → откат", rep.cancelled and c.execute("SELECT count(*) FROM persons").fetchone()[0] == 0, f"cancelled={rep.cancelled}")
 for s in ("clean", "duplicates", "missing_fields", "zero_byte_and_broken"):
-    c = api.connect(":memory:"); f = SETS/s/"persons.csv"; pd = SETS/s/"photos"
+    c = fc(); f = SETS/s/"persons.csv"; pd = SETS/s/"photos"
     rep, wn = W(api.import_file, c, f, photo_dir=pd if pd.exists() else None)
     rows = sum(1 for _ in open(f, encoding="utf-8")) - 1
     print(f"  set {s}: rows={rows} added={rep.added} skipped={rep.skipped} codes={sorted({e['code'] for e in rep.errors})} warn={sorted({e['code'] for e in rep.warnings})}")
-    exp = {"clean": rep.added == rows and rep.skipped == 0, "duplicates": rep.skipped >= 1, "missing_fields": rep.skipped >= 1,
+    # этап 13 (D25, утверждено): ошибки только FIELD_TYPE и полностью пустая строка; дубли/пустые поля — импорт (warning)
+    soft = all(e["code"] in ("FIELD_TYPE", "EMPTY_ROW") for e in rep.errors)
+    exp = {"clean": rep.added == rows and rep.skipped == 0, "duplicates": rep.added + rep.skipped == rows and soft, "missing_fields": rep.added + rep.skipped == rows and soft,
            "zero_byte_and_broken": rep.added + rep.skipped == rows}[s]
     chk(f"Набор {s}", exp, f"rows={rows} added={rep.added} skipped={rep.skipped} errors={sorted({e['code'] for e in rep.errors})} warnings={sorted({e['code'] for e in rep.warnings})}")
-c = api.connect(":memory:"); rep, wn = W(api.import_file, c, SETS/"messy_headers/persons_raw.xlsx")
+c = fc(); rep, wn = W(api.import_file, c, SETS/"messy_headers/persons_raw.xlsx")
 p = api.list_persons(c)
 chk("Набор messy_headers (xlsx, маппинг Backend)", rep.added > 0 and p and "last_name" in p[0]["fields"], f"added={rep.added} skipped={rep.skipped} keys={sorted(p[0]['fields']) if p else None}")
 # no data_tools
@@ -184,7 +192,8 @@ c2 = api.connect(str(old)); v2 = c2.execute("PRAGMA user_version").fetchone()[0]
 after = [tuple(r) for r in c2.execute("SELECT id,fields_json,photo_path,photo_config,print_mark,created_at,updated_at FROM persons")]
 pa = [r[0] for r in c2.execute("SELECT printed_at FROM persons")]; els_a = [tuple(r) for r in c2.execute("SELECT * FROM template_elements")]; c2.close()
 v3 = api.connect(str(old)).execute("PRAGMA user_version").fetchone()[0]
-chk("Миграция user_version 1→LATEST=3 без потери данных (идемпотентна)", v1 == 1 and v2 == 3 and v3 == 3 and bdb.LATEST == 3 and before == after and els_b == els_a and pa == [None, None],
+# этапы 12–13: версия схемы читается из LATEST (утверждённые v4 ellipse, v5 data_type)
+chk(f"Миграция user_version 1→LATEST={bdb.LATEST} без потери данных (идемпотентна)", v1 == 1 and v2 == bdb.LATEST and v3 == bdb.LATEST and bdb.LATEST >= 5 and before == after and els_b == els_a and pa == [None, None],
     f"user_version {v1}→{v2}, повторно {v3}; persons до==после: {before == after} ({len(after)} строк); template_elements сохранены: {els_b == els_a}; printed_at={pa}")
 # текст: перенос по дефису и «…»
 from badge_backend import render as BR
