@@ -781,6 +781,46 @@ dialogs.confirm_fields_hook = lambda new: seen.append(new) or True; dd.run(); di
 assert seen and dd.report.added == len(api.list_persons()) - 1 and {f["name"] for f in api2.list_fields()} >= {f0["name"]}, (dd.log.toPlainText(), api2.list_fields())
 dd.reject(); assert dd.sheets == [] and (wp is None or not Path(wp).exists()); api2.close()
 ok(f"этап 13: импорт xlsx (лист, заголовок, auto_match, «Отметка печати», привязка save/load/битая), .db → подтверждение → import_fields=True; sheet.close() при закрытии")
+# ===== этап 14: редактор фото (двойной клик / контекстное меню, ползунки, рамка, Портрет, Применить) =====
+from PyQt6.QtTest import QTest
+from PyQt6.QtCore import QPointF
+from ui import photo_editor as pe
+from badge_backend import api as _bapi14
+api14 = BackendAPI(str(tmp / "s14.db"), base_dir=str(tmp)); api14.upsert_field("foto", "Фото", 0, data_type="image")
+_pe = api14.create_element(type="photo", x=0, y=0, w=300, h=400); api14.link_field(_pe, "foto")
+demo.make_photo(tmp / "p14.png")
+rf14 = RecordForm(api14, None, w); ie14 = rf14.edits["foto"]; rf14.show(); spin(30)
+assert abs(ie14.aspect - 0.75) < 1e-6 and not ie14.act_edit.isEnabled()
+got14 = []; pe.editor_hook = lambda d: got14.append(d) or 0
+ie14.from_file(str(tmp / "p14.png")); spin(30); assert not got14 and ie14.editor is None       # после файла сам не открывается
+assert ie14.act_edit in ie14.still.actions() and ie14.act_edit.isEnabled()                   # тот же QAction в контекстном меню
+QTest.mouseDClick(ie14.still, Qt.MouseButton.LeftButton); spin(30); ed14 = got14[-1]
+assert ed14.windowTitle() == "Редактировать изображение" and "apply_photo_edit" in ed14.status.text()
+assert [b.text() for b in (ed14.b_apply, ed14.b_cancel)] == ["Применить", "Отмена"] and "УгЧ" not in " ".join(b.text() for b in ed14.findChildren(QPushButton))
+assert [(ed14.sp[k].minimum(), ed14.sp[k].maximum()) for k in ("brightness", "contrast", "scale", "rotate")] == [(-50, 50), (-50, 50), (10, 400), (-180, 180)]
+assert ed14.apply() is False and ed14.find_face() is False and not ed14.portrait.isChecked() and "Лицо не найдено" in ed14.status.text()
+r0 = ed14.frame.rect(); assert abs(r0.width() / r0.height() - 0.75) < 1e-3 and ed14.frame.pen().style() == Qt.PenStyle.DashLine
+ed14.frame.resize_corner("br", QPointF(r0.right() - 100, r0.bottom() - 10)); r1 = ed14.frame.rect()
+assert abs(r1.width() / r1.height() - 0.75) < 1e-3 and r1.topLeft() == r0.topLeft() and r1.width() < r0.width()
+ed14.frame.move_by(QPointF(-10000, -10000)); assert ed14.frame.rect().topLeft() == QPointF(0, 0)
+ed14.sl["brightness"].setValue(20); assert ed14.sp["brightness"].value() == 20 and ed14.params()["brightness"] == 20
+ed14.save_defaults(); ed14.sp["brightness"].setValue(-5); ed14.load_defaults(); assert ed14.sp["brightness"].value() == 20
+ed14.settings.remove("photo_editor/defaults"); ed14.load_defaults(); assert ed14.params(crop=False)["brightness"] == 0
+# с функциями Backend (подставлены только в тесте: тождественная обработка + фиксированная рамка лица)
+calls = []
+_bapi14.apply_photo_edit = lambda img, p: calls.append(dict(p)) or img
+_bapi14.detect_face_crop = lambda img, aspect: (30, 40, 300, 400)
+try:
+    ed14.sp["contrast"].setValue(10); ed14.update_preview(); assert calls and calls[-1]["contrast"] == 10 and calls[-1]["crop"] is None
+    assert ed14.find_face() and ed14.crop() == (30, 40, 300, 400)
+    ed14.autoeffect.setChecked(True); assert ed14.apply() is True and calls[-1]["crop"] == (30, 40, 300, 400) and calls[-1]["autoeffect"]
+    assert ed14.result_path.startswith("photos/") and (tmp / ed14.result_path).is_file()
+    assert ie14.text() == ed14.result_path, (ie14.text(), ed14.result_path)
+    rf14.save(); assert api14.list_persons()[-1]["fields"]["foto"] == ed14.result_path
+finally:
+    del _bapi14.apply_photo_edit, _bapi14.detect_face_crop; pe.editor_hook = None
+api14.close()
+ok("этап 14: редактор фото — двойной клик/контекстное меню (один QAction), без автооткрытия, ползунки с полями, рамка с пропорциями элемента (углы/перенос), Портрет, по умолчанию, Применить → save_photo → поле image; без Backend — оригинал и статус")
 # расположение окна сохраняется автоматически в closeEvent
 _cfg2 = tempfile.mkdtemp(prefix="bg_ui_cfg2_")
 QSettings.setPath(QSettings.Format.NativeFormat, QSettings.Scope.UserScope, _cfg2)

@@ -54,6 +54,12 @@ class PhotoBlock(QWidget):
         else:
             self.camera_combo.addItem("— нет камеры —"); self.camera_combo.setEnabled(False)
             self.status.setText(msg)
+        # этап 14: один QAction «Редактировать изображение…» — двойной клик по фото и контекстное меню
+        from .photo_editor import make_edit_action
+        self.save_photo, self.aspect, self.editor = None, 3 / 4, None
+        self.act_edit = make_edit_action(self, self.edit_photo)
+        self.still.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu); self.still.addAction(self.act_edit)
+        self.still.installEventFilter(self); self.still.setToolTip("Двойной клик — редактировать изображение")
         self._update_buttons(); self._show_still()
 
     # ---- камера ----
@@ -127,8 +133,33 @@ class PhotoBlock(QWidget):
         else: self.still.setPixmap(pm.scaled(220, 170, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         if self.captured is not None or not self.has_camera or self.video is None: self.stack.setCurrentWidget(self.still)
 
+    def eventFilter(self, obj, ev):
+        from PyQt6.QtCore import QEvent
+        if obj is self.still and ev.type() == QEvent.Type.MouseButtonDblClick:
+            if self.act_edit.isEnabled(): self.act_edit.trigger()
+            return True
+        return super().eventFilter(obj, ev)
+
+    def edit_photo(self):
+        """Редактор фото (только по действию пользователя; после снимка/файла сам не открывается)."""
+        from . import photo_editor as pe
+        full = self._abs(self.path)
+        if not self.path or not os.path.isfile(full) or self.save_photo is None: return None
+        d = self.editor = pe.PhotoEditor(full, self.save_photo, self.aspect, self)
+        d.accepted.connect(lambda: self._edited(d))
+        return pe.editor_hook(d) if pe.editor_hook is not None else d.exec()
+
+    def _edited(self, d):
+        if not d.result_path: return
+        if self.captured:
+            try: os.remove(self.captured)
+            except OSError: pass
+        self.captured, self.path = None, d.result_path
+        self._show_still(); self._update_buttons(); self.changed.emit(self.path)
+
     def _update_buttons(self):
         self.b_shot.setEnabled(self.has_camera and self.captured is None); self.b_retake.setEnabled(self.has_camera and self.captured is not None)
+        if hasattr(self, "act_edit"): self.act_edit.setEnabled(bool(self.path))
 
     def commit(self, save_photo, person_id=None):
         """Снимок → Backend save_photo(image_bytes, person_id=…, ext=…) → «photos/<name>» (ValueError — пусто/битые данные).

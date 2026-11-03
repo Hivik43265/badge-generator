@@ -155,6 +155,19 @@ def scenario(tmp, chk, out, EXC):
             got = dd.report.added if dd.report else None; nf = len(api3.list_fields()); dd.reject(); api3.close()
             chk("DLG Импорт .db: подтверждение → import_fields=True, поля созданы", bool(asked) and nf > 0 and got and len(EXC) == n,
                 f"новые поля={asked[:1]}; создано полей={nf}; добавлено={got}")
+            # этап 14: редактор фото — двойной клик по фото в форме записи (тот же QAction, что в контекстном меню)
+            from . import photo_editor as pe
+            from PyQt6.QtTest import QTest
+            n = len(EXC); f = RecordForm(w2.api, None, w2); f.show(); spin(50); pb = f.photo_block
+            ph = tmp / "qa14.png"; QImage(240, 320, QImage.Format.Format_RGB32).save(str(ph)); pb.from_file(str(ph)); spin(30)
+            auto = pb.editor is not None; seen = []
+            pe.editor_hook = lambda d: (d.show(), spin(50), seen.append((d.windowTitle(), d.isVisible(), d.b_apply.text(), d.b_cancel.text())), d.reject())
+            try: QTest.mouseDClick(pb.still, Qt.MouseButton.LeftButton); spin(50)
+            finally: pe.editor_hook = None
+            pb.stop(); f.reject(); spin(30)
+            chk("DLG «Редактировать изображение» по двойному клику на фото формы записи (не открывается сам после файла)",
+                not auto and seen and seen[0][:2] == ("Редактировать изображение", True) and pb.act_edit in pb.still.actions() and len(EXC) == n,
+                seen or "не открылся")
         except Exception:  # noqa: BLE001
             chk("DLG Импорт/экспорт этапа 13 без исключений", False, traceback.format_exc()[-800:])
         finally:

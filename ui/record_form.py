@@ -118,7 +118,14 @@ class RecordForm(QDialog):
         bb.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
         bb.accepted.connect(self.save); bb.rejected.connect(self.reject)
         # фото записи (persons.photo_path) нужно только объектам «Фото», не связанным с image-полем
-        unlinked = any(e["type"] == "photo" and not e.get("field_name") for e in api.list_elements())
+        els = api.list_elements()
+        unlinked = any(e["type"] == "photo" and not e.get("field_name") for e in els)
+        def _aspect(fn):   # этап 14: пропорции рамки = фото-элемент (связанный с полем; иначе любой «Фото»)
+            e = next((e for e in els if e["type"] == "photo" and e.get("field_name") == fn), None) or \
+                next((e for e in els if e["type"] == "photo"), None)
+            return (e["w"] / e["h"]) if e and e.get("w") and e.get("h") else 3 / 4
+        for blk, fn in [(self.photo_block, None), *[(e, n) for n, e in self.image_edits.items()]]:
+            blk.save_photo, blk.aspect = api.save_photo, _aspect(fn)
         self.photo_box = box; box.setVisible(not self.image_edits or unlinked)
         left = QVBoxLayout(); left.addLayout(form); left.addWidget(box); left.addStretch()
         main = QHBoxLayout(); main.addLayout(left); main.addLayout(pv)

@@ -296,3 +296,37 @@ def _bapi_auto_match_full(self, columns, mapping=None):
 
 BackendAPI.import_rows = _bapi_import_rows
 BackendAPI.export_persons = _bapi_export_persons
+
+
+# ---------------- Этап 14: редактор фото (адаптер; функций пока нет в Backend) ----------------
+# Ожидается: apply_photo_edit(img: PIL.Image, params: dict) -> PIL.Image
+#            params = {"brightness": int -50..50, "contrast": int -50..50, "scale": int 10..400 (%),
+#                      "rotate": float -180..180 (°, по часовой), "crop": (x, y, w, h) | None (px исходника), "autoeffect": bool}
+#            detect_face_crop(img: PIL.Image, aspect: float) -> (x, y, w, h) | None   (aspect = w / h фото-элемента)
+PHOTO_EDIT_DEFAULTS = {"brightness": 0, "contrast": 0, "scale": 100, "rotate": 0.0, "crop": None, "autoeffect": False}
+
+
+def photo_edit_available(): return callable(getattr(_api, "apply_photo_edit", None))
+def face_detect_available(): return callable(getattr(_api, "detect_face_crop", None))
+
+
+def open_image(path):
+    """Файл → PIL.Image (только чтение, без обработки)."""
+    from PIL import Image
+    with Image.open(path) as im: return im.copy()
+
+
+def apply_photo_edit(img, params):
+    """Backend apply_photo_edit; нет функции → исходное изображение без изменений (UI сам не обрабатывает)."""
+    fn = getattr(_api, "apply_photo_edit", None)
+    return fn(img, dict(params)) if fn else img
+
+
+def detect_face_crop(img, aspect):
+    fn = getattr(_api, "detect_face_crop", None)
+    return fn(img, aspect) if fn else None
+
+
+def image_png_bytes(img):
+    import io
+    b = io.BytesIO(); img.save(b, "PNG"); return b.getvalue()
