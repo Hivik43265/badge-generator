@@ -124,17 +124,37 @@ class ImportDialog(QDialog):
         lay.addWidget(QLabel("Превью строк:")); lay.addWidget(self.preview, 2); lay.addWidget(self.log); lay.addLayout(bottom)
 
     # ---- жизненный цикл: временные копии .db удаляет Sheet.close() ----
-    def close_sheets(self):
-        for sh in self.sheets:
+    # D48: Sheet.close() → OSError (временная копия .db занята; своего класса исключений у Backend нет) пишется
+    # в журнал диалога по-русски с именем файла, остальные листы закрываются; при закрытии диалога неудачные листы
+    # пробуются ещё раз (один раз). Прочие исключения не глотаются (пробрасываются после закрытия остальных листов).
+    def _close_list(self, sheets):
+        failed, unexpected = [], None
+        for sh in sheets:
             try: sh.close()
-            except Exception: pass  # noqa: BLE001
-        self.sheets = []
+            except OSError as e:
+                fn = getattr(getattr(sh, "work_path", None) or getattr(sh, "path", None), "name", None) or getattr(sh, "name", "?")
+                self.log.appendPlainText(f"Не удалось закрыть источник «{fn}» (временная копия не удалена): {e}")
+                failed.append(sh)
+            except BaseException as e:  # noqa: BLE001 — не глотается: закрыть остальные и пробросить первое
+                unexpected = unexpected or e
+        return failed, unexpected
+
+    def close_sheets(self, final=False):
+        sheets, self.sheets = list(self.sheets), []
+        failed, unexpected = self._close_list(sheets)
+        self._close_failed = getattr(self, "_close_failed", []) + failed
+        if final and self._close_failed:            # закрытие диалога: одна повторная попытка для неудачных
+            retry, self._close_failed = self._close_failed, []
+            _left, unexpected2 = self._close_list(retry); unexpected = unexpected or unexpected2
+        if unexpected is not None: raise unexpected
 
     def done(self, r):
-        self.close_sheets(); super().done(r)
+        try: self.close_sheets(final=True)
+        finally: super().done(r)
 
     def closeEvent(self, e):
-        self.close_sheets(); super().closeEvent(e)
+        try: self.close_sheets(final=True)
+        finally: super().closeEvent(e)
 
     def _fields_changed(self, *_):
         try:
