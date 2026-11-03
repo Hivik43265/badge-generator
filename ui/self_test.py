@@ -60,6 +60,13 @@ def run(argv=None, *, app=None, log_file=None, exit_process=False):
     try:
         out(f"# BadgeGenerator self-test {datetime.datetime.now().isoformat(timespec='seconds')}; tmp={tmp}")
         qa_click_all.scenario(tmp, chk, out, EXC)
+        # D47: распознавание лица на встроенном ассете Backend (каскад/cv2 в сборке); None или любое исключение → FAIL
+        try:
+            from .backend_api import _selftest_face_crop
+            crop, fpath = _selftest_face_crop(0.778)
+            chk("D47 detect_face_crop на selftest_face.jpg (ожидается ≈(50,16,224,288))", crop is not None, f"crop={crop}; {fpath}")
+        except Exception as e:  # noqa: BLE001
+            chk("D47 detect_face_crop на selftest_face.jpg (ожидается ≈(50,16,224,288))", False, f"{type(e).__name__}: {e}")
     except Exception:  # noqa: BLE001
         chk("самотест без исключений", False, traceback.format_exc()[-800:])
     finally:
