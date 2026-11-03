@@ -1,0 +1,3 @@
+selftest_face.jpg — 320×400, downscaled from tests/fixtures/portrait_biden.jpg (D47: embedded photo for --self-test).
+Source: https://commons.wikimedia.org/wiki/File:Joe_Biden_presidential_portrait.jpg — Adam Schultz, public domain (U.S. federal government work).
+Expected: detect_face_crop(load_photo_for_edit(<this file>), 0.778) == (50, 16, 224, 288) (non-None).

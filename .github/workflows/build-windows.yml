@@ -80,6 +80,10 @@ jobs:
           Get-Content $m
           $miss = Get-Content $m | Where-Object { $_ -like "MISSING*" }
           if ($miss) { throw "Qt files missing in BadgeGenerator.exe: $($miss -join '; ')" }
+          # D47: каскад, cv2 и фото self-test обязаны быть в exe
+          foreach ($req in @("cv2/data/haarcascade_frontalface_default.xml", "cv2", "badge_backend/assets/selftest_face.jpg")) {
+            if (-not (Get-Content $m | Where-Object { $_ -like "FOUND`t$req`t*" })) { throw "required in bundle: $req" }
+          }
 
       - name: Smoke test (backend exe)
         shell: pwsh
