@@ -202,3 +202,46 @@ Backend этапа 13 (включая 91b0208, 2a68954) — **принят**. Fr
 Макет: reports/mockup/reference_import.png ЕСТЬ на диске, но не в git (untracked). Сравнение import.png с эталоном — структура совпадает (лист, заголовок, Поле БД|Тип|Сопоставлено|Колонка, справа фото+значения, превью, прогресс, кнопки привязки). Отличия на решение Архитектора: справа таблица «Колонка|Значение» вместо столбца карточек; добавлены «Фото: папка», «Требовать фото», окно отчёта; в эталоне третья кнопка (подпись нечитаема, «…жавЮСд») отсутствует; в превью два столбца «Фото» (image-поле и photo_path) — путает; экспорт — один диалог с «Что».
 
 Git: c916ec1 закоммичен, stash пуст. Но в основном дереве снова есть незакоммиченные Frontend-правки этапа 14: M ui/backend_api.py, ui/photo_block.py, ui/record_form.py, ui/smoke_test.py, ?? ui/photo_editor.py; M reports/screenshot_*.png; эталоны reports/mockup/*.png не в git.
+
+## RC этапа 13 без этапа 14 (ветка qa/stage-13-rc), 2026-11-03
+
+Сборка: 045e912 + cherry-pick ba83e60 (Frontend D36, ui/dialogs.py, ui/backend_api.py) + 3927181 (Backend D36, headers/importer/sources + tests/test_d36_photo_column.py) — без конфликтов. 2fe4514 (этап 14) не включён; 3927181 лежит поверх 2fe4514, но файлов этапа 14 не трогает. + QA-коммит: reports/mockup/*.png в .gitignore и убраны из индекса (`git rm --cached`, на диске остались).
+
+| Проверка | Итог |
+|---|---|
+| pytest | 373 passed |
+| ui/smoke_test.py | ALL OK |
+| main.py --self-test | 89/89, exit 0 |
+| e2e_click_all | 89/89 |
+| e2e_check / stage10 / stage12 / stage13 | 31/31, 20/20, 32/32, 67/67 |
+| e2e_stage13b (+15 проверок D36) | **41/44 — 3 FAIL (D37)** |
+
+D36 — PASS: в сопоставлении нет «Фото записи (photo_path)»; строк фото ≤1 (image-поле, если есть); в превью один столбец «Фото»; `_show_row` берёт путь только через `api.resolve_photo_path`; без image-поля импорт пишет фото в photo_path, с image-полем — в image-поле (photo_path пуст), resolve_photo_path даёт существующий файл; `BackendAPI.import_file` удалён, вызовов в ui/ и main.py нет. Изменение «.db без image-поля → нет фото» согласовано с Backend: при колонке photo_path в .db превью показывает фото (проверено); «нет фото» только если в источнике нет ни image-поля, ни photo_path.
+
+**D37 (Frontend, регресс D36):** `ui/dialogs.py:327 new_source_fields` фильтрует по `SERVICE_KEYS`, из которых убран photo_path → при импорте .db подтверждение предлагает «создать поле» photo_path (спрошено=['extra','photo_path']), хотя оно не создаётся. Исправить: исключать служебные колонки Backend (headers.SERVICE_KEYS / PROJECT_COLS).
+**D38 (Backend, вопрос Архитектору):** встроенные картинки xlsx (`sources.py:275`) всегда пишутся в photo_path, даже если есть image-поле → у записи фото в двух местах, image-поле пустое; противоречит D36 «одна цель фото». Предложение: писать в ту же цель, что auto_match (`photo`).
+Замечание: при отсутствии image-поля в сопоставлении нет строки фото — колонку фото нельзя переназначить вручную (только авто). Импорт хранит относительное имя из «Фото: папка» без копирования в photos/ проекта (поведение до D36).
+
+Вердикт: RC **не готов к push** до D37 (и решения по D38).
+
+## Перепроверка RC после D37/D38/D39 (03.11.2026)
+Ветка qa/stage-13-rc: e7a4eea + c8325bb (cherry-pick Frontend 4eb3f73, D37) + a7ade42 (cherry-pick Backend 06ab387, D38+D39). Конфликтов нет. Этапа 14 нет (photo_editor, миграция v6/project_settings, opencv/cascade — не найдены).
+
+| Проверка | Результат |
+|---|---|
+| pytest | 383 passed |
+| ui/smoke_test.py | ALL OK |
+| main.py --self-test | 89/89 |
+| e2e_click_all | 89/89 |
+| e2e_check | 31/31 |
+| e2e_stage10 | 20/20 |
+| e2e_stage12 | 32/32 |
+| e2e_stage13 | 67/67 (RT photo_path: photos/…, открывается, байты = исходник) |
+| e2e_stage13b | 61/61 |
+
+- D37 PASS: .db-подтверждение = [['extra']]; подсказка «Добавьте поле типа Изображение в Менеджере полей» видна без image-поля и скрыта с ним; служебные колонки из SERVICE_KEYS/PROJECT_COLS.
+- D38 PASS: встроенная картинка xlsx → сопоставленное image-поле b (photo_path пуст, a пусто); без image-поля → photo_path; 1 файл в photos/, временная папка пуста.
+- D39 PASS: путь photos/…, один файл на исходник; после удаления исходной папки фото открывается (байты совпадают) и рендерится QPixmap; отмена удаляет копии.
+- Дубли: копирование фото только в _PhotoStore (save_photo), в ui/ нет; import_records — единственная точка.
+- Изменения QA: D36-проверка resolve_photo_path теперь с базой проекта (после D39 копия в <проект>/photos/).
+- Замечание: e2e_click_all без --log пишет лог в ~/.local/share/BadgeGenerator/self_test.log (общий путь).
