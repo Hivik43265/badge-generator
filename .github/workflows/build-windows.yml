@@ -32,6 +32,23 @@ jobs:
           pip install -r requirements.txt -r requirements-dev.txt
       - name: Tests (full, with golden)
         run: python -m pytest -q
+      - name: Self-test without test fixtures (D50, as in exe)
+        # Как в exe: offscreen, без tests/fixtures/face_astronaut.jpg. Фикстура переименовывается
+        # только на время шага и возвращается trap'ом даже при ошибке. FAIL в логе или exit != 0 → красный.
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -u
+          fx=tests/fixtures/face_astronaut.jpg
+          mv "$fx" "$fx.d50-hidden"
+          trap 'mv "$fx.d50-hidden" "$fx"' EXIT
+          log="$RUNNER_TEMP/selftest-linux.log"
+          rc=0; timeout 180 python main.py --self-test --log "$log" || rc=$?
+          [ -f "$log" ] && tail -n 200 "$log" || echo "self-test log not found"
+          if [ "$rc" -ne 0 ]; then echo "::error::self-test exit code $rc"; exit 1; fi
+          if [ ! -f "$log" ]; then echo "::error::self-test log missing"; exit 1; fi
+          if grep -q "FAIL" "$log"; then echo "::error::FAIL in self-test log"; grep -n "FAIL" "$log"; exit 1; fi
 
   build:
     needs: tests-linux
