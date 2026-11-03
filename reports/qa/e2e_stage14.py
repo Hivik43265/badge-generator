@@ -63,7 +63,9 @@ chk("Несколько элементов → первый на лицевой 
 d1.done(0); d2.done(0); a2.close()
 dfree = pe.PhotoEditor(str(FACEP), api, None, field_name="foto2"); rf = dfree.frame.rect()
 dfree.frame.resize_corner("br", QPointF(rf.right() - 60, rf.bottom() - 5), rf); rf2 = dfree.frame.rect()
-chk("Без привязанного элемента: рамка свободная, статус сообщает", dfree.aspect is None and "не привязан" in dfree.status.text() and abs(rf2.width() / rf2.height() - rf.width() / rf.height()) > 0.05, (dfree.status.text(), rf.width() / rf.height(), rf2.width() / rf2.height()))
+chk("Без привязанного элемента: рамка свободная, статус сообщает", dfree.aspect is None and dfree.status.text() == "В шаблоне нет фото-элемента, пропорции свободные" and abs(rf2.width() / rf2.height() - rf.width() / rf.height()) > 0.05, (dfree.status.text(), rf.width() / rf.height(), rf2.width() / rf2.height()))
+dfree.update_preview(); dfree.reset_frame(); app.processEvents()
+chk("D46: после обновления превью/рамки статус свободной рамки сохраняется", dfree.status.text() == "В шаблоне нет фото-элемента, пропорции свободные", dfree.status.text())
 dfree.done(0)
 
 # ---- ползунки, превью ----
