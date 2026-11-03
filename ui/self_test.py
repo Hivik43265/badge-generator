@@ -60,6 +60,34 @@ def run(argv=None, *, app=None, log_file=None, exit_process=False):
     try:
         out(f"# BadgeGenerator self-test {datetime.datetime.now().isoformat(timespec='seconds')}; tmp={tmp}")
         qa_click_all.scenario(tmp, chk, out, EXC)
+        # D49: печать одной тестовой карточки в PDF через тот же путь, что и действие «Печать» (MainWindow.do_print
+        # → print_snapshot Backend); файл есть и не пустой → PASS (путь и размер в логе), затем удаляется
+        _n49 = "D49 печать: MainWindow.do_print(printer=QPrinter PdfFormat) → PDF > 0 байт"
+        pdf = tmp / "d49_print" / "selftest_print.pdf"; a49 = w49 = None
+        try:
+            from PyQt6.QtPrintSupport import QPrinter
+            from .backend_api import BackendAPI
+            from . import main_window as _mw, dialogs as _dlg
+            pdf.parent.mkdir(parents=True, exist_ok=True)
+            a49 = BackendAPI(pdf.parent / "print.db", pdf.parent); a49.upsert_field("fio", "ФИО", 0)
+            a49.create_person({"fio": "Самотест Печать"}, print_mark=1)
+            w49 = _mw.MainWindow(a49); old_cm, _mw.clear_marks_hook = _mw.clear_marks_hook, (lambda parent, n: False)
+            old_cf, _dlg.confirm_hook = _dlg.confirm_hook, (lambda parent, miss, names: True)   # «нет фото» → печатать с плейсхолдером
+            warn49 = []; old_wh, _dlg.warning_hook = _dlg.warning_hook, (lambda kind, text: warn49.append(text))  # без модальных окон
+            try:
+                pr = QPrinter(); pr.setOutputFormat(QPrinter.OutputFormat.PdfFormat); pr.setOutputFileName(str(pdf))
+                res, err = w49.do_print(printer=pr)
+            finally: _mw.clear_marks_hook, _dlg.confirm_hook, _dlg.warning_hook = old_cm, old_cf, old_wh
+            size = pdf.stat().st_size if pdf.is_file() else -1
+            chk(_n49, err is None and size > 0, f"{pdf}; размер={size} байт; результат={res!r}; ошибка={err!r}; предупреждения={warn49}")
+        except Exception as e:  # noqa: BLE001
+            chk(_n49, False, f"{type(e).__name__}: {e}")
+        finally:
+            try:
+                if w49 is not None: w49.close()
+                if a49 is not None: a49.close()
+                pdf.unlink(missing_ok=True)
+            except Exception: pass  # noqa: BLE001
         # D47: распознавание лица на встроенном ассете Backend (каскад/cv2 в сборке); None или любое исключение → FAIL
         try:
             from .backend_api import _selftest_face_crop
