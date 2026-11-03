@@ -106,9 +106,9 @@ class BackendAPI:
         """Backend fa29d7d: файл в папку фото проекта → "photos/<name>"; с person_id сам пишет photo_path. ValueError — пусто/битые."""
         return _api.save_photo(self.con, image_bytes, person_id=person_id, ext=ext, base_dir=self.base_dir)
 
-    def resolve_photo_path(self, person, element=None):
+    def resolve_photo_path(self, person, element=None, base_dir=None):
         """Backend 91b0208: значение привязанного image-поля, иначе persons.photo_path → абсолютный Path | None."""
-        return _api.resolve_photo_path(person, element, base_dir=self.base_dir)
+        return _api.resolve_photo_path(person, element, base_dir=base_dir or self.base_dir)
 
     def photo_value(self, person, element=None):
         """Относительное значение фото для показа (image-поле элемента или photo_path)."""
@@ -212,9 +212,6 @@ class BackendAPI:
 
     # --- импорт (GUI-поток, соединение привязано к нему) ---
     def read_headers(self, path): return read_table(path)[0]
-    def import_file(self, path, mapping=None, photo_dir=None, labels=None, require_photo=False, progress=None):
-        return _api.import_file(self.con, path, mapping=mapping, photo_dir=photo_dir, labels=labels,
-                                require_photo=require_photo, progress=progress)
 
     # --- экспорт / печать: подготовка в GUI-потоке ---
     # --- этап 12 (Backend v4) ---
