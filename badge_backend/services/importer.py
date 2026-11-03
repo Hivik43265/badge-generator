@@ -73,7 +73,8 @@ def read_table(path) -> tuple[list, list]:
     if suf in (".xlsx", ".xlsm"):
         from openpyxl import load_workbook
         wb = load_workbook(path, read_only=True, data_only=True)
-        rows = [list(r) for r in wb.active.iter_rows(values_only=True)]; wb.close()
+        try: rows = [list(r) for r in wb.active.iter_rows(values_only=True)]
+        finally: wb.close()
     elif suf == ".xls":
         import xlrd
         wb = xlrd.open_workbook(str(path))

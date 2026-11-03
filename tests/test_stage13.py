@@ -1,4 +1,5 @@
 """Этап 13: open_source/read_rows/auto_match/import_rows, mapping JSON, export_persons (xlsx/xls/csv/db)."""
+import contextlib
 from badge_backend.testing import import_with_fields as _imp
 import json, os, sqlite3, threading, hashlib, pytest
 from PIL import Image
@@ -191,7 +192,8 @@ def test_legacy_project_db_import(tmp_path, ver):
     h, m = _sha(p), os.path.getmtime(p)
     sh = api.open_source(p)
     assert [(s.kind, s.name, s.schema_version) for s in sh] == [("project", "persons", ver)]
-    assert sh[0].work_path != p and api.get_schema_version(sqlite3.connect(sh[0].work_path)) == db.LATEST
+    assert sh[0].work_path != p
+    with contextlib.closing(sqlite3.connect(sh[0].work_path)) as wc: assert api.get_schema_version(wc) == db.LATEST
     con = api.connect(); rep = _imp(api.import_rows, con, sh[0], photo_dir=tmp_path)
     assert rep.added == 1, rep
     pr = api.list_persons(con)[0]
@@ -199,7 +201,8 @@ def test_legacy_project_db_import(tmp_path, ver):
     w = sh[0].work_path; sh[0].close(); sh[0].close()
     assert not w.exists()
     with pytest.raises(ValueError): api.read_rows(sh[0])
-    assert _sha(p) == h and os.path.getmtime(p) == m and sqlite3.connect(p).execute("PRAGMA user_version").fetchone()[0] == ver
+    assert _sha(p) == h and os.path.getmtime(p) == m
+    with contextlib.closing(sqlite3.connect(p)) as pc: assert pc.execute("PRAGMA user_version").fetchone()[0] == ver
 
 def test_arbitrary_sqlite_readonly(tmp_path):
     p = tmp_path / "hr.sqlite"; raw = sqlite3.connect(p)
