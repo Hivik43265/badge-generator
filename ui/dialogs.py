@@ -66,9 +66,22 @@ class ImportDialog(QDialog):
         self.log = QPlainTextEdit(readOnly=True); self.log.setPlaceholderText("Здесь будет отчёт об импорте")
         self.btn = QPushButton("Импортировать"); self.btn.clicked.connect(self.run); self.btn.setEnabled(False)
         close = QPushButton("Закрыть"); close.clicked.connect(self.accept)
-        self.b_fields = QPushButton("Открыть менеджер полей…"); self.b_fields.clicked.connect(lambda: self.open_fields())
+        act = getattr(parent, "act_field_manager", None)   # тот же QAction ленты, нового действия нет
+        if act is not None:
+            from PyQt6.QtWidgets import QToolButton
+            self.b_fields = QToolButton(); self.b_fields.setDefaultAction(act)
+            self.b_fields.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly); self.b_fields.setText("Менеджер полей…")
+            act.triggered.connect(self._fields_changed)
+        else:
+            self.b_fields = QPushButton("Менеджер полей…"); self.b_fields.clicked.connect(lambda: self.open_fields())
         lay = QVBoxLayout(self); lay.addLayout(form); lay.addLayout(self._row(QLabel("Сопоставление колонок (только поля БД):"), self.b_fields))
         lay.addWidget(self.table, 2); lay.addWidget(self.log, 1); lay.addLayout(self._row(self.btn, close, stretch=False))
+
+    def _fields_changed(self, *_):
+        try:
+            if self.isVisible() and self.file.text(): self.set_file(self.file.text())
+        except RuntimeError:
+            pass
 
     def open_fields(self):
         from .main_view import FieldManager, field_manager_hook

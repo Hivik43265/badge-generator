@@ -639,7 +639,8 @@ free = next(fm.tree.topLevelItem(i) for i in range(fm.tree.topLevelItemCount()) 
 fm.tree.setCurrentItem(next(free.child(j) for j in range(free.childCount()) if free.child(j).data(0, Qt.ItemDataRole.UserRole)[1] == eid_l))
 assert fm.b_link.isEnabled(); fm.link(fld)                          # Backend 01a1768: text → field
 e_ = next(e for e in api.list_elements() if e["id"] == eid_l); assert e_["type"] == "field" and e_["field_name"] == fld, e_
-assert fm.b_print.text() == "Печать списка полей"
+assert fm.b_print.text() == "Печать" and fm.b_print.toolTip() == "Печать списка полей"
+assert ImportDialog(api, w).b_fields.defaultAction() is w.act_field_manager   # тот же QAction, без нового действия
 bc = api.create_element(type="barcode", x=10, y=10, w=300, h=80, side="back", static_value="123"); fm.reload()
 free = next(fm.tree.topLevelItem(i) for i in range(fm.tree.topLevelItemCount()) if fm.tree.topLevelItem(i).text(0) == "Не связаны")
 fm.tree.setCurrentItem(next(free.child(j) for j in range(free.childCount()) if free.child(j).data(0, Qt.ItemDataRole.UserRole)[1] == bc))
