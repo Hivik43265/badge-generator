@@ -217,11 +217,16 @@ def load_photo_for_edit(path, base_dir=None) -> Image.Image:
     return im.convert("RGBA" if has_alpha else "L" if im.mode in ("1", "I", "I;16", "F") else "RGB")
 
 # ---------- применить и сохранить ----------
-def apply_and_save_photo(con, source_path, params, *, person_id=None, field_name=None, base_dir=None) -> str:
+def apply_and_save_photo(con, source_path, params, *, person_id=None, field_name=None, base_dir=None,
+                         size=None, target_field=None) -> str:
     """Загрузить исходник (относительный — от base_dir/каталога проекта; EXIF-поворот учитывается),
     применить apply_photo_edit, сохранить НОВЫЙ JPEG через save_photo (исходник не перезаписывается).
     field_name (поле data_type='image', нужен person_id) → значение поля; иначе person_id → persons.photo_path.
-    Нет записи/поле не image → ValueError (новый файл удаляется). → относительный путь 'photos/…'."""
+    Нет записи/поле не image → ValueError (новый файл удаляется). → относительный путь 'photos/…'.
+    D44: size=(w, h) — итоговый размер в px; target_field — имя image-поля;
+    размер берётся из photo_edit_target(con, target_field)['size'] (нет элемента → без ресайза).
+    size важнее target_field. Результат приводится ровно к size (LANCZOS), даже если пропорции не совпадают
+    (кадр должен уже иметь aspect рамки — тогда искажения нет). Без size/target_field — как раньше."""
     import io
     from .photos import project_base_dir, save_photo
     base = Path(base_dir) if base_dir else project_base_dir(con)
@@ -229,7 +234,14 @@ def apply_and_save_photo(con, source_path, params, *, person_id=None, field_name
         if person_id is None: raise ValueError("field_name требует person_id")
         r = con.execute("SELECT data_type FROM person_fields WHERE name=?", (field_name,)).fetchone()
         if r is None or r[0] != "image": raise ValueError(f"поле «{field_name}» не существует или не типа «изображение»")
+    if size is None and target_field is not None:
+        t = photo_edit_target(con, target_field)
+        if t is not None: size = t["size"]
+    if size is not None:
+        size = (int(size[0]), int(size[1]))
+        if size[0] <= 0 or size[1] <= 0: raise ValueError("size должен быть > 0")
     out = apply_photo_edit(load_photo_for_edit(source_path, base), params)
+    if size is not None and out.size != size: out = out.resize(size, Image.LANCZOS)
     if out.mode != "RGB":
         bg = Image.new("RGB", out.size, (255, 255, 255))
         o = out.convert("RGBA"); bg.paste(o, mask=o.getchannel("A")); out = bg
