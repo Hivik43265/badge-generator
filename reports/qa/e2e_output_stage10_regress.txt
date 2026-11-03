@@ -1,0 +1,65 @@
+photo_config '1;2;1,5;0.5;0;0' невалиден (crop_x должен быть целым px); используется 0;0;1.0;0;0;0
+photo_config 'abc' невалиден (нужно 6 значений, получено 1); используется 0;0;1.0;0;0;0
+photo_config 'bad;cfg' невалиден (нужно 6 значений, получено 2); используется 0;0;1.0;0;0;0
+не удалось открыть /workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png: [Errno 2] No such file or directory: '/workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png'
+элемент 8: текст 'Константинопольский-Водопьянов' не помещается в 600×90 даже при min_size — обрезан (показано строк 2 из 3)
+элемент 9: текст 'АааааааааааааааааааАаааааааааа' не помещается в 600×70 даже при min_size — обрезан (слово разрезано по символам; показано строк 1 из 2)
+элемент 11: текст 'Очень длинная должность Очень ' не помещается в 600×125 даже при min_size — обрезан (показано строк 3 из 20)
+элемент 1: текст 'Константинопольский Водопьянов' не помещается в 300×60 даже при min_size — обрезан (слово разрезано по символам; показано строк 1 из 30)
+элемент 2: текст 'Константинопольский Водопьянов' не помещается в 200×40 даже при min_size — обрезан (слово разрезано по символам; показано строк 1 из 50)
+не удалось открыть /workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png: [Errno 2] No such file or directory: '/workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png'
+не удалось открыть /workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png: [Errno 2] No such file or directory: '/workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png'
+не удалось открыть /workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png: [Errno 2] No such file or directory: '/workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png'
+не удалось открыть /workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png: [Errno 2] No such file or directory: '/workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png'
+не удалось открыть /workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png: [Errno 2] No such file or directory: '/workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png'
+не удалось открыть /workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png: [Errno 2] No such file or directory: '/workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png'
+не удалось открыть /workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png: [Errno 2] No such file or directory: '/workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png'
+не удалось открыть /workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png: [Errno 2] No such file or directory: '/workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png'
+не удалось открыть /workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png: [Errno 2] No such file or directory: '/workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png'
+не удалось открыть /workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png: [Errno 2] No such file or directory: '/workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png'
+не удалось открыть /workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png: [Errno 2] No such file or directory: '/workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png'
+не удалось открыть /workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png: [Errno 2] No such file or directory: '/workspace/badge_generator/data_tools/testdata/sets/clean/photos/demo_logo.png'
+элемент 9: текст 'Очень длинная должность Очень ' не помещается в 600×125 даже при min_size — обрезан (показано строк 3 из 20)
+элемент 9: текст 'Очень длинная должность Очень ' не помещается в 600×125 даже при min_size — обрезан (показано строк 3 из 20)
+PASS | photo_config default/формат/невалидное→default+warning | default=0;0;1.0;0;0;0; '1;2;1,5;0.5;0;0'→0;0;1.0;0;0;0 warn=1; 'abc'→0;0;1.0;0;0;0 warn=1; valid→5;-3;1.25;10;20;15.5
+PASS | Схема persons | cols=['id', 'fields_json', 'photo_path', 'photo_config', 'print_mark', 'created_at', 'updated_at', 'printed_at']; photo_config DEFAULT=["'0;0;1.0;0;0;0'"]
+PASS | create_person с невалидным photo_config | saved=0;0;1.0;0;0;0 warn=1
+PASS | Импорт 600 строк csv UTF-8±BOM/cp1251 (; ,) + xlsx без потерь | imp_utf-8-sig_sc.csv:600 added/0 skip/600 rows/0 mismatch/data_tools.validate_import.validate_records; imp_utf-8-sig_cm.csv:600 added/0 skip/600 rows/0 mismatch/data_tools.validate_import.validate_records; imp_utf-8_sc.csv:600 added/0 skip/600 rows/0 mismatch/data_tools.validate_import.validate_records; imp_utf-8_cm.csv:600 added/0 skip/600 rows/0 mismatch/data_tools.validate_import.validate_records; imp_cp1251_sc.csv:600 added/0 skip/600 rows/0 mismatch/data_tools.validate_import.validate_records; imp_cp1251_cm.csv:600 added/0 skip/600 rows/0 mismatch/data_tools.validate_import.validate_records; imp.xlsx:600 added/0 skip/600 rows/0 mismatch/data_tools.validate_import.validate_records
+PASS | Импорт large (1000 строк) | added=1000 skipped=0 errors=[]
+PASS | Транзакция: сбой на 300-й → откат | exc=RuntimeError('fail@300'); persons=0
+PASS | Отмена импорта → откат | cancelled=True
+  set clean: rows=5 added=5 skipped=0 codes=[] warn=[]
+PASS | Набор clean | rows=5 added=5 skipped=0 errors=[] warnings=[]
+  set duplicates: rows=4 added=2 skipped=2 codes=['DUPLICATE'] warn=[]
+PASS | Набор duplicates | rows=4 added=2 skipped=2 errors=['DUPLICATE'] warnings=[]
+  set missing_fields: rows=5 added=1 skipped=4 codes=['EMAIL_INVALID', 'PHONE_INVALID', 'PHOTO_CONFIG_INVALID', 'REQUIRED_MISSING'] warn=[]
+PASS | Набор missing_fields | rows=5 added=1 skipped=4 errors=['EMAIL_INVALID', 'PHONE_INVALID', 'PHOTO_CONFIG_INVALID', 'REQUIRED_MISSING'] warnings=[]
+  set zero_byte_and_broken: rows=4 added=1 skipped=3 codes=['PHOTO_BROKEN', 'PHOTO_EMPTY', 'PHOTO_NOT_FOUND'] warn=[]
+PASS | Набор zero_byte_and_broken | rows=4 added=1 skipped=3 errors=['PHOTO_BROKEN', 'PHOTO_EMPTY', 'PHOTO_NOT_FOUND'] warnings=[]
+PASS | Набор messy_headers (xlsx, маппинг Backend) | added=2 skipped=0 keys=['department', 'email', 'first_name', 'last_name', 'lishnyaya_kolonka', 'middle_name', 'phone', 'position']
+PASS | Импорт без data_tools | stdout='builtin-fallback 600 False' rc=0 data_tools.validate_import недоступен (No module named 'data_tools') — встроенная проверка (fallback)
+<sys>:0: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f6250fef5b0>
+
+PASS | Холст 1011×638 RGB | size=(1011, 638) mode=RGB
+PASS | v3: qr рисуется (не пропускается, без warning, декодируется) | ink(L) в рамке qr=(0, 255); decode=['BG-QR-1']; warnings про qr/пропуск=[]
+PASS | v3: barcode (back) рисуется (не пропускается, без warning) | ink(L) в рамке barcode=(0, 255); warnings=[]
+PASS | Запись без фото не роняет рендер | плейсхолдер, без исключения; reports/qa/card_no_photo.png
+PASS | Текст не выходит за рамку элемента (+warning при обрезке) | пикселей вне рамок=0; warnings=2
+PASS | Демо-макет: контентные элементы не пересекаются | пересечения=[]
+PASS | Экспорт PNG 1011×638 @300 DPI (ids=None → print_mark=1) | 8 файлов (4 записи×2 стороны); {((1011, 638), (300, 300))}; без allow_missing_photo: MissingPhotosError ids=[6]
+PASS | Экспорт PDF страницы 85.6×54 мм | pages=8; sizes pts={'242.64 x 153.12'} → мм={(85.6, 54.02)} (допуск ±0.1 мм; 638 px/300 DPI = 54.02 мм)
+PASS | Печать QPrinter→PDF: только print_mark=1, страница CR80 ±0.15 мм | print_cards=8, pdf pages=8, size={'243 x 153'}→{(85.725, 53.975)} мм (помечено 4 из 7); reports/qa/print_output.pdf
+PASS | set_print_mark / ничего не помечено → 0 страниц | print пусто=0; set_print_mark→2; marked=[1, 2]
+PASS | mark_printed: print_mark=0 и printed_at в ISO 8601 (со смещением) | mark_printed→2; [(1, 0, '2026-11-03T16:59:48+03:00'), (2, 0, '2026-11-03T16:59:48+03:00')]; непечатанная id=3 printed_at=None
+PASS | set_print_mark не трогает printed_at | print_mark=1 printed_at=2026-11-03T16:59:48+03:00
+PASS | Миграция user_version 1→LATEST=3 без потери данных (идемпотентна) | user_version 1→3, повторно 3; persons до==после: True (2 строк); template_elements сохранены: True; printed_at=[None, None]
+PASS | Перенос длинной двойной фамилии по дефису | рамка 600×300, 22pt (min 8pt): кегль 44px, строки=['Константинопольский-', 'Водопьянов-', 'Длиннофамильный']; notes=[]
+PASS | Частично видимые строки не рисуются, последняя видимая строка заканчивается на «…» | строк видно=3, последняя='длинная должность Очень…', высота bbox=117.0≤125; ink-строки пикселей 7..113; warning=["элемент 9: текст 'Очень длинная должность Очень ' не помещается в 600×125 даже при min_size — обрезан (показано строк 3 из 20)"]
+PASS | Один render_card | badge_backend/render/__init__.py:243:def render_card(person, elements, side: str = "front", background=None, base_dir=None) -> Image.Image:
+ui/backend_api.py:87:    def render_card(self, person, side="front"): | ui-обёртка только делегирует в _api.render_card_db
+PASS | Нет SQL в ui/ | grep пусто
+PASS | Нет маппинга заголовков/чтения Excel в data_tools | grep пусто
+  QPainter в ui: ui/layout_editor.py:11:from PyQt6.QtGui import QBrush, QColor, QPen, QPainter, QPixmap, QAction, QFont
+ui/layout_editor.py:163:        self.view = QGraphicsView(self.scene); self.view.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+ИТОГО: 31/31 PASS; tmp=/tmp/bgqa_qnvy05sn

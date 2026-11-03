@@ -1,0 +1,6 @@
+last_name,first_name,middle_name,position,department,photo_path,email,phone,photo_config
+Иванов,Иван,Иванович,Инженер,ИТ,p1.jpg,user0@example.com,+7 900 000-00-00,0;0;1.0;0;0;0
+Петров,Пётр,Иванович,Инженер,ИТ,p2.jpg,user1@example.com,+7 900 001-00-00,0;0;1.0;0;0;0
+Сидоров,Алексей,Иванович,Инженер,ИТ,p3.jpg,user2@example.com,+7 900 002-00-00,0;0;1.0;0;0;0
+Козлов,Мария,Иванович,Инженер,ИТ,p4.jpg,user3@example.com,+7 900 003-00-00,0;0;1.0;0;0;0
+Ёлкин,Ольга,Иванович,Инженер,ИТ,p5.jpg,user4@example.com,+7 900 004-00-00,0;0;1.0;0;0;0

@@ -1,0 +1,177 @@
+{
+ "backgrounds": {
+  "front": {
+   "image_path": null,
+   "color": "#F4F7FB"
+  },
+  "back": {
+   "image_path": null,
+   "color": "#FFFFFF"
+  }
+ },
+ "elements": [
+  {
+   "type": "rect",
+   "x": 20,
+   "y": 20,
+   "w": 971,
+   "h": 598,
+   "side": "back",
+   "z_order": 0,
+   "style": {
+    "border_color": "#1F4E8C",
+    "border_width": 3,
+    "radius": 24
+   }
+  },
+  {
+   "type": "text",
+   "x": 40,
+   "y": 40,
+   "w": 930,
+   "h": 300,
+   "side": "back",
+   "z_order": 1,
+   "static_value": "Пропуск является собственностью компании.\nПри находке просьба вернуть на проходную.",
+   "style": {
+    "font_size": 10,
+    "align": "center",
+    "valign": "middle"
+   }
+  },
+  {
+   "type": "image",
+   "x": 405,
+   "y": 360,
+   "w": 200,
+   "h": 200,
+   "side": "back",
+   "z_order": 2,
+   "static_value": "demo_logo.png",
+   "style": {}
+  },
+  {
+   "type": "rect",
+   "x": 0,
+   "y": 0,
+   "w": 1011,
+   "h": 120,
+   "side": "front",
+   "z_order": 0,
+   "style": {
+    "fill": "#1F4E8C"
+   }
+  },
+  {
+   "type": "rect",
+   "x": 0,
+   "y": 618,
+   "w": 1011,
+   "h": 20,
+   "side": "front",
+   "z_order": 0,
+   "style": {
+    "fill": "#1F4E8C"
+   }
+  },
+  {
+   "type": "text",
+   "x": 30,
+   "y": 20,
+   "w": 700,
+   "h": 80,
+   "side": "front",
+   "z_order": 1,
+   "static_value": "ООО «Пример» · ПРОПУСК",
+   "style": {
+    "font_size": 16,
+    "bold": true,
+    "color": "#FFFFFF",
+    "valign": "middle"
+   }
+  },
+  {
+   "type": "photo",
+   "x": 40,
+   "y": 150,
+   "w": 300,
+   "h": 400,
+   "side": "front",
+   "z_order": 2,
+   "style": {
+    "border_color": "#1F4E8C",
+    "border_width": 4,
+    "radius": 16
+   }
+  },
+  {
+   "type": "field",
+   "x": 380,
+   "y": 160,
+   "w": 600,
+   "h": 90,
+   "side": "front",
+   "z_order": 3,
+   "field_name": "last_name",
+   "style": {
+    "font_size": 22,
+    "bold": true
+   }
+  },
+  {
+   "type": "field",
+   "x": 380,
+   "y": 250,
+   "w": 600,
+   "h": 70,
+   "side": "front",
+   "z_order": 3,
+   "field_name": "first_name",
+   "style": {
+    "font_size": 16
+   }
+  },
+  {
+   "type": "field",
+   "x": 380,
+   "y": 320,
+   "w": 600,
+   "h": 70,
+   "side": "front",
+   "z_order": 3,
+   "field_name": "middle_name",
+   "style": {
+    "font_size": 16
+   }
+  },
+  {
+   "type": "field",
+   "x": 380,
+   "y": 395,
+   "w": 600,
+   "h": 125,
+   "side": "front",
+   "z_order": 3,
+   "field_name": "position",
+   "style": {
+    "font_size": 12,
+    "color": "#555555"
+   }
+  },
+  {
+   "type": "field",
+   "x": 380,
+   "y": 530,
+   "w": 600,
+   "h": 70,
+   "side": "front",
+   "z_order": 3,
+   "field_name": "employee_id",
+   "style": {
+    "font_size": 12,
+    "bold": true,
+    "color": "#1F4E8C"
+   }
+  }
+ ]
+}

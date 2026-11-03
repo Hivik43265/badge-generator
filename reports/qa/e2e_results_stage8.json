@@ -1,0 +1,157 @@
+[
+ {
+  "name": "photo_config default/формат/невалидное→default+warning",
+  "ok": true,
+  "ev": "default=0;0;1.0;0;0;0; '1;2;1,5;0.5;0;0'→0;0;1.0;0;0;0 warn=1; 'abc'→0;0;1.0;0;0;0 warn=1; valid→5;-3;1.25;10;20;15.5"
+ },
+ {
+  "name": "Схема persons",
+  "ok": true,
+  "ev": "cols=['id', 'fields_json', 'photo_path', 'photo_config', 'print_mark', 'created_at', 'updated_at', 'printed_at']; photo_config DEFAULT=[\"'0;0;1.0;0;0;0'\"]"
+ },
+ {
+  "name": "create_person с невалидным photo_config",
+  "ok": true,
+  "ev": "saved=0;0;1.0;0;0;0 warn=1"
+ },
+ {
+  "name": "Импорт 600 строк csv UTF-8±BOM/cp1251 (; ,) + xlsx без потерь",
+  "ok": true,
+  "ev": "imp_utf-8-sig_sc.csv:600 added/0 skip/600 rows/0 mismatch/data_tools.validate_import.validate_records; imp_utf-8-sig_cm.csv:600 added/0 skip/600 rows/0 mismatch/data_tools.validate_import.validate_records; imp_utf-8_sc.csv:600 added/0 skip/600 rows/0 mismatch/data_tools.validate_import.validate_records; imp_utf-8_cm.csv:600 added/0 skip/600 rows/0 mismatch/data_tools.validate_import.validate_records; imp_cp1251_sc.csv:600 added/0 skip/600 rows/0 mismatch/data_tools.validate_import.validate_records; imp_cp1251_cm.csv:600 added/0 skip/600 rows/0 mismatch/data_tools.validate_import.validate_records; imp.xlsx:600 added/0 skip/600 rows/0 mismatch/data_tools.validate_import.validate_records"
+ },
+ {
+  "name": "Импорт large (1000 строк)",
+  "ok": true,
+  "ev": "added=1000 skipped=0 errors=[]"
+ },
+ {
+  "name": "Транзакция: сбой на 300-й → откат",
+  "ok": true,
+  "ev": "exc=RuntimeError('fail@300'); persons=0"
+ },
+ {
+  "name": "Отмена импорта → откат",
+  "ok": true,
+  "ev": "cancelled=True"
+ },
+ {
+  "name": "Набор clean",
+  "ok": true,
+  "ev": "rows=5 added=5 skipped=0 errors=[] warnings=[]"
+ },
+ {
+  "name": "Набор duplicates",
+  "ok": true,
+  "ev": "rows=4 added=2 skipped=2 errors=['DUPLICATE'] warnings=[]"
+ },
+ {
+  "name": "Набор missing_fields",
+  "ok": true,
+  "ev": "rows=5 added=1 skipped=4 errors=['EMAIL_INVALID', 'PHONE_INVALID', 'PHOTO_CONFIG_INVALID', 'REQUIRED_MISSING'] warnings=[]"
+ },
+ {
+  "name": "Набор zero_byte_and_broken",
+  "ok": true,
+  "ev": "rows=4 added=1 skipped=3 errors=['PHOTO_BROKEN', 'PHOTO_EMPTY', 'PHOTO_NOT_FOUND'] warnings=[]"
+ },
+ {
+  "name": "Набор messy_headers (xlsx, маппинг Backend)",
+  "ok": true,
+  "ev": "added=2 skipped=0 keys=['department', 'email', 'first_name', 'last_name', 'lishnyaya_kolonka', 'middle_name', 'phone', 'position']"
+ },
+ {
+  "name": "Импорт без data_tools",
+  "ok": true,
+  "ev": "stdout='builtin-fallback 600 False' rc=0 data_tools.validate_import недоступен (No module named 'data_tools') — встроенная проверка (fallback)\n<sys>:0: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7fa9a2066d40>\n"
+ },
+ {
+  "name": "Холст 1011×638 RGB",
+  "ok": true,
+  "ev": "size=(1011, 638) mode=RGB"
+ },
+ {
+  "name": "qr/barcode пропускаются с warning",
+  "ok": true,
+  "ev": "warnings=[\"элемент 13: тип 'qr' не поддерживается в v1, пропущен\"]"
+ },
+ {
+  "name": "barcode (back) пропускается с warning",
+  "ok": true,
+  "ev": "[\"элемент 14: тип 'barcode' не поддерживается в v1, пропущен\"]"
+ },
+ {
+  "name": "Запись без фото не роняет рендер",
+  "ok": true,
+  "ev": "плейсхолдер, без исключения; reports/qa/card_no_photo.png"
+ },
+ {
+  "name": "Текст не выходит за рамку элемента (+warning при обрезке)",
+  "ok": true,
+  "ev": "пикселей вне рамок=0; warnings=2"
+ },
+ {
+  "name": "Демо-макет: контентные элементы не пересекаются",
+  "ok": true,
+  "ev": "пересечения=[]"
+ },
+ {
+  "name": "Экспорт PNG 1011×638 @300 DPI (ids=None → print_mark=1)",
+  "ok": true,
+  "ev": "8 файлов (4 записи×2 стороны); {((1011, 638), (300, 300))}; без allow_missing_photo: MissingPhotosError ids=[6]"
+ },
+ {
+  "name": "Экспорт PDF страницы 85.6×54 мм",
+  "ok": true,
+  "ev": "pages=8; sizes pts={'242.64 x 153.12'} → мм={(85.6, 54.02)} (допуск ±0.1 мм; 638 px/300 DPI = 54.02 мм)"
+ },
+ {
+  "name": "Печать QPrinter→PDF: только print_mark=1, страница CR80 ±0.15 мм",
+  "ok": true,
+  "ev": "print_cards=8, pdf pages=8, size={'243 x 153'}→{(85.725, 53.975)} мм (помечено 4 из 7); reports/qa/print_output.pdf"
+ },
+ {
+  "name": "set_print_mark / ничего не помечено → 0 страниц",
+  "ok": true,
+  "ev": "print пусто=0; set_print_mark→2; marked=[1, 2]"
+ },
+ {
+  "name": "mark_printed: print_mark=0 и printed_at в ISO 8601 (со смещением)",
+  "ok": true,
+  "ev": "mark_printed→2; [(1, 0, '2026-11-03T16:43:52+03:00'), (2, 0, '2026-11-03T16:43:52+03:00')]; непечатанная id=3 printed_at=None"
+ },
+ {
+  "name": "set_print_mark не трогает printed_at",
+  "ok": true,
+  "ev": "print_mark=1 printed_at=2026-11-03T16:43:52+03:00"
+ },
+ {
+  "name": "Миграция user_version 1→2 без потери данных (идемпотентна)",
+  "ok": true,
+  "ev": "user_version 1→2, повторно 2; persons до==после: True (2 строк); template_elements сохранены: True; printed_at=[None, None]"
+ },
+ {
+  "name": "Перенос длинной двойной фамилии по дефису",
+  "ok": true,
+  "ev": "рамка 600×300, 22pt (min 8pt): кегль 44px, строки=['Константинопольский-', 'Водопьянов-', 'Длиннофамильный']; notes=[]"
+ },
+ {
+  "name": "Частично видимые строки не рисуются, последняя видимая строка заканчивается на «…»",
+  "ok": true,
+  "ev": "строк видно=3, последняя='длинная должность Очень…', высота bbox=117.0≤125; ink-строки пикселей 7..113; warning=[\"элемент 9: текст 'Очень длинная должность Очень ' не помещается в 600×125 даже при min_size — обрезан (показано строк 3 из 20)\"]"
+ },
+ {
+  "name": "Один render_card",
+  "ok": true,
+  "ev": "badge_backend/render/__init__.py:238:def render_card(person, elements, side: str = \"front\", background=None, base_dir=None) -> Image.Image:\nui/backend_api.py:87:    def render_card(self, person, side=\"front\"): | ui-обёртка только делегирует в _api.render_card_db"
+ },
+ {
+  "name": "Нет SQL в ui/",
+  "ok": false,
+  "ev": "ui/backend_api.py:54:        return self.con.execute(\"PRAGMA user_version\").fetchone()[0]\nui/smoke_test.py:236:import sqlite3\nui/smoke_test.py:239:c1.execute(\"INSERT INTO persons(fields_json) VALUES ('{\\\"last_name\\\": \\\"Старый\\\"}')\"); c1.commit(); c1.close()"
+ },
+ {
+  "name": "Нет маппинга заголовков/чтения Excel в data_tools",
+  "ok": true,
+  "ev": "grep пусто"
+ }
+]

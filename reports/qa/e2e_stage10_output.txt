@@ -1,0 +1,27 @@
+шаблон пуст: нет элементов ни на одной экспортируемой стороне
+шаблон пуст: нет элементов ни на одной экспортируемой стороне
+шаблон пуст: нет элементов ни на одной экспортируемой стороне
+элемент 1: штрихкод ean13 '4601234567890' не отрисован — EAN-13: неверная контрольная цифра в '4601234567890' (ожидалась 3)
+элемент 1: штрихкод ean13 'BG-1' не отрисован — EAN-13: нужно 12 или 13 цифр, получено 'BG-1'
+PASS | 1a Свежая БД: 0 template_elements, user_version=3 | elements=0, backgrounds=0, user_version=3
+PASS | 1b Нет seed-макетов в badge_backend/ и миграциях | вызовы вне определений: нет
+FAIL | 1c «Гость»/«ООО Пример» только в tests/ и reports/ | вне tests/reports: ['./ui/smoke_test.py']; всего файлов 14
+PASS | 2a Пустой шаблон → белое 1011×638 | size=(1011, 638), extrema(L)=(255, 255)
+PASS | 2b Экспорт PNG/PDF и печать пустого шаблона: warning, без исключения | PNG: 2 файлов, empty_template=True, warnings=['шаблон пуст: нет элементов ни на одной экспортируемой стороне']; PDF: True; печать: 2 стр., True; RuntimeWarning: 1/1/1
+PASS | 3 code128: модуль целый px, декодируется в исходное | модуль=4px, все полосы кратны модулю=True, decode=[('Code 128', 'BG-000123')], ожидалось 'BG-000123'
+PASS | 3 ean13: модуль целый px, декодируется в исходное | модуль=5px, все полосы кратны модулю=True, decode=[('EAN-13', '4601234567893')], ожидалось '4601234567893'
+PASS | 3c Невалидный EAN-13 (контрольная цифра) → warning без исключения | warnings=["элемент 1: штрихкод ean13 '4601234567890' не отрисован — EAN-13: неверная контрольная цифра в '4601234567890' (ожидалась 3)"]
+PASS | 3d UI-ключ style['symbology'] принимается (ean13 + не цифры → warning) | warnings=["элемент 1: штрихкод ean13 'BG-1' не отрисован — EAN-13: нужно 12 или 13 цифр, получено 'BG-1'"]
+PASS | 4 QR L/M/Q/H: квадрат в min(w,h), модуль целый, декодируется | L: 198×198 px = 33 мод×6px, decode=['https://example.com/badge/42'], ec=['L']; M: 185×185 px = 37 мод×5px, decode=['https://example.com/badge/42'], ec=['M']; Q: 185×185 px = 37 мод×5px, decode=['https://example.com/badge/42'], ec=['Q']; H: 205×205 px = 41 мод×5px, decode=['https://example.com/badge/42'], ec=['H']
+PASS | 5a line: горизонтальная, вертикальная, диагональ с отрицательными w/h | (250,100)=(255, 0, 0) (600,200)=(0, 170, 0) (800,500)=(0, 0, 255)
+PASS | 5b line w=h=0 отклоняется (отрицательные w/h разрешены) | IntegrityError: CHECK constraint failed: (type <> 'line' AND w > 0 AND h > 0) OR (type = 'line' AND NOT (w = 0 AND h = 0)); w=-50,h=-20 принято
+PASS | 5c Линия со стилем UI по умолчанию рисуется заданной толщиной | UI DEFAULT_STYLE['line']={'stroke': '#1F4E8C', 'stroke_width': 3}; толщина по факту=3px, ожидалось 3
+PASS | 6 Миграция v2→v3: persons/template_elements и id сохранены | user_version 2→3 (повторно 3); persons ids=[3, 7, 10], elements ids=[5, 9, 12, 20]; данные совпали=True; индекс=[('idx_te_side_z',)]; integrity=ok
+PASS | 6 Миграция v1→v3: persons/template_elements и id сохранены | user_version 1→3 (повторно 3); persons ids=[3, 7, 10], elements ids=[5, 9, 12, 20]; данные совпали=True; индекс=[('idx_te_side_z',)]; integrity=ok
+PASS | 7 Фон template_backgrounds рисуется под элементами | вне элемента=(200, 0, 0) (картинка фона), внутри rect=(0, 0, 255) (элемент поверх)
+PASS | 7b Фон-цвет без картинки | (0, 255, 0)
+PASS | 8 Все типы CHECK рендерятся без warning «reserved/пропущен» | types=['text', 'field', 'photo', 'image', 'rect', 'qr', 'barcode', 'line']; warnings=['unclosed database in <sqlite3.Connection object at 0x7fd4ff8d1300>', 'unclosed database in <sqlite3.Connection object at 0x7fd4ff8d2f20>', 'unclosed database in <sqlite3.Connection object at 0x7fd4ff8d17b0>']
+PASS | 9a Нет SQL в ui/ (кроме smoke_test) | grep пусто
+PASS | 9b UI: кнопка добавления для каждого типа + удалить + z_order | TOOLS→types=['barcode', 'field', 'image', 'line', 'photo', 'qr', 'rect', 'text']; нет кнопки для —; act_delete/«Выше»/«Ниже» есть
+
+ИТОГО: 19/20 PASS; tmp=/tmp/bgqa10_d0a5jiqo

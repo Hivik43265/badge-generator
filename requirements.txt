@@ -1,0 +1,6 @@
+Pillow
+openpyxl
+PyQt6
+pytest
+python-barcode>=0.15
+qrcode[pil]>=7.4

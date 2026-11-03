@@ -1,0 +1,62 @@
+name: build-windows
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+          pip install "pyinstaller>=6.10"
+
+      - name: Tests
+        run: python -m pytest -q
+
+      - name: Build (PyInstaller)
+        run: pyinstaller --noconfirm --clean packaging/badge_generator.spec
+
+      - name: Smoke test (backend exe)
+        shell: pwsh
+        run: |
+          $env:APPDATA = "$env:RUNNER_TEMP\appdata"
+          .\dist\BadgeSmoke.exe
+          if ($LASTEXITCODE -ne 0) { throw "BadgeSmoke failed: $LASTEXITCODE" }
+
+      - name: Smoke test (GUI exe starts and stays up)
+        shell: pwsh
+        run: |
+          $env:APPDATA = "$env:RUNNER_TEMP\appdata-gui"
+          $p = Start-Process -FilePath .\dist\BadgeGenerator.exe -PassThru
+          Start-Sleep -Seconds 15
+          if ($p.HasExited) { throw "BadgeGenerator.exe exited early, code $($p.ExitCode)" }
+          Stop-Process -Id $p.Id -Force
+          if (-not (Test-Path "$env:APPDATA\BadgeGenerator\project.db")) { throw "project.db not created in %APPDATA%\BadgeGenerator" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BadgeGenerator
+          path: dist/BadgeGenerator.exe
+          if-no-files-found: error

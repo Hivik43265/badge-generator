@@ -1,0 +1,218 @@
+{
+  "portrait_300x400.png": [
+    {
+      "name": "TL_red_square",
+      "x": 4,
+      "y": 36,
+      "color": [
+        255,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "TR_green_circle",
+      "x": 279,
+      "y": 34,
+      "color": [
+        0,
+        200,
+        0
+      ]
+    },
+    {
+      "name": "BL_blue_triangle",
+      "x": 4,
+      "y": 394,
+      "color": [
+        0,
+        0,
+        255
+      ]
+    },
+    {
+      "name": "BR_yellow_diamond",
+      "x": 279,
+      "y": 368,
+      "color": [
+        255,
+        210,
+        0
+      ]
+    },
+    {
+      "name": "center_crosshair",
+      "x": 150,
+      "y": 200,
+      "color": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "magenta_anchor_dot",
+      "x": 90,
+      "y": 280,
+      "color": [
+        255,
+        0,
+        255
+      ]
+    },
+    {
+      "name": "arrow_tip_black",
+      "x": 90,
+      "y": 64,
+      "color": [
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "portrait_600x800.png": [
+    {
+      "name": "TL_red_square",
+      "x": 4,
+      "y": 79,
+      "color": [
+        255,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "TR_green_circle",
+      "x": 558,
+      "y": 77,
+      "color": [
+        0,
+        200,
+        0
+      ]
+    },
+    {
+      "name": "BL_blue_triangle",
+      "x": 4,
+      "y": 794,
+      "color": [
+        0,
+        0,
+        255
+      ]
+    },
+    {
+      "name": "BR_yellow_diamond",
+      "x": 558,
+      "y": 725,
+      "color": [
+        255,
+        210,
+        0
+      ]
+    },
+    {
+      "name": "center_crosshair",
+      "x": 300,
+      "y": 400,
+      "color": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "magenta_anchor_dot",
+      "x": 180,
+      "y": 560,
+      "color": [
+        255,
+        0,
+        255
+      ]
+    },
+    {
+      "name": "arrow_tip_black",
+      "x": 180,
+      "y": 124,
+      "color": [
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "landscape_400x300.png": [
+    {
+      "name": "TL_red_square",
+      "x": 4,
+      "y": 36,
+      "color": [
+        255,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "TR_green_circle",
+      "x": 379,
+      "y": 34,
+      "color": [
+        0,
+        200,
+        0
+      ]
+    },
+    {
+      "name": "BL_blue_triangle",
+      "x": 4,
+      "y": 294,
+      "color": [
+        0,
+        0,
+        255
+      ]
+    },
+    {
+      "name": "BR_yellow_diamond",
+      "x": 379,
+      "y": 268,
+      "color": [
+        255,
+        210,
+        0
+      ]
+    },
+    {
+      "name": "center_crosshair",
+      "x": 200,
+      "y": 150,
+      "color": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "magenta_anchor_dot",
+      "x": 120,
+      "y": 210,
+      "color": [
+        255,
+        0,
+        255
+      ]
+    },
+    {
+      "name": "arrow_tip_black",
+      "x": 120,
+      "y": 49,
+      "color": [
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

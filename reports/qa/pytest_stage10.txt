@@ -1,0 +1,98 @@
+........................................................................ [ 28%]
+........................................................................ [ 56%]
+........................................................................ [ 85%]
+......................................                                   [100%]
+=============================== warnings summary ===============================
+tests/test_text_fit.py::test_text_inside_frame[\u0419\u0443\u0440\u0434-300-80-st2]
+  /workspace/badge_generator/.venv/lib/python3.13/site-packages/_pytest/unraisableexception.py:63: PytestUnraisableExceptionWarning: Exception ignored in: <sqlite3.Connection object at 0x7fb61399bc40>
+  
+  Traceback (most recent call last):
+    File "/workspace/badge_generator/.venv/lib/python3.13/site-packages/PIL/ImageFont.py", line 249, in __init__
+      def __init__(
+      
+  ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7fb61399bc40>
+  
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnraisableExceptionWarning(msg))
+
+tests/test_text_fit.py::test_text_inside_frame[\u0419\u0443\u0440\u0434-300-80-st2]
+  /workspace/badge_generator/.venv/lib/python3.13/site-packages/_pytest/unraisableexception.py:63: PytestUnraisableExceptionWarning: Exception ignored in: <sqlite3.Connection object at 0x7fb61399ba60>
+  
+  Traceback (most recent call last):
+    File "/workspace/badge_generator/.venv/lib/python3.13/site-packages/PIL/ImageFont.py", line 249, in __init__
+      def __init__(
+      
+  ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7fb61399ba60>
+  
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnraisableExceptionWarning(msg))
+
+tests/test_text_fit.py::test_text_inside_frame[\u0419\u0443\u0440\u0434-300-80-st2]
+  /workspace/badge_generator/.venv/lib/python3.13/site-packages/_pytest/unraisableexception.py:63: PytestUnraisableExceptionWarning: Exception ignored in: <sqlite3.Connection object at 0x7fb61399ae30>
+  
+  Traceback (most recent call last):
+    File "/workspace/badge_generator/.venv/lib/python3.13/site-packages/PIL/ImageFont.py", line 249, in __init__
+      def __init__(
+      
+  ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7fb61399ae30>
+  
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnraisableExceptionWarning(msg))
+
+tests/test_text_fit.py::test_text_inside_frame[\u0419\u0443\u0440\u0434-300-80-st2]
+  /workspace/badge_generator/.venv/lib/python3.13/site-packages/_pytest/unraisableexception.py:63: PytestUnraisableExceptionWarning: Exception ignored in: <sqlite3.Connection object at 0x7fb61399ab60>
+  
+  Traceback (most recent call last):
+    File "/workspace/badge_generator/.venv/lib/python3.13/site-packages/PIL/ImageFont.py", line 249, in __init__
+      def __init__(
+      
+  ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7fb61399ab60>
+  
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnraisableExceptionWarning(msg))
+
+tests/test_text_fit.py::test_text_inside_frame[\u0419\u0443\u0440\u0434-300-80-st2]
+  /workspace/badge_generator/.venv/lib/python3.13/site-packages/_pytest/unraisableexception.py:63: PytestUnraisableExceptionWarning: Exception ignored in: <sqlite3.Connection object at 0x7fb61399a980>
+  
+  Traceback (most recent call last):
+    File "/workspace/badge_generator/.venv/lib/python3.13/site-packages/PIL/ImageFont.py", line 249, in __init__
+      def __init__(
+      
+  ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7fb61399a980>
+  
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnraisableExceptionWarning(msg))
+
+tests/test_text_fit.py::test_text_inside_frame[\u0419\u0443\u0440\u0434-300-80-st2]
+  /workspace/badge_generator/.venv/lib/python3.13/site-packages/_pytest/unraisableexception.py:63: PytestUnraisableExceptionWarning: Exception ignored in: <sqlite3.Connection object at 0x7fb61399aa70>
+  
+  Traceback (most recent call last):
+    File "/workspace/badge_generator/.venv/lib/python3.13/site-packages/PIL/ImageFont.py", line 249, in __init__
+      def __init__(
+      
+  ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7fb61399aa70>
+  
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnraisableExceptionWarning(msg))
+
+tests/test_text_fit.py::test_text_inside_frame[\u0419\u0443\u0440\u0434-300-80-st2]
+  /workspace/badge_generator/.venv/lib/python3.13/site-packages/_pytest/unraisableexception.py:63: PytestUnraisableExceptionWarning: Exception ignored in: <sqlite3.Connection object at 0x7fb61399a5c0>
+  
+  Traceback (most recent call last):
+    File "/workspace/badge_generator/.venv/lib/python3.13/site-packages/PIL/ImageFont.py", line 249, in __init__
+      def __init__(
+      
+  ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7fb61399a5c0>
+  
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnraisableExceptionWarning(msg))
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+254 passed, 7 warnings in 6.44s

@@ -1,0 +1,6 @@
+last_name,first_name,middle_name,position,department,photo_path,email,phone,photo_config
+,Иван,,,,,,,
+Петров,,,,,,,,
+Сидоров,Олег,,,,,bad-email,123,
+Козлов,Ян,,,,,,,0;0;1.0;1.5;0;0
+Ок,Норм,,,,,ok@example.com,+7 (900) 111-22-33,

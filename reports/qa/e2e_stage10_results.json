@@ -1,0 +1,102 @@
+[
+ {
+  "name": "1a Свежая БД: 0 template_elements, user_version=3",
+  "ok": true,
+  "ev": "elements=0, backgrounds=0, user_version=3"
+ },
+ {
+  "name": "1b Нет seed-макетов в badge_backend/ и миграциях",
+  "ok": true,
+  "ev": "вызовы вне определений: нет"
+ },
+ {
+  "name": "1c «Гость»/«ООО Пример» только в tests/ и reports/",
+  "ok": true,
+  "ev": "вне tests/reports: нет; всего файлов 16"
+ },
+ {
+  "name": "2a Пустой шаблон → белое 1011×638",
+  "ok": true,
+  "ev": "size=(1011, 638), extrema(L)=(255, 255)"
+ },
+ {
+  "name": "2b Экспорт PNG/PDF и печать пустого шаблона: warning, без исключения",
+  "ok": true,
+  "ev": "PNG: 2 файлов, empty_template=True, warnings=['шаблон пуст: нет элементов ни на одной экспортируемой стороне']; PDF: True; печать: 2 стр., True; RuntimeWarning: 1/1/1"
+ },
+ {
+  "name": "3 code128: модуль целый px, декодируется в исходное",
+  "ok": true,
+  "ev": "модуль=4px, все полосы кратны модулю=True, decode=[('Code 128', 'BG-000123')], ожидалось 'BG-000123'"
+ },
+ {
+  "name": "3 ean13: модуль целый px, декодируется в исходное",
+  "ok": true,
+  "ev": "модуль=5px, все полосы кратны модулю=True, decode=[('EAN-13', '4601234567893')], ожидалось '4601234567893'"
+ },
+ {
+  "name": "3c Невалидный EAN-13 (контрольная цифра) → warning без исключения",
+  "ok": true,
+  "ev": "warnings=[\"элемент 1: штрихкод ean13 '4601234567890' не отрисован — EAN-13: неверная контрольная цифра в '4601234567890' (ожидалась 3)\"]"
+ },
+ {
+  "name": "3d UI-ключ style['symbology'] принимается (ean13 + не цифры → warning)",
+  "ok": true,
+  "ev": "warnings=[\"элемент 1: штрихкод ean13 'BG-1' не отрисован — EAN-13: нужно 12 или 13 цифр, получено 'BG-1'\"]"
+ },
+ {
+  "name": "4 QR L/M/Q/H: квадрат в min(w,h), модуль целый, декодируется",
+  "ok": true,
+  "ev": "L: 198×198 px = 33 мод×6px, decode=['https://example.com/badge/42'], ec=['L']; M: 185×185 px = 37 мод×5px, decode=['https://example.com/badge/42'], ec=['M']; Q: 185×185 px = 37 мод×5px, decode=['https://example.com/badge/42'], ec=['Q']; H: 205×205 px = 41 мод×5px, decode=['https://example.com/badge/42'], ec=['H']"
+ },
+ {
+  "name": "5a line: горизонтальная, вертикальная, диагональ с отрицательными w/h",
+  "ok": true,
+  "ev": "(250,100)=(255, 0, 0) (600,200)=(0, 170, 0) (800,500)=(0, 0, 255)"
+ },
+ {
+  "name": "5b line w=h=0 отклоняется (отрицательные w/h разрешены)",
+  "ok": true,
+  "ev": "IntegrityError: CHECK constraint failed: (type <> 'line' AND w > 0 AND h > 0) OR (type = 'line' AND NOT (w = 0 AND h = 0)); w=-50,h=-20 принято"
+ },
+ {
+  "name": "5c Линия со стилем UI по умолчанию рисуется заданной толщиной",
+  "ok": true,
+  "ev": "UI DEFAULT_STYLE['line']={'stroke': '#1F4E8C', 'stroke_width': 3}; толщина по факту=3px, ожидалось 3"
+ },
+ {
+  "name": "6 Миграция v2→v3: persons/template_elements и id сохранены",
+  "ok": true,
+  "ev": "user_version 2→3 (повторно 3); persons ids=[3, 7, 10], elements ids=[5, 9, 12, 20]; данные совпали=True; индекс=[('idx_te_side_z',)]; integrity=ok"
+ },
+ {
+  "name": "6 Миграция v1→v3: persons/template_elements и id сохранены",
+  "ok": true,
+  "ev": "user_version 1→3 (повторно 3); persons ids=[3, 7, 10], elements ids=[5, 9, 12, 20]; данные совпали=True; индекс=[('idx_te_side_z',)]; integrity=ok"
+ },
+ {
+  "name": "7 Фон template_backgrounds рисуется под элементами",
+  "ok": true,
+  "ev": "вне элемента=(200, 0, 0) (картинка фона), внутри rect=(0, 0, 255) (элемент поверх)"
+ },
+ {
+  "name": "7b Фон-цвет без картинки",
+  "ok": true,
+  "ev": "(0, 255, 0)"
+ },
+ {
+  "name": "8 Все типы CHECK рендерятся без warning «reserved/пропущен»",
+  "ok": true,
+  "ev": "types=['text', 'field', 'photo', 'image', 'rect', 'qr', 'barcode', 'line']; warnings=['unclosed database in <sqlite3.Connection object at 0x7f20cbb15300>', 'unclosed database in <sqlite3.Connection object at 0x7f20cbb16f20>', 'unclosed database in <sqlite3.Connection object at 0x7f20cbb157b0>']"
+ },
+ {
+  "name": "9a Нет SQL в ui/ (кроме smoke_test)",
+  "ok": true,
+  "ev": "grep пусто"
+ },
+ {
+  "name": "9b UI: кнопка добавления для каждого типа + удалить + z_order",
+  "ok": true,
+  "ev": "TOOLS→types=['barcode', 'field', 'image', 'line', 'photo', 'qr', 'rect', 'text']; нет кнопки для —; act_delete/«Выше»/«Ниже» есть"
+ }
+]

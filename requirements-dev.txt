@@ -1,0 +1,3 @@
+-r requirements.txt
+# декодер для тестов QR/штрихкодов (тесты skipif, если нет)
+zxing-cpp>=2.2
