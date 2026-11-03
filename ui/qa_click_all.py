@@ -197,6 +197,12 @@ def scenario(tmp, chk, out, EXC):
                 res["portrait_reopen"] = a14.get_photo_edit_defaults().get("portrait") is True and (
                     (d3.portrait.isChecked() and d3.crop() == tuple(box)) if box else "Лицо не найдено" in d3.status.text())
                 d3.reject()
+                a14.photo_edit_target = lambda fn: None          # D46: нет фото-элемента → свободная рамка, точный текст
+                try:
+                    d4 = pe.PhotoEditor(str(ph), a14, None, field_name="foto"); t0 = d4.status.text()
+                    d4.sl["brightness"].setValue(15); d4.update_preview(); spin(100)
+                    res["d46"] = (d4.aspect is None and t0 == d4.status.text() == "В шаблоне нет фото-элемента, пропорции свободные", t0, d4.status.text()); d4.reject()
+                finally: del a14.photo_edit_target
                 a14.set_photo_edit_defaults({**a14.get_photo_edit_defaults(), "portrait": False})
                 res["defaults"] = bool(saved) and d.sp["brightness"].value() == 25 and d.autoeffect.isChecked() \
                     and a14.get_photo_edit_defaults()["brightness"] == 25
@@ -235,6 +241,8 @@ def scenario(tmp, chk, out, EXC):
                 chk("DLG Редактор фото: ползунки меняют превью (Backend apply_photo_edit)", res.get("preview"), res)
                 chk("DLG Редактор фото: «Портрет» ставит рамку по лицу или статус «Лицо не найдено»", res.get("portrait"), res.get("status"))
                 chk("DLG Редактор фото: «Автоэффект» в параметрах", res.get("auto"), res)
+                chk("DLG Редактор фото D46: target None → статус «В шаблоне нет фото-элемента, пропорции свободные» и после превью",
+                    bool(res.get("d46") and res["d46"][0]), res.get("d46"))
                 chk("DLG Редактор фото D42: рамка с пером целиком видна (центр и края изображения)", res.get("frame4"), res)
                 if "portrait" in ba.PHOTO_EDIT_DEFAULTS:     # D41: Backend хранит ключ portrait
                     chk("DLG Редактор фото D41: «Портрет» сохраняется в умолчаниях, восстанавливается и при открытии ставит рамку по лицу",
