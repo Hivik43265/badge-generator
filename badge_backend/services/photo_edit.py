@@ -176,6 +176,13 @@ def get_photo_frame_spec(con, field=None):
             "width_px": int(round(wmm / 25.4 * DPI)), "height_px": int(round(hmm / 25.4 * DPI)),
             "element_id": eid, "side": side}
 
+def photo_edit_target(con, field_name):
+    """Цель редактора фото (имя согласовано с Frontend): get_photo_frame_spec + 'size': (width_px, height_px).
+    Нет связанного фото-элемента → None."""
+    s = get_photo_frame_spec(con, field_name)
+    if s is None: return None
+    s["size"] = (s["width_px"], s["height_px"]); return s
+
 from .photos import PhotoSession, discard_photo  # noqa: E402,F401  (D43, ре-экспорт)
 
 # ---------- умолчания проекта ----------

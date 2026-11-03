@@ -104,12 +104,12 @@ def referenced_photo_paths(con) -> set[str]:
                 if isinstance(v, str) and v: refs.add(v)
     return {str(p).replace("\\", "/") for p in refs}
 
-def discard_photo(con, paths, base_dir=None) -> list[str]:
+def discard_photo(con, paths, base_dir=None):
     """Удалить файлы фото, созданные в отменённой сессии формы (D43).
-    paths — относительные пути 'photos/…' (то, что вернули save_photo/apply_and_save_photo); str или список.
+    paths — один путь (str/Path → bool: удалён ли файл) или список путей (→ список удалённых).
     Не удаляется: путь вне <base>/photos/ (исходники, абсолютные пути вне каталога), путь, на который
     ссылается любая запись (photo_path или image-поле), несуществующий файл. → список удалённых путей."""
-    if isinstance(paths, (str, Path)): paths = [paths]
+    if isinstance(paths, (str, Path)): return bool(discard_photo(con, [paths], base_dir))
     base = (Path(base_dir) if base_dir else project_base_dir(con)).resolve()
     photos = base / PHOTO_SUBDIR
     refs = {(base / r).resolve() if not Path(r).is_absolute() else Path(r).resolve() for r in referenced_photo_paths(con)}

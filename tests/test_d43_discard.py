@@ -28,4 +28,13 @@ def test_photo_path_reference_and_commit(tmp_path):
     api.create_person(con, {}, photo_path=b)
     assert s.commit(discard_unreferenced=True) == [a] and (tmp_path / b).exists()
     c = api.save_photo(con, _png())
-    assert discard_photo(con, c) == [c] and discard_photo(con, [b, None, ""]) == []
+    assert discard_photo(con, c) is True and discard_photo(con, c) is False and discard_photo(con, [b, None, ""]) == []
+
+def test_single_path_bool(tmp_path):
+    from pathlib import Path
+    con = api.connect(tmp_path / "p.db")
+    a = api.save_photo(con, _png()); b = api.save_photo(con, _png())
+    api.create_person(con, {}, photo_path=b)
+    assert api.discard_photo(con, Path(a)) is True and not (tmp_path / a).exists()
+    assert api.discard_photo(con, b) is False and (tmp_path / b).exists()
+    assert api.discard_photo(con, [b]) == []

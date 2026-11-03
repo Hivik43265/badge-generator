@@ -73,3 +73,9 @@ def test_shift_then_shrink():
     tight = img.crop((0, 60, img.width, 460))                             # фото ниже рамки → уменьшение
     x, y, w, h = pe.detect_face_crop(tight, 0.78)
     assert h <= tight.height and y + h <= tight.height and abs(w / h - 0.78) < 0.01
+
+def test_photo_edit_target(tmp_path):
+    con, eid = _prj(tmp_path, "t", 413, 531)
+    t = api.photo_edit_target(con, "pic")
+    assert t == {**pe.get_photo_frame_spec(con, "pic"), "size": (413, 531)} and t["element_id"] == eid
+    assert pe.photo_edit_target(con, "nope") is None
