@@ -312,8 +312,14 @@ def face_detect_available(): return callable(getattr(_api, "detect_face_crop", N
 def apply_and_save_available(): return callable(getattr(_api, "apply_and_save_photo", None))
 
 
-def open_image(path):
-    """Файл → PIL.Image (только чтение, без обработки)."""
+def load_photo_available(): return callable(getattr(_api, "load_photo_for_edit", None))
+
+
+def open_image(path, base_dir=None):
+    """Исходник редактора: Backend load_photo_for_edit (EXIF-поворот как в apply_and_save_photo, рамка совпадает);
+    нет функции → простое чтение файла без обработки."""
+    fn = getattr(_api, "load_photo_for_edit", None)
+    if fn is not None: return fn(path, base_dir=base_dir)
     from PIL import Image
     with Image.open(path) as im: return im.copy()
 

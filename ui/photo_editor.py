@@ -72,7 +72,7 @@ class PhotoEditor(QDialog):
         super().__init__(parent); self.setWindowTitle("Редактировать изображение"); self.resize(520, 640)
         self.path, self.api, self.aspect, self.result_path = path, api, aspect or 3 / 4, None
         self.field_name, self.person_id = field_name, person_id
-        self.src = open_image(path); self.img = self.src
+        self.src = open_image(path, getattr(api, "base_dir", None)); self.img = self.src
         grid = QGridLayout(); self.sl, self.sp = {}, {}
         for i, (k, lab, lo, hi, suf) in enumerate(self.SLIDERS):
             s = QSlider(Qt.Orientation.Horizontal); s.setRange(lo, hi); sp = QSpinBox(); sp.setRange(lo, hi); sp.setSuffix(suf)
@@ -171,10 +171,9 @@ class PhotoEditor(QDialog):
 
     # ---- применить ----
     def apply(self):
-        """«Применить». Исходный файл есть всегда (файл или снимок во временном файле) → Backend apply_and_save_photo
-        (новый файл, исходник не трогается). Поле image СУЩЕСТВУЮЩЕЙ записи → field_name + person_id (Backend сам пишет
-        значение поля); новая запись / photo_path → без них: путь идёт в форму и сохраняется её кнопкой «Сохранить».
-        Нет apply_and_save_photo или исходного файла → apply_photo_edit + save_photo (байты)."""
+        """«Применить» → Backend apply_and_save_photo БЕЗ person_id/field_name (новый файл, исходник не трогается).
+        Путь идёт в форму записи и попадает в БД только по «Сохранить»; при «Отмена» формы файл остаётся в photos/
+        без ссылки (согласовано с Backend). Нет apply_and_save_photo → apply_photo_edit + save_photo (байты)."""
         if not photo_edit_available():
             self.status.setText("Применить нельзя: в Backend нет apply_photo_edit"); return False
         if self.api is None:
@@ -182,9 +181,7 @@ class PhotoEditor(QDialog):
         p = self.params()
         try:
             if apply_and_save_available() and self.path:
-                link = self.field_name is not None and self.person_id is not None
-                self.result_path = self.api.apply_and_save_photo(self.path, p, person_id=self.person_id if link else None,
-                                                                 field_name=self.field_name if link else None)
+                self.result_path = self.api.apply_and_save_photo(self.path, p)
             else:
                 self.result_path = self.api.save_photo(image_png_bytes(apply_photo_edit(self.src, p)), person_id=None, ext="png")
         except ValueError as e:

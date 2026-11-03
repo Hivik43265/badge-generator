@@ -829,17 +829,18 @@ if _ba14.photo_edit_available():
     assert ed14.apply() is True and ed14.result_path.startswith("photos/") and (tmp / ed14.result_path).is_file()
     assert ie14.text() == ed14.result_path and (tmp / "p14.jpg").is_file(), (ie14.text(), ed14.result_path)
     rf14.save(); pid14 = api14.list_persons()[-1]["id"]; assert api14.list_persons()[-1]["fields"]["foto"] == ed14.result_path
-    # существующая запись → apply_and_save_photo(field_name="foto", person_id) — Backend сам пишет поле
-    rf14b = RecordForm(api14, pid14, w); ie14b = rf14b.edits["foto"]; assert ie14b.person_id == pid14 and ie14b.field_name == "foto"
-    QTest.mouseDClick(ie14b.still, Qt.MouseButton.LeftButton); spin(30); ed14c = got14[-1]; old = ie14b.text()
-    assert ed14c.field_name == "foto" and ed14c.person_id == pid14 and ed14c.apply() is True and ed14c.result_path != old
-    assert api14.get_person(pid14)["fields"]["foto"] == ed14c.result_path == ie14b.text(); rf14b.reject()
+    # существующая запись: «Применить» → путь только в форме; «Отмена» формы → значение в БД не меняется
+    rf14b = RecordForm(api14, pid14, w); ie14b = rf14b.edits["foto"]; old = api14.get_person(pid14)["fields"]["foto"]
+    QTest.mouseDClick(ie14b.still, Qt.MouseButton.LeftButton); spin(30); ed14c = got14[-1]
+    assert ed14c.apply() is True and ed14c.result_path != old and ie14b.text() == ed14c.result_path
+    assert api14.get_person(pid14)["fields"]["foto"] == old                                  # до «Сохранить» БД не тронута
+    rf14b.reject(); assert api14.get_person(pid14)["fields"]["foto"] == old and (tmp / ed14c.result_path).is_file()
 else:
     assert "apply_photo_edit" in ed14.status.text() and ed14.apply() is False
     assert ed14.find_face() is False and "Лицо не найдено" in ed14.status.text()
 pe.editor_hook = None
 api14.close()
-ok("этап 14: редактор фото — двойной клик/контекстное меню (один QAction), без автооткрытия, ползунки с полями, превью Backend, рамка с пропорциями (углы/перенос), Портрет (лицо), Автоэффект, умолчания проекта (Backend), ValueError в статусе, Применить → apply_and_save_photo → поле image")
+ok("этап 14: редактор фото — двойной клик/контекстное меню (один QAction), без автооткрытия, ползунки с полями, превью Backend, рамка с пропорциями (углы/перенос), Портрет (лицо), Автоэффект, умолчания проекта (Backend), ValueError в статусе, Применить → apply_and_save_photo → поле формы → «Сохранить»; «Отмена» формы не меняет БД")
 # расположение окна сохраняется автоматически в closeEvent
 _cfg2 = tempfile.mkdtemp(prefix="bg_ui_cfg2_")
 QSettings.setPath(QSettings.Format.NativeFormat, QSettings.Scope.UserScope, _cfg2)
