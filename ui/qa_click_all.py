@@ -163,6 +163,9 @@ def scenario(tmp, chk, out, EXC):
             from pathlib import Path
             n = len(EXC); a14 = BackendAPI(str(tmp / "qa14.db"), base_dir=str(tmp)); a14.upsert_field("foto", "Фото", 0, data_type="image")
             el = a14.create_element(type="photo", x=0, y=0, w=300, h=400); a14.link_field(el, "foto")
+            real_t = ba._backend_fn("photo_edit_target") is not None; real_d = ba._backend_fn("PhotoSession") is not None
+            if not real_t:    # пока нет в Backend — подмена только на тестовом экземпляре
+                a14.photo_edit_target = lambda fn: {"aspect": 0.75, "size": (300, 400), "element_id": el} if fn == "foto" else None
             face = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "face_astronaut.jpg"
             ph = tmp / "qa14.png"
             if face.is_file(): ph = tmp / "qa14.jpg"; shutil.copy(face, ph)
@@ -174,10 +177,27 @@ def scenario(tmp, chk, out, EXC):
                 px0 = d.img.tobytes(); d.sl["brightness"].setValue(25); d.sl["contrast"].setValue(10); d.update_preview(); spin(20)
                 res["preview"] = d.img.tobytes() != px0
                 d.portrait.setChecked(True); spin(20)
-                fr = d.frame.rect(); res["portrait"] = (d.portrait.isChecked() and abs(fr.width() / fr.height() - pb.aspect) < 0.02) \
+                res["aspect"] = (d.aspect, a14.photo_edit_target("foto")["aspect"])
+                fr = d.frame.rect(); res["portrait"] = (d.portrait.isChecked() and abs(fr.width() / fr.height() - d.aspect) < 0.02) \
                     or "Лицо не найдено" in d.status.text()
                 d.autoeffect.setChecked(True); spin(100); res["auto"] = d.params()["autoeffect"] is True
-                saved = d.save_defaults(); d.sl["brightness"].setValue(-30); d.autoeffect.setChecked(False); d.load_defaults()
+                from PyQt6.QtCore import QRectF, QPointF
+                vp = QRectF(d.view.viewport().rect()); ok42 = []
+                for mv in (None, QPointF(-10000, -10000), QPointF(10000, 10000)):
+                    if mv is not None: d.frame.move_by(mv); spin(20)
+                    ok42.append(vp.contains(d.frame.visible_device_rect()))
+                res["frame4"] = all(ok42); d.portrait.setChecked(False); d.portrait.setChecked(True); spin(20)
+                # D41 проверяет сохранение галочки, а не поиск лица (после яркости/автоэффекта лицо может не найтись)
+                d.portrait.blockSignals(True); d.portrait.setChecked(True); d.portrait.blockSignals(False)
+                saved = d.save_defaults(); d.sl["brightness"].setValue(-30); d.autoeffect.setChecked(False)
+                d.portrait.setChecked(False); d.load_defaults(); res["sent_portrait"] = bool(saved) and "portrait" in saved
+                res["portrait_restored"] = d.portrait.isChecked() or "Лицо не найдено" in d.status.text()   # нет лица → галочка снимается
+                d3 = pe.PhotoEditor(str(ph), a14, None, field_name="foto")
+                box = ba.detect_face_crop(d3.img, d3.aspect)
+                res["portrait_reopen"] = a14.get_photo_edit_defaults().get("portrait") is True and (
+                    (d3.portrait.isChecked() and d3.crop() == tuple(box)) if box else "Лицо не найдено" in d3.status.text())
+                d3.reject()
+                a14.set_photo_edit_defaults({**a14.get_photo_edit_defaults(), "portrait": False})
                 res["defaults"] = bool(saved) and d.sp["brightness"].value() == 25 and d.autoeffect.isChecked() \
                     and a14.get_photo_edit_defaults()["brightness"] == 25
                 res["apply"] = d.apply(); res["path"] = d.result_path; res["status"] = d.status.text()
@@ -193,7 +213,8 @@ def scenario(tmp, chk, out, EXC):
             try: QTest.mouseDClick(pb2.still, Qt.MouseButton.LeftButton); spin(50)
             finally: pe.editor_hook = None
             mid = a14.get_person(pid)["fields"].get("foto"); form2 = pb2.text(); pb2.stop(); f2.reject(); spin(30)
-            db1 = a14.get_person(pid)["fields"].get("foto"); a14.close()
+            db1 = a14.get_person(pid)["fields"].get("foto"); p2 = r2.get("path")
+            gone = p2 is not None and not (tmp / p2).is_file(); disc = getattr(f2, "discarded", None); a14.close()
             chk("DLG «Редактировать изображение» по двойному клику на фото формы записи (не открывается сам после файла)",
                 not auto and seen and seen[0][:2] == ("Редактировать изображение", True) and pb.act_edit in pb.still.actions() and len(EXC) == n,
                 seen or "не открылся")
@@ -201,6 +222,14 @@ def scenario(tmp, chk, out, EXC):
                 chk("DLG Редактор фото: ползунки меняют превью (Backend apply_photo_edit)", res.get("preview"), res)
                 chk("DLG Редактор фото: «Портрет» ставит рамку по лицу или статус «Лицо не найдено»", res.get("portrait"), res.get("status"))
                 chk("DLG Редактор фото: «Автоэффект» в параметрах", res.get("auto"), res)
+                chk("DLG Редактор фото D42: рамка с пером целиком видна (центр и края изображения)", res.get("frame4"), res)
+                if "portrait" in ba.PHOTO_EDIT_DEFAULTS:     # D41: Backend хранит ключ portrait
+                    chk("DLG Редактор фото D41: «Портрет» сохраняется в умолчаниях, восстанавливается и при открытии ставит рамку по лицу",
+                        res.get("sent_portrait") and res.get("portrait_restored") and res.get("portrait_reopen"), res)
+                chk("DLG Редактор фото: пропорции рамки = Backend photo_edit_target (поле image)", res.get("aspect") and res["aspect"][0] == res["aspect"][1], res.get("aspect"))
+                if real_d:
+                    chk("DLG Редактор фото D43: «Отмена» формы → PhotoSession.discard() удаляет файл редактора без ссылок",
+                        disc == [p2] and gone and db1 == db0 and (tmp / db0).is_file(), (disc, p2, gone))
                 chk("DLG Редактор фото: умолчания проекта сохраняются и восстанавливаются (Backend)", res.get("defaults"), res)
                 chk("DLG Редактор фото: «Применить» → новый photos/… в поле image", res.get("apply") is True and str(res.get("path", "")).startswith("photos/")
                     and val == res["path"] and (tmp / val).is_file() and ph.is_file() and db0 == fv, res)
