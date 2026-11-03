@@ -83,7 +83,9 @@ def test_db_export_copies_field_photos_and_round_trip(prj):
     rep = api.import_rows(c2, api.open_source(out)[0], photo_dir=d / "exp" / "out_photos", import_fields=True)
     assert rep.added == 1 and rep.errors == []
     q = api.list_persons(c2)[0]
-    assert q["fields"]["pic"] == name and {f["name"]: f["data_type"] for f in api.list_fields(c2)}["pic"] == "image"
+    assert {f["name"]: f["data_type"] for f in api.list_fields(c2)}["pic"] == "image"
+    v = q["fields"]["pic"]   # D39: скопировано в photos/ нового проекта
+    assert v.startswith("photos/") and (d / v).read_bytes() == (d / "exp" / "out_photos" / name).read_bytes()
 
 @pytest.mark.parametrize("payload,code", [(b"", "PHOTO_EMPTY"), (b"junk", "PHOTO_BROKEN")])
 def test_import_image_field_bad_file(prj, payload, code):
@@ -94,7 +96,8 @@ def test_import_image_field_bad_file(prj, payload, code):
     assert rep.added == 3 and rep.errors == []
     assert rep.photo_issues == [{"row": 3, "code": code, "file": "bad.png"}]
     assert sorted((w["row"], w["code"]) for w in rep.warnings) == [(3, code), (4, "PHOTO_MISSING")]
-    assert [x["fields"].get("pic") for x in api.list_persons(con)] == ["ok.png", None, "none.png"]
+    vals = [x["fields"].get("pic") for x in api.list_persons(con)]
+    assert vals[0].startswith("photos/") and vals[1:] == [None, "none.png"]   # D39: найденное скопировано
 
 def test_missing_photos_uses_linked_image_field(prj):
     con, d = prj
