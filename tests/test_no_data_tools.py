@@ -40,11 +40,11 @@ def test_fallback_when_data_tools_blocked(monkeypatch, tmp_path, caplog):
     assert rep.validator == importer.FALLBACK_VALIDATOR == "builtin-fallback"
     assert (rep.added, rep.skipped) == (50, 0) and len(api.list_persons(con)) == 50
     assert "fallback" in caplog.text
-    # фолбэк всё же ловит обязательные поля
+    # D25: обязательных полей нет — фолбэк сообщает о пустых как warning, записи импортируются
     p = tmp_path / "bad.csv"; p.write_text("Фамилия;Имя\nИванов;\n;Пётр\nА;Б\n", encoding="utf-8")
     with pytest.warns(RuntimeWarning):
         r = _imp(api.import_file, api.connect(), p)
-    assert (r.added, r.skipped) == (1, 2) and {e["code"] for e in r.errors} == {"REQUIRED_MISSING"}
+    assert (r.added, r.skipped) == (3, 0) and r.errors == [] and {w["code"] for w in r.warnings} == {"REQUIRED_MISSING"}
 
 def test_fallback_subprocess_clean_sys_path(tmp_path):
     """Чистое окружение: копия только badge_backend, data_tools физически отсутствует на sys.path."""

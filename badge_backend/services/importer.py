@@ -17,6 +17,7 @@ from pathlib import Path
 from .headers import map_headers, split_fio, column_labels
 from ..photo_config import normalize, DEFAULT
 from ..fields import normalize_value
+from ..db import now_iso
 log = logging.getLogger(__name__)
 FALLBACK_VALIDATOR = "builtin-fallback"  # report.validator, если data_tools недоступен
 
@@ -36,7 +37,7 @@ class ImportReport:
                                "cancelled": self.cancelled, "photo_issues": self.photo_issues,
                                "skipped_columns": self.skipped_columns}
 
-def _cell(v):
+def _cell(v, strip: bool = True):
     """Значение ячейки → строка без потерь: только strip и \r\n→\n (внутренние пробелы/переносы сохраняются).
     float-целые → int ('123', не '123.0'); дата без времени → 'YYYY-MM-DD'."""
     import datetime as _dt
@@ -46,7 +47,8 @@ def _cell(v):
     if isinstance(v, _dt.datetime):
         v = v.date().isoformat() if v.time() == _dt.time(0) else v.isoformat(sep=" ")
     elif isinstance(v, _dt.date): v = v.isoformat()
-    return str(v).replace("\r\n", "\n").replace("\r", "\n").strip()
+    v = str(v).replace("\r\n", "\n").replace("\r", "\n")
+    return v.strip() if strip else v   # D27: validate=False → значение как есть
 
 def xls_rows(wb, sh) -> list[list]:
     """Строки листа xlrd; даты (XL_CELL_DATE) → datetime, как у openpyxl."""
@@ -117,6 +119,28 @@ def _validate(records, photo_dir):
             errs.setdefault(i, []).append({"field": "photo_path", "code": "PHOTO_MISSING", "details": "фото не указано"})
     return errs, (lambda r: r), FALLBACK_VALIDATOR
 
+def _yes_no(v):
+    from ..fields import normalize_value as _nv
+    if v in (None, "") or str(v).strip() == "": return None, None
+    sv, err = _nv("bool", v)
+    return (None, err) if err else (sv == "1", None)
+
+def _parse_printed_at(v):
+    """'ДД.ММ.ГГГГ[ ЧЧ:ММ[:СС]]' или ISO → ISO с локальным смещением (как db.now_iso). '' → None."""
+    import datetime as _dt, re as _re
+    s = str(v).strip()
+    if not s: return None, None
+    m = _re.fullmatch(r"(\d{1,2})\.(\d{1,2})\.(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?", s)
+    try:
+        if m:
+            d = _dt.datetime(int(m[3]), int(m[2]), int(m[1]), int(m[4] or 0), int(m[5] or 0), int(m[6] or 0))
+        else:
+            d = _dt.datetime.fromisoformat(s)
+    except ValueError:
+        return None, f"не дата печати (ДД.ММ.ГГГГ ЧЧ:ММ:СС): {s!r}"
+    if d.tzinfo is None: d = d.astimezone()
+    return d.isoformat(timespec="seconds"), None
+
 _PHOTO_SOFT = ("PHOTO_MISSING", "PHOTO_NOT_FOUND", "PHOTO_EMPTY", "PHOTO_BROKEN")
 
 class _Cancel(Exception):
@@ -130,22 +154,24 @@ def _tick(progress, done, total, cancel=None):
     if _cancelled(cancel): raise _Cancel
     if progress is not None and progress(done, total) is False: raise _Cancel
 
-def parse_file(path, mapping=None, labels=None):
+def parse_file(path, mapping=None, labels=None, strip: bool = True):
     """Файл → (records, labels). record = dict полей + '_row' (номер строки Excel, заголовок=1).
     mapping — см. headers.map_headers (синонимы, ручное назначение, None/'' — исключить колонку).
     labels {key: label} — явные подписи для person_fields."""
     headers, rows = read_table(path)
-    return parse_rows(headers, rows, mapping, labels)
+    return parse_rows(headers, rows, mapping, labels, strip=strip)
 
-def parse_rows(headers, rows, mapping=None, labels=None, first_row: int = 2):
+def parse_rows(headers, rows, mapping=None, labels=None, first_row: int = 2, strip: bool = True):
     """(headers, rows) → (records, labels); общий разбор для import_file и import_rows.
     first_row — номер первой строки данных для '_row' (по умолчанию 2: заголовок=1)."""
     keys = map_headers(headers, mapping)
     labs = column_labels(headers, keys, mapping, labels)
     recs = []
     for rn, raw in enumerate(rows, start=first_row):
-        vals = [_cell(c) for c in raw]
-        if all(v == "" for v in vals): continue
+        vals = [_cell(c, strip) for c in raw]
+        if not vals: continue                      # пустая строка CSV (нет ячеек) — не запись
+        if all(v.strip() == "" for v in vals):     # D25: строка из пустых ячеек — ошибка EMPTY_ROW
+            recs.append({"_row": rn, "_empty": True}); continue
         rec = {"_row": rn}
         for i, k in enumerate(keys):
             if not k: continue
@@ -174,7 +200,7 @@ def import_file(con, path, mapping=None, photo_dir=None, validate=True, *, label
     """
     from .sources import label_mapping
     mapping = {**label_mapping(con, read_table(path)[0], mapping), **(mapping or {})} or mapping
-    recs, labs = parse_file(path, mapping, labels)
+    recs, labs = parse_file(path, mapping, labels, strip=validate)
     return import_records(con, recs, labs, photo_dir, validate, labels=labels, require_photo=require_photo,
                           progress=progress)
 
@@ -188,6 +214,28 @@ def import_records(con, recs, labs, photo_dir=None, validate=True, *, labels=Non
     ftypes = {r[0]: r[1] for r in con.execute("SELECT name, data_type FROM person_fields")}
     image_f = [k for k, t in ftypes.items() if t == "image"]
     keep = set(ftypes) | {"photo_path", "photo_config"}
+    empties = {i for i, r in enumerate(recs) if r.pop("_empty", False)}
+    # D28: служебные колонки печати → extra (persons.print_mark / printed_at)
+    extra = dict(extra or {})
+    for i, r in enumerate(recs):
+        if not any(k in r for k in ("print_mark", "printed", "printed_at")): continue
+        ex = dict(extra.get(i) or {}); err = []
+        if "print_mark" in r:
+            b, e = _yes_no(r.pop("print_mark"))
+            if e: err.append(("print_mark", e))
+            elif b is not None: ex["print_mark"] = b
+        pa = r.pop("printed_at", None); pd = r.pop("printed", None)
+        if pa is not None:
+            v, e = _parse_printed_at(pa)
+            if e: err.append(("printed_at", e))
+            else: ex["printed_at"] = v
+        if pd is not None:
+            b, e = _yes_no(pd)
+            if e: err.append(("printed", e))
+            elif b is False: ex["printed_at"] = None
+            elif b and not ex.get("printed_at"): ex["printed_at"] = now_iso()
+        rep.warnings += [{"row": r["_row"], "field": f, "code": "FIELD_TYPE", "details": d} for f, d in err]
+        extra[i] = ex
     seen = []
     for r in recs:
         for k in r:
@@ -219,9 +267,25 @@ def import_records(con, recs, labs, photo_dir=None, validate=True, *, labels=Non
             rep.warnings += [{"row": r["_row"], **e} for e in pm]
             verrs[i] = [e for e in verrs[i] if e["code"] not in _PHOTO_SOFT]
             if not verrs[i]: del verrs[i]
-    for i in list(verrs):   # обязательность — только для полей, которые есть в проекте
-        verrs[i] = [e for e in verrs[i] if not (e["code"] == "REQUIRED_MISSING" and e.get("field") not in ftypes)]
-        if not verrs[i]: del verrs[i]
+    # D25 (Архитектор): обязательных полей нет. Ошибки (строка пропускается) — только FIELD_TYPE и полностью
+    # пустая строка (EMPTY_ROW); остальное от валидатора (REQUIRED_MISSING и пр.) — warning, и только для полей проекта.
+    for i in list(verrs):
+        if i in empties: del verrs[i]; continue
+        hard = [e for e in verrs[i] if require_photo and e.get("field") == "photo_path"]
+        soft = [e for e in verrs[i] if e not in hard and (e.get("field") in ftypes or e.get("field") in ("photo_path", "photo_config"))]
+        rep.warnings += [{"row": recs[i]["_row"], **e} for e in soft]
+        if hard: verrs[i] = hard
+        else: del verrs[i]
+    for i, r in enumerate(recs):
+        if i in empties:
+            verrs.setdefault(i, []).append({"field": None, "code": "EMPTY_ROW", "details": "пустая строка"})
+        else:
+            bad = []
+            for k, v in r.items():
+                if k in ftypes and v not in ("", None):
+                    _, err = normalize_value(ftypes[k], v)
+                    if err: bad.append({"field": k, "code": "FIELD_TYPE", "details": err})
+            if bad: verrs.setdefault(i, []).extend(bad)
     total = len(recs)
     try:
         with con:
@@ -238,12 +302,10 @@ def import_records(con, recs, labs, photo_dir=None, validate=True, *, labels=Non
                     fields = {}
                     for k, v in n.items():
                         if k in ("photo_path", "photo_config") or k not in ftypes or v in ("", None): continue
-                        sv, err = normalize_value(ftypes[k], v)
-                        if err:   # D24: неверное значение — warning, строка импортируется, значение пустое
-                            rep.warnings.append({"row": r["_row"], "field": k, "code": "FIELD_TYPE", "details": err}); continue
+                        sv, _ = normalize_value(ftypes[k], v) if ftypes[k] != "text" else (v, None)
                         if sv != "": fields[k] = sv
                     pc = normalize(n.get("photo_config")) if n.get("photo_config") else DEFAULT
-                    ex = (extra or {}).get(idx) or {}
+                    ex = extra.get(idx) or {}
                     cur = con.execute("INSERT INTO persons(fields_json, photo_path, photo_config, print_mark, printed_at) "
                                       "VALUES (?,?,?,?,?)", (json.dumps(fields, ensure_ascii=False),
                                       n.get("photo_path") or None, pc, int(bool(ex.get("print_mark"))), ex.get("printed_at")))

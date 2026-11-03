@@ -11,6 +11,16 @@ from pathlib import Path
 FORMATS = ("xlsx", "xls", "csv", "db")
 XLS_MAX_ROWS = 65535            # строк данных (+1 строка заголовка = 65536 — предел формата .xls)
 PHOTO_HEADERS = ("Фото", "Настройки фото")
+PRINT_HEADERS = ("Отметка печати", "Напечатано", "Дата печати")   # D28: print_mark, printed_at is not None, printed_at
+
+def fmt_printed_at(v) -> str:
+    """D28: ISO printed_at → 'ДД.ММ.ГГГГ' (локальная дата; время в табличных форматах официально не переносится)."""
+    if not v: return ""
+    from datetime import datetime
+    try: d = datetime.fromisoformat(str(v))
+    except ValueError: return str(v)
+    if d.tzinfo is not None: d = d.astimezone()
+    return d.strftime("%d.%m.%Y")
 
 def _q(con, sql, args=()):
     c = con.cursor(); c.row_factory = sqlite3.Row    # не меняем row_factory соединения вызывающего
@@ -36,8 +46,9 @@ def table_rows(con, ids=None):
             if k not in keys: keys.append(k); heads.append(k)
         data.append((fj, r))
     rows = [[("" if fj.get(k) is None else str(fj.get(k))) for k in keys] + [r["photo_path"] or "", r["photo_config"] or ""]
+            + ["да" if r["print_mark"] else "нет", "да" if r["printed_at"] else "нет", fmt_printed_at(r["printed_at"])]
             for fj, r in data]
-    return heads + list(PHOTO_HEADERS), rows
+    return heads + list(PHOTO_HEADERS) + list(PRINT_HEADERS), rows
 
 def _fmt(path, format):
     f = (format or Path(path).suffix.lstrip(".")).lower()

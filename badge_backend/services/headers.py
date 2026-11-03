@@ -20,8 +20,13 @@ SYNONYMS = {
     "phone": ["phone", "телефон", "тел", "тел.", "мобильный"],
     "photo_config": ["photo_config", "настройки фото"],
     "employee_id": ["employee_id", "табельный номер", "таб. номер", "таб №", "табельный №", "id сотрудника"],
+    # D28: служебные колонки печати (xlsx/xls/csv) → persons.print_mark / printed_at, не поля
+    "print_mark": ["print_mark", "отметка печати", "в очереди печати"],
+    "printed": ["printed", "напечатано"],
+    "printed_at": ["printed_at", "дата печати"],
     "__fio__": ["фио", "ф.и.о.", "фамилия имя отчество", "full name", "full_name", "fullname"],
 }
+SERVICE_KEYS = ("photo_path", "photo_config", "print_mark", "printed", "printed_at")
 LABELS = {"last_name": "Фамилия", "first_name": "Имя", "middle_name": "Отчество", "position": "Должность",
           "department": "Отдел", "email": "Email", "phone": "Телефон", "employee_id": "Табельный номер"}
 _TR = dict(zip("абвгдеёжзийклмнопрстуфхцчшщыэюя",
@@ -89,7 +94,7 @@ def column_labels(headers, keys, mapping=None, labels=None) -> dict:
     _, explicit = split_mapping(mapping)
     out = {}
     for h, k in zip(headers, keys):
-        if not k or k.startswith("__") or k in ("photo_path", "photo_config"): continue
+        if not k or k.startswith("__") or k in SERVICE_KEYS: continue
         manual = header_key(h) in explicit
         out[k] = LABELS.get(k, " ".join(str(h).split())) if manual and k in LABELS else " ".join(str(h).split())
     if "__fio__" in keys:

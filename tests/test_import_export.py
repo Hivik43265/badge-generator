@@ -36,7 +36,7 @@ def test_csv_encodings_delims(con, tmp_path, enc, delim):
     p = _csv(tmp_path / "a.csv", [["Фамилия", "Имя", "Отдел кадров"], ["Иванов", "Иван", "ОК"], ["", "", ""],
                                   ["Петров", "Пётр", ""]], enc, delim)
     r = _imp(api.import_file, con, p)
-    assert (r.added, r.skipped) == (2, 0)
+    assert (r.added, r.skipped) == (2, 1) and r.errors[0]["code"] == "EMPTY_ROW"   # D25: строка пустых ячеек
     assert api.list_persons(con)[0]["fields"] == {"last_name": "Иванов", "first_name": "Иван", "otdel_kadrov": "ОК"}
     assert {f["name"]: f["label"] for f in api.list_fields(con)}["otdel_kadrov"] == "Отдел кадров"
 
@@ -50,9 +50,9 @@ def test_xlsx_photo_and_errors(con, tmp_path):
                 ["Сидоров", "Олег", "none.jpg", None, 3]]: ws.append(row)
     wb.save(tmp_path / "p.xlsx")
     r = _imp(api.import_file, con, tmp_path / "p.xlsx", photo_dir=tmp_path / "ph")
-    assert (r.added, r.skipped) == (2, 1)        # этап 13: ненайденное фото — предупреждение, не пропуск
+    assert (r.added, r.skipped) == (3, 1)        # фото не найдено и пустое «Имя» — warnings (D25); пустая строка — ошибка
     codes = {(e["row"], e["code"]) for e in r.errors}
-    assert (4, "REQUIRED_MISSING") in codes and not any(c == "PHOTO_NOT_FOUND" for _, c in codes)
+    assert codes == {(3, "EMPTY_ROW")} and (4, "REQUIRED_MISSING") in {(w["row"], w["code"]) for w in r.warnings}
     assert (5, "PHOTO_MISSING") in {(w["row"], w["code"]) for w in r.warnings}
     p = api.list_persons(con)[0]
     assert p["photo_path"] == "a.jpg" and p["photo_config"] == "5;5;1.5;0;0;10"

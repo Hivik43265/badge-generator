@@ -83,10 +83,10 @@ def test_import_does_not_create_fields_and_reports_skipped(tmp_path):
     keys = api.auto_match(api.read_rows(sh)[0], fields=con)
     assert keys == ["last_name", None, None, "dr"]                     # ДР — по label существующего поля
     rep = api.import_rows(con, sh)                                     # ДР сопоставлен по label и при импорте
-    assert rep.added == 2 and [c["label"] for c in rep.skipped_columns] == ["Имя", "Цех"]
+    assert rep.added == 1 and [c["label"] for c in rep.skipped_columns] == ["Имя", "Цех"]
     ps = api.list_persons(con)
-    assert ps[0]["fields"] == {"last_name": "Иванов", "dr": "1990-03-05"} and ps[1]["fields"] == {"last_name": "Петров"}
-    assert [(w["row"], w["code"], w["field"]) for w in rep.warnings] == [(3, "FIELD_TYPE", "dr")]
+    assert ps[0]["fields"] == {"last_name": "Иванов", "dr": "1990-03-05"}
+    assert [(e["row"], e["code"], e["field"]) for e in rep.errors] == [(3, "FIELD_TYPE", "dr")]   # D25: ошибка, строка пропущена
     assert [f["name"] for f in api.list_fields(con)] == ["last_name", "dr"]
 
 def test_project_import_fields_flag(tmp_path):
@@ -149,3 +149,33 @@ def test_bad_embedded_xlsx_image_not_copied(tmp_path, payload, code, monkeypatch
     rep = api.import_rows(con, api.open_source(tmp_path / "a.xlsx")[0], photo_dir=out)
     assert rep.added == 1 and rep.photo_issues == [{"row": 2, "code": code, "file": "img_r2.png"}]
     assert not (out / "img_r2.png").exists() and api.list_persons(con)[0]["photo_path"] is None
+
+
+def test_d27_validate_false_keeps_whitespace(tmp_path):
+    p = _csv(tmp_path / "a.csv", "Фамилия;Имя\n  Иванов  ;Иван\n")
+    for v, exp in ((False, "  Иванов  "), (True, "Иванов")):
+        con = api.connect(); api.upsert_field(con, "last_name", "Фамилия")
+        api.import_rows(con, api.open_source(p)[0], validate=v)
+        assert api.list_persons(con)[0]["fields"]["last_name"] == exp
+
+def test_d26_name_then_label():
+    con = api.connect(); api.upsert_field(con, "code", "Таб. №"); api.upsert_field(con, "note", "Примечание")
+    api.upsert_field(con, "dept", "Отдел")
+    assert api.auto_match(["code", " таб.  № ", "ПРИМЕЧАНИЕ", "Отдел", "Лишнее"], fields=con) == ["code", None, "note", "dept", None]
+    assert api.auto_match(["таб. №"], fields=con) == ["code"]
+
+def test_d28_print_columns_roundtrip(tmp_path):
+    src = api.connect(); api.upsert_field(src, "last_name", "Фамилия")
+    a, b, c = (api.create_person(src, {"last_name": n}) for n in "АБВ")
+    api.set_print_mark(src, [a, c], True); api.mark_printed(src, [c])
+    for fmt in ("xlsx", "xls", "csv"):
+        out = tmp_path / f"p.{fmt}"; api.export_persons(src, out, fmt)
+        cols, rows = api.read_rows(api.open_source(out)[0])
+        assert cols[-3:] == ["Отметка печати", "Напечатано", "Дата печати"]
+        assert [r[-2] for r in rows] == ["нет", "нет", "да"] and rows[2][-1].count(".") == 2
+        tgt = api.connect(); api.upsert_field(tgt, "last_name", "Фамилия")
+        rep = api.import_rows(tgt, api.open_source(out)[0])
+        assert rep.errors == [] and rep.skipped_columns == []
+        got = [(p["print_mark"], p["printed_at"] is not None) for p in api.list_persons(tgt)]
+        assert got == [(1, False), (0, False), (0, True)], fmt
+        assert api.list_persons(tgt)[2]["printed_at"][:10] == api.list_persons(src)[2]["printed_at"][:10]

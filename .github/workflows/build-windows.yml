@@ -93,8 +93,7 @@ jobs:
         # Контракт (Frontend, ui/self_test.py): BadgeGenerator.exe --self-test [--log <path>]
         #   сценарий встроен в exe (копия reports/qa/e2e_click_all.py), лог — <path> или
         #   %APPDATA%\BadgeGenerator\self_test.log; процесс сам завершается: 0 — успех, !=0 — провал.
-        #   Таймаут 180 c -> провал job. Шаг включается, когда хук есть в репозитории.
-        if: hashFiles('ui/self_test.py') != ''
+        #   Таймаут 180 c -> провал job. Шаг выполняется всегда (без условия): нет хука -> job падает.
         shell: pwsh
         timeout-minutes: 5
         run: |

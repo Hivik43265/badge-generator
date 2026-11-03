@@ -121,7 +121,7 @@ def _raw(sheet):
         finally: con.close()
     raise ValueError(f"неизвестный kind: {sheet.kind}")
 
-def read_rows(sheet: Sheet, header: bool = True, limit: int | None = None) -> tuple[list[str], list[list[str]]]:
+def read_rows(sheet: Sheet, header: bool = True, limit: int | None = None, strip: bool = True) -> tuple[list[str], list[list[str]]]:
     """Прочитать лист → (columns, rows). Значения — строки (как при импорте: strip, int без .0, даты ISO).
     header=True — первая непустая строка = заголовки; False — колонки 'Колонка 1..N', все строки — данные.
     limit — максимум строк данных (None — все). Для 'project' и 'sqlite' заголовки всегда из схемы."""
@@ -136,7 +136,7 @@ def read_rows(sheet: Sheet, header: bool = True, limit: int | None = None) -> tu
         else:
             n = max((len(r) for r in raw), default=0)
             cols, rows = [f"Колонка {i + 1}" for i in range(n)], raw
-    rows = [[_cell(c) for c in r] for r in (rows if limit is None else rows[:max(0, int(limit))])]
+    rows = [[_cell(c, strip) for c in r] for r in (rows if limit is None else rows[:max(0, int(limit))])]
     return cols, rows
 
 def label_mapping(con, columns, mapping=None) -> dict:
@@ -149,26 +149,33 @@ def label_mapping(con, columns, mapping=None) -> dict:
             if s and s != b and c is not None and header_key(c) not in explicit}
 
 def auto_match(columns, mapping: dict | None = None, fields=None) -> list:
-    """Ключ поля для каждой колонки (None — пропустить). Правила синонимов — headers.map_headers.
-    fields (D24) — существующие поля проекта: sqlite-соединение, list_fields()-список или имена.
-    Тогда колонка сопоставляется только с ними (по синонимам, имени или label поля), остальные → None;
-    photo_path/photo_config и '__fio__' (если в проекте есть last_name/first_name/middle_name) сохраняются."""
+    """Ключ поля для каждой колонки (None — пропустить). Синонимы — headers.map_headers.
+    fields (D24/D26) — существующие поля проекта: sqlite-соединение, list_fields()-список или имена.
+    Тогда порядок: ручной mapping → имя поля → label поля (без учёта регистра/пробелов) → синоним,
+    если он указывает на существующее поле; иначе None. Служебные колонки (фото, печать) и '__fio__'
+    (если в проекте есть last_name/first_name/middle_name) сохраняются. Поля не создаются никогда."""
     keys = map_headers(columns, mapping)
     if fields is None: return keys
     if hasattr(fields, "execute"):
-        fl = [dict(r) for r in fields.execute("SELECT name, label FROM person_fields")]
+        fl = [dict(zip(("name", "label"), r)) for r in fields.execute("SELECT name, label FROM person_fields")]
     else:
         fl = [f if isinstance(f, dict) else {"name": f, "label": f} for f in fields]
-    from .headers import header_key
+    from .headers import header_key, split_mapping, SERVICE_KEYS
+    _, explicit = split_mapping(mapping)
     names = {f["name"] for f in fl}
+    by_name = {header_key(f["name"]): f["name"] for f in fl}
     by_label = {header_key(f.get("label") or f["name"]): f["name"] for f in fl}
-    by_label.update({header_key(f["name"]): f["name"] for f in fl})
     out, used = [], set()
     for c, k in zip(columns, keys):
-        if k in ("photo_path", "photo_config"): pass
+        hk = header_key(c) if c is not None else ""
+        if not hk: k = None
+        elif hk in explicit: k = k if (k in names or k in SERVICE_KEYS) else None
+        elif hk in by_name: k = by_name[hk]
+        elif hk in by_label: k = by_label[hk]
+        elif k in SERVICE_KEYS: pass
         elif k == "__fio__": k = k if names & {"last_name", "first_name", "middle_name"} else None
-        elif k not in names: k = by_label.get(header_key(c)) if c is not None and str(c).strip() else None
-        if k in used and k not in (None,): k = None
+        elif k not in names: k = None
+        if k is not None and k in used: k = None
         if k: used.add(k)
         out.append(k)
     return out
@@ -213,16 +220,16 @@ def import_rows(con, sheet: Sheet, mapping: dict | None = None, *, header: bool 
     D24            поля не создаются: колонки без поля в person_fields пропускаются (report.skipped_columns).
     photo_issues   пустые/битые фото (PHOTO_EMPTY/PHOTO_BROKEN) не назначаются; извлечённые из xlsx такие
                    файлы удаляются из photo_dir."""
-    cols, rows = read_rows(sheet, header=header)
+    cols, rows = read_rows(sheet, header=header, strip=validate)   # D27: validate=False — без strip
     extra = None
     if sheet.kind == "project":
         flds = sheet.meta.get("fields", {})
         mp = {c: c for c in cols if c not in ("print_mark", "printed_at")}
         mp.update({"print_mark": None, "printed_at": None}); mp.update(mapping or {})
         labels = {**{k: f["label"] for k, f in flds.items()}, **(labels or {})}
-        recs, labs = parse_rows(cols, rows, mp, labels)
+        recs, labs = parse_rows(cols, rows, mp, labels, strip=validate)
         pm, pa = cols.index("print_mark"), cols.index("printed_at")
-        nonempty = [r for r in rows if any(v != "" for v in r)]
+        nonempty = [r for r in rows if any(str(v).strip() != "" for v in r)]
         extra = {i: {"print_mark": r[pm] == "1", "printed_at": r[pa] or None} for i, r in enumerate(nonempty)}
         exist = {r[0] for r in con.execute("SELECT name FROM person_fields")}
         created = []
@@ -244,7 +251,7 @@ def import_rows(con, sheet: Sheet, mapping: dict | None = None, *, header: bool 
             with con: con.executemany("DELETE FROM person_fields WHERE name=?", [(k,) for k in created])
         return rep
     mapping = {**label_mapping(con, cols, mapping), **(mapping or {})} or mapping
-    recs, labs = parse_rows(cols, rows, mapping, labels)
+    recs, labs = parse_rows(cols, rows, mapping, labels, strip=validate)
     if sheet.kind == "xlsx" and extract_images and header:
         if photo_dir is None:
             from openpyxl import load_workbook
