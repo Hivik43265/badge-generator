@@ -57,3 +57,12 @@ D43 + b1aa100 «Из файла…»:
 Скриншоты (reports/qa/stage14_raw.png, stage14_portrait.png, stage14_autoeffect.png, stage14_card.png) пересняты. Видны все 4 стороны рамки, макушка не обрезана, плечи в кадре.
 
 **Вердикт:** этап 14 НЕ принят до исправления D44; остальные требования — PASS.
+
+## Перепроверка D44 (Backend e7df93e → cherry-pick df9395e)
+- pytest 408 passed; --self-test/click_all 101/101; e2e_stage14 57/58.
+- D44 (Backend): PASS — apply_and_save_photo(size=/target_field=) даёт ровно 330×413 (tests/test_d44_target_size.py).
+- D45 (Frontend, OPEN): UI не передаёт target_field/size, поэтому через UI фото сохраняется в 422×528 вместо 330×413.
+  - ui/photo_editor.py:241-242 — `session.apply_and_save_photo(self.path, p)` / `api.apply_and_save_photo(self.path, p)` без target_field.
+  - ui/backend_api.py:355 — `_bapi_apply_and_save_photo(self, source_path, params, *, person_id=None, field_name=None)` не принимает и не передаёт target_field/size.
+  - Исправление: передавать target_field=<имя image-поля> (то же поле, что для photo_edit_target).
+- Скриншоты обновлены (не в коммите): reports/qa/stage14_raw.png, stage14_portrait.png, stage14_autoeffect.png, stage14_card.png.
