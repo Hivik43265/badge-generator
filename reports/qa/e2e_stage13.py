@@ -194,6 +194,75 @@ def _acc():
 try: _acc()
 except Exception:
     import traceback; chk("ACC блок выполнился без исключений", False, traceback.format_exc()[-600:])
+
+# --- 91b0208/2a68954: фото как image-поле, единый resolve_photo_path ---
+def _photo_rules():
+    import sqlite3, warnings as _w
+    # (a) grep + AST: путь фото вычисляется только в photos.resolve_photo_path (abs_path — его помощник)
+    hits = []
+    for base in ("badge_backend", "ui", "data_tools"):
+        for f in (ROOT / base).rglob("*.py"):
+            rel = str(f.relative_to(ROOT))
+            if "/tests/" in rel or rel.endswith(("smoke_test.py", "qa_click_all.py", "self_test.py")): continue
+            try: tree = ast.parse(f.read_text(encoding="utf-8"))
+            except SyntaxError: continue
+            fn_of = {}
+            for fn in ast.walk(tree):
+                if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for sub in ast.walk(fn): fn_of.setdefault(id(sub), fn.name)
+            for n in ast.walk(tree):
+                join = (isinstance(n, ast.Call) and ((isinstance(n.func, ast.Attribute) and n.func.attr in ("join", "joinpath")) or
+                        (isinstance(n.func, ast.Name) and n.func.id in ("Path", "abs_path")))) or (isinstance(n, ast.BinOp) and isinstance(n.op, ast.Div))
+                if not join: continue
+                txt = ast.unparse(n)
+                if "photo_path" not in txt and not re.search(r"\[['\"]photo['\"]\]|photo_field", txt): continue
+                fname = fn_of.get(id(n), "<module>")
+                if rel.endswith("services/photos.py") and fname in ("resolve_photo_path", "abs_path"): continue
+                hits.append(f"{rel}:{n.lineno} {fname}(): {txt[:90]}")
+    g_ = g(["grep", "-rnE", r"(base_dir|photo_dir)[^\n]*photo_path|photo_path[^\n]*(base_dir|photo_dir)", "--include=*.py", "badge_backend", "ui", "data_tools"])
+    g_ = [l for l in g_.splitlines() if "/tests/" not in l and "resolve_photo_path" not in l and "def " not in l and not re.search(r":\s*#|\"\"\"|photo_dir=|base_dir=", l)]
+    chk("PH-a (AST) путь фото вычисляется только в resolve_photo_path", not hits, hits or "нет")
+    chk("PH-a (grep, информ.) строки с photo_path и base_dir/photo_dir вне resolve_photo_path", True, g_[:12] or "нет")
+    # (b) link_field: несовпадение типов → ValueError
+    c = api.connect(":memory:")
+    api.upsert_field(c, "foto", "Фото", 0, data_type="image"); api.upsert_field(c, "fam", "Фамилия", 1, data_type="text")
+    e_ph = api.create_element(c, "photo", 10, 10, 200, 260); e_tx = api.create_element(c, "field", 300, 10, 400, 60, field_name="fam")
+    res = {}
+    for nm, (eid, fld) in {"photo→text": (e_ph, "fam"), "field→image": (e_tx, "foto")}.items():
+        try: api.link_field(c, eid, fld); res[nm] = "принято"
+        except ValueError as e: res[nm] = "ValueError"
+    ok_ = api.link_field(c, e_ph, "foto")
+    chk("PH-b link_field: несовпадение типов → ValueError, photo↔image принимается", all(v == "ValueError" for v in res.values()) and ok_, f"{res}, photo→image={ok_}")
+    # (c) legacy v1: только persons.photo_path → после миграции фото рендерится
+    old = TMP / "legacy_v1.db"; c1 = sqlite3.connect(old)
+    c1.executescript("BEGIN;\n" + bdb.SCHEMA + "\nPRAGMA user_version=1;\nCOMMIT;")
+    ph = TMP / "legacy_photo.png"; Image.new("RGB", (300, 400), (200, 30, 30)).save(ph)
+    c1.execute("INSERT INTO persons(id,fields_json,photo_path,print_mark) VALUES (1,?,?,1)", (json.dumps({"last_name": "Старый"}, ensure_ascii=False), str(ph)))
+    c1.execute("INSERT INTO persons(id,fields_json,print_mark) VALUES (2,?,1)", (json.dumps({"last_name": "Старый"}, ensure_ascii=False),))
+    c1.execute("INSERT INTO template_elements(type,x,y,w,h) VALUES ('photo',20,20,300,400)"); c1.commit(); c1.close()
+    c = api.connect(str(old))
+    with _w.catch_warnings(): _w.simplefilter("ignore"); a = api.render_card_db(c, 1, "front"); b = api.render_card_db(c, 2, "front")
+    a = a[0] if isinstance(a, tuple) else a; b = b[0] if isinstance(b, tuple) else b
+    a = a.convert("RGB"); b = b.convert("RGB")
+    diff = sum(1 for x, y in zip(a.crop((20, 20, 320, 420)).getdata(), b.crop((20, 20, 320, 420)).getdata()) if x != y)
+    red = a.getpixel((170, 220))
+    chk("PH-c legacy v1 (только photo_path) → после миграции фото рендерится (пиксели ≠ рендер без фото)",
+        c.execute("PRAGMA user_version").fetchone()[0] == bdb.LATEST and diff > 50000 and red[0] > 150 and red[1] < 90,
+        f"user_version={c.execute('PRAGMA user_version').fetchone()[0]}, отличающихся пикселей={diff}/120000, пиксель в центре={red}")
+    # (d) missing_photos проверяет обе стороны (решение Архитектора)
+    c = api.connect(str(TMP / "both_sides.db"))
+    api.upsert_field(c, "ph_front", "Фото лиц.", 0, data_type="image"); api.upsert_field(c, "ph_back", "Фото обор.", 1, data_type="image")
+    api.create_element(c, "photo", 10, 10, 200, 260, side="front", field_name="ph_front")
+    api.create_element(c, "photo", 10, 10, 200, 260, side="back", field_name="ph_back")
+    okp = TMP / "ok_side.png"; Image.new("RGB", (40, 40), "blue").save(okp)
+    p_ok = api.create_person(c, {"ph_front": str(okp), "ph_back": str(okp)})
+    p_back = api.create_person(c, {"ph_front": str(okp), "ph_back": str(TMP / "нет.png")})
+    p_front = api.create_person(c, {"ph_front": str(TMP / "нет.png"), "ph_back": str(okp)})
+    miss = api.missing_photos(c, [p_ok, p_back, p_front])
+    chk("PH-d missing_photos проверяет обе стороны", miss == [p_back, p_front], f"missing={miss}; ok={p_ok}, нет оборота={p_back}, нет лица={p_front}")
+try: _photo_rules()
+except Exception:
+    import traceback; chk("PH блок выполнился без исключений", False, traceback.format_exc()[-700:])
 sig = str(inspect.signature(api.export_persons))
 chk("Сигнатура export_persons (информ.)", True, sig)
 print(f"\nИТОГО: {sum(r[1] for r in RES)}/{len(RES)} PASS; tmp={TMP}")

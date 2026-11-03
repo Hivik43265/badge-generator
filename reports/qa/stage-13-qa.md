@@ -140,7 +140,46 @@ D24 (новая БД без полей, 5 типов, неизвестный т�
 - **В репозитории незавершённый `git stash pop` с конфликтами** (stash@{0} «stage13-wip2» не снят): `UU ui/dialogs.py`, `UU ui/smoke_test.py`, staged `ui/backend_api.py`, `ui/main_window.py`.
 - **Незакоммиченные изменения Backend (не попадут в push):** `badge_backend/api.py`, `badge_backend/render/__init__.py`, `badge_backend/services/photos.py` (ранее также workflow/spec/tests — к этому моменту закоммичены в fa29d7d).
 - Незакоммиченное прочее: `reports/mockup/*.png` (reference_field_manager, reference_import, stage13_*), `reports/screens/*` (+ `make_screens.py`).
-- **QA-коммит не выполнен**: при неразрешённых конфликтах (`UU`) git не позволяет коммитить, а частичный коммит вокруг чужого индекса мог бы сломать работу Frontend. Готовые к коммиту файлы: `reports/qa/*.py` (e2e_check, e2e_stage10, e2e_stage12, e2e_stage13, e2e_click_all) и `reports/qa/stage-*-qa.md`.
+- QA-коммит выполнен позже, после разрешения конфликтов: **8f7abf9** (только `reports/qa/*.py` и `stage-*-qa.md`).
 
 ## Вердикт
 Backend этапа 13 — **принят** (D25–D29 закрыты, 62/62, CI self-test обязателен). Frontend D19–D22, D24, D16, 1.9 — **закрыты** (85/85 self-test). Этап 13 в целом **не принят** до D31–D35 (импорт/экспорт по эталону) и приведения git в порядок (конфликт stash, незакоммиченный Backend).
+
+
+---
+# Перепроверка HEAD 8f7abf9 (поверх 91b0208, 2a68954, fd9614b) — 03.11.2026, ~23:00 Europe/Berlin
+
+Чистый worktree 8f7abf9; e2e_stage13.py — с новыми проверками PH-a…PH-d.
+
+| Проверка | Результат |
+|---|---|
+| pytest | **363 passed** |
+| smoke | **ALL OK** |
+| `main.py --self-test --log <path>` | **exit 0, 85/85**, исключений в слотах 0 |
+| e2e_click_all.py (через `ui.qa_click_all`, без fallback) | **exit 0, 85/85** |
+| e2e_check.py | **31/31** |
+| e2e_stage10.py | **20/20** |
+| e2e_stage12.py | **32/32** |
+| e2e_stage13.py | **67/67** |
+
+## Новые проверки (фото как image-поле, единый resolve_photo_path)
+- **PH-a** AST по `badge_backend/`, `ui/`, `data_tools/`: нет `join`/`Path()`/`abs_path()`/`/` с `photo_path`/image-полем вне `photos.resolve_photo_path` — **PASS**; grep-вариант информационный (совпадения — только docstring/комментарии).
+- **PH-b** `link_field`: photo→text и field→image → `ValueError`; photo→image принимается — **PASS**.
+- **PH-c** legacy v1 (только `persons.photo_path`, photo-элемент без поля) → миграция до LATEST=5 → фото рендерится: все 120000 пикселей области отличаются от рендера без фото, центр = цвет фото — **PASS**.
+- **PH-d** `missing_photos` проверяет обе стороны (решение Архитектора): нет оборота и нет лица — оба в списке, полная запись — нет — **PASS**.
+
+Примечание: на общем боксе `/tmp/st.log` одновременно перезаписывался self-test другого агента (88/88 на незакоммиченном WIP Frontend с новым диалогом «Экспорт данных»); в таблице — только stdout собственного прогона на HEAD.
+
+## Открытые пункты
+| № | Пункт | Владелец |
+|---|---|---|
+| D31 | Новый диалог импорта по эталону (xlsx/xls/csv/.db, листы, `open_source`/`import_rows`) | Frontend (в работе) |
+| D32 | Сохранение/загрузка сопоставления в UI | Frontend |
+| D33 | Превью строк и фото перед импортом | Frontend |
+| D34 | Экспорт данных xlsx/xls/csv/.db через `act_export` + подсказка D29 | Frontend (в WIP; в чужом WIP-прогоне self-test подсказка D29 ещё не проходила) |
+| D35 | Импорт .db с подтверждением `import_fields=True` | Frontend (в работе) |
+| — | Реэкспорт `map_headers` в `ui/backend_api.py:15` — убрать | Frontend, некритично |
+| — | git вне reports/qa не чистый: WIP Frontend в `ui/*`, `tests/stage5_timings.json`, скриншоты/mockup; stash@{0} «stage13-wip2» не снят | Frontend / Backend |
+
+## Вердикт
+Backend этапа 13 (включая 91b0208, 2a68954) — **принят**. Frontend: закоммиченное (D16, D19–D22, D24, плоский Менеджер полей fd9614b) — **принято**. Этап 13 в целом — **не принят** до D31–D35 (новые диалоги импорта/экспорта).
