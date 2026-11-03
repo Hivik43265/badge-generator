@@ -55,4 +55,46 @@ for how in ("set_file", "reject", "closeEvent"):
     try: d.close_sheets(); d.deleteLater()
     except Exception: pass  # noqa: BLE001
     for s in list(TMP.glob("**/*")): pass
+
+# ---- D48 ----
+import subprocess, time, tempfile as _tf
+from badge_backend.services import sources as S
+from badge_backend import db as DB
+d = ImportDialog(a, mw); d.set_file(str(src)); wp = pathlib.Path(d.current_sheet().work_path)
+chk("D48: рабочая копия в <tmp>/BadgeGenerator-import/bg_import_*.db", wp.parent.name == "BadgeGenerator-import" and wp.name.startswith("bg_import_"), wp)
+n = {"c": 0}
+def once(self):
+    n["c"] += 1
+    if n["c"] == 1: raise PermissionError("busy (QA D48)")
+    return orig(self)
+Sheet.close = once
+try: d.reject(); err = None
+except Exception as e: err = e  # noqa: BLE001
+finally: Sheet.close = orig
+chk("D48: OSError при закрытии → в журнале по-русски с именем файла", err is None and wp.name in d.log.toPlainText() and "Не удалось" in d.log.toPlainText(), d.log.toPlainText()[-160:])
+chk("D48: при закрытии диалога один повтор close() удаляет копию", n["c"] == 2 and not wp.exists(), (n, wp.exists()))
+def rt(self): raise RuntimeError("не OSError")
+d = ImportDialog(a, mw); d.set_file(str(src)); Sheet.close = rt
+try: d.close_sheets(); err = None
+except RuntimeError as e: err = e
+finally: Sheet.close = orig; d.close_sheets()
+chk("D48: не-OSError не глотается", isinstance(err, RuntimeError), err)
+# сквозной: close() не смог → копия осталась → «перезапуск» (новый процесс) удаляет старую
+d = ImportDialog(a, mw); d.set_file(str(src)); wp = pathlib.Path(d.current_sheet().work_path)
+Sheet.close = boom
+try: d.reject()
+finally: Sheet.close = orig
+left = wp.exists(); old = time.time() - 7 * 3600; os.utime(wp, (old, old))
+wd = wp.parent; foreign = wd / "other_keep.db"; foreign.write_bytes(b"x"); os.utime(foreign, (old, old))
+fresh = wd / "bg_import_qa_fresh.db"; fresh.write_bytes(b"x")
+root_old = pathlib.Path(_tf.gettempdir()) / "bg_import_qa_rootold.db"; root_old.write_bytes(b"x"); os.utime(root_old, (old, old))
+code = f"import sys; sys.path.insert(0, {str(ROOT)!r}); from ui.backend_api import BackendAPI; BackendAPI({str(TMP / 'r.db')!r}, {str(TMP)!r})"
+r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+chk("D48 сквозной: close() упал → копия осталась → перезапуск удалил её", left and r.returncode == 0 and not wp.exists(), (left, r.returncode, wp.exists(), r.stderr[-200:]))
+chk("D48: чужой файл и свежая копия (<6 ч) не тронуты", foreign.exists() and fresh.exists(), (foreign.exists(), fresh.exists()))
+chk("D48 (к сведению): старые bg_import_* в корне tempdir не чистятся", root_old.exists(), root_old)
+for f in (foreign, fresh, root_old): f.unlink(missing_ok=True)
+code2 = f"import sys; sys.path.insert(0, {str(ROOT)!r}); import badge_backend.services.sources as S; S._cleanup_stale_work_copies=lambda *a,**k: 1/0; from ui.backend_api import BackendAPI; BackendAPI({str(TMP / 'r2.db')!r}, {str(TMP)!r}); print('OK')"
+r = subprocess.run([sys.executable, "-c", code2], capture_output=True, text=True)
+chk("D48: ошибка очистки не ломает старт", r.returncode == 0 and "OK" in r.stdout, (r.returncode, r.stderr[-200:]))
 print(f"ИТОГО: {sum(r[1] for r in RES)}/{len(RES)} PASS; tmp={TMP}")
