@@ -56,7 +56,8 @@ class PhotoBlock(QWidget):
             self.status.setText(msg)
         # этап 14: один QAction «Редактировать изображение…» — двойной клик по фото и контекстное меню
         from .photo_editor import make_edit_action
-        self.save_photo, self.aspect, self.editor = None, 3 / 4, None
+        self.save_photo, self.editor, self.session = None, None, None   # session — Backend PhotoSession формы (D43)
+        self.api, self.field_name, self.person_id = None, None, None     # задаёт RecordForm
         self.act_edit = make_edit_action(self, self.edit_photo)
         self.still.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu); self.still.addAction(self.act_edit)
         self.still.installEventFilter(self); self.still.setToolTip("Двойной клик — редактировать изображение")
@@ -117,6 +118,16 @@ class PhotoBlock(QWidget):
                 QFileDialog.getOpenFileName(self, "Фото записи", self.base_dir, "Изображения (*.png *.jpg *.jpeg *.bmp)")[0]
         if not path: return False
         self.captured = None
+        if self.session is not None:
+            # «Из файла…» через Backend PhotoSession.save_photo: новая копия в photos/ (её учитывает сессия),
+            # выбранный исходник никогда не трогается и не учитывается. UI сам ничего не решает и .track не зовёт.
+            try:
+                with open(path, "rb") as f: data = f.read()
+                ext = os.path.splitext(path)[1].lstrip(".") or "jpg"
+                path = self.session.save_photo(data, ext=ext)
+            except (OSError, ValueError) as e:
+                self.status.setText(f"Фото не загружено: {e}"); return False
+            self.path = path; self._show_still(); self._update_buttons(); self.changed.emit(path); return True
         try:
             rel = os.path.relpath(path, self.base_dir); path = path if rel.startswith("..") else rel
         except ValueError:
@@ -144,8 +155,9 @@ class PhotoBlock(QWidget):
         """Редактор фото (только по действию пользователя; после снимка/файла сам не открывается)."""
         from . import photo_editor as pe
         full = self._abs(self.path)
-        if not self.path or not os.path.isfile(full) or self.save_photo is None: return None
-        d = self.editor = pe.PhotoEditor(full, self.save_photo, self.aspect, self)
+        if not self.path or not os.path.isfile(full) or self.api is None: return None
+        d = self.editor = pe.PhotoEditor(full, self.api, None, self, field_name=self.field_name, person_id=self.person_id,
+                                             session=self.session)
         d.accepted.connect(lambda: self._edited(d))
         return pe.editor_hook(d) if pe.editor_hook is not None else d.exec()
 

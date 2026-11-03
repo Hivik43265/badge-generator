@@ -155,19 +155,103 @@ def scenario(tmp, chk, out, EXC):
             got = dd.report.added if dd.report else None; nf = len(api3.list_fields()); dd.reject(); api3.close()
             chk("DLG Импорт .db: подтверждение → import_fields=True, поля созданы", bool(asked) and nf > 0 and got and len(EXC) == n,
                 f"новые поля={asked[:1]}; создано полей={nf}; добавлено={got}")
-            # этап 14: редактор фото — двойной клик по фото в форме записи (тот же QAction, что в контекстном меню)
+            # этап 14: редактор фото — поле image, двойной клик по фото формы записи (тот же QAction, что в контекстном меню)
             from . import photo_editor as pe
+            from . import backend_api as ba
             from PyQt6.QtTest import QTest
-            n = len(EXC); f = RecordForm(w2.api, None, w2); f.show(); spin(50); pb = f.photo_block
-            ph = tmp / "qa14.png"; QImage(240, 320, QImage.Format.Format_RGB32).save(str(ph)); pb.from_file(str(ph)); spin(30)
-            auto = pb.editor is not None; seen = []
-            pe.editor_hook = lambda d: (d.show(), spin(50), seen.append((d.windowTitle(), d.isVisible(), d.b_apply.text(), d.b_cancel.text())), d.reject())
+            import shutil
+            from pathlib import Path
+            n = len(EXC); a14 = BackendAPI(str(tmp / "qa14.db"), base_dir=str(tmp)); a14.upsert_field("foto", "Фото", 0, data_type="image")
+            el = a14.create_element(type="photo", x=0, y=0, w=300, h=400); a14.link_field(el, "foto")
+            real_t = ba._backend_fn("photo_edit_target") is not None; real_d = ba._backend_fn("PhotoSession") is not None
+            if not real_t:    # пока нет в Backend — подмена только на тестовом экземпляре
+                a14.photo_edit_target = lambda fn: {"aspect": 0.75, "size": (300, 400), "element_id": el} if fn == "foto" else None
+            face = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "face_astronaut.jpg"
+            ph = tmp / "qa14.png"
+            if face.is_file(): ph = tmp / "qa14.jpg"; shutil.copy(face, ph)
+            else: img = QImage(240, 320, QImage.Format.Format_RGB32); img.fill(QColor("#7A8F9C")); img.save(str(ph))
+            f = RecordForm(a14, None, w2); f.show(); spin(50); pb = f.edits["foto"]; pb.from_file(str(ph)); spin(30)
+            auto = pb.editor is not None; seen = []; res = {}
+            def _drive(d):
+                d.show(); spin(50); seen.append((d.windowTitle(), d.isVisible(), d.b_apply.text(), d.b_cancel.text()))
+                px0 = d.img.tobytes(); d.sl["brightness"].setValue(25); d.sl["contrast"].setValue(10); d.update_preview(); spin(20)
+                res["preview"] = d.img.tobytes() != px0
+                d.portrait.setChecked(True); spin(20)
+                res["aspect"] = (d.aspect, a14.photo_edit_target("foto")["aspect"])
+                fr = d.frame.rect(); res["portrait"] = (d.portrait.isChecked() and abs(fr.width() / fr.height() - d.aspect) < 0.02) \
+                    or "Лицо не найдено" in d.status.text()
+                d.autoeffect.setChecked(True); spin(100); res["auto"] = d.params()["autoeffect"] is True
+                from PyQt6.QtCore import QRectF, QPointF
+                vp = QRectF(d.view.viewport().rect()); ok42 = []
+                for mv in (None, QPointF(-10000, -10000), QPointF(10000, 10000)):
+                    if mv is not None: d.frame.move_by(mv); spin(20)
+                    ok42.append(vp.contains(d.frame.visible_device_rect()))
+                res["frame4"] = all(ok42); d.portrait.setChecked(False); d.portrait.setChecked(True); spin(20)
+                # D41 проверяет сохранение галочки, а не поиск лица (после яркости/автоэффекта лицо может не найтись)
+                d.portrait.blockSignals(True); d.portrait.setChecked(True); d.portrait.blockSignals(False)
+                saved = d.save_defaults(); d.sl["brightness"].setValue(-30); d.autoeffect.setChecked(False)
+                d.portrait.setChecked(False); d.load_defaults(); res["sent_portrait"] = bool(saved) and "portrait" in saved
+                res["portrait_restored"] = d.portrait.isChecked() or "Лицо не найдено" in d.status.text()   # нет лица → галочка снимается
+                d3 = pe.PhotoEditor(str(ph), a14, None, field_name="foto")
+                box = ba.detect_face_crop(d3.img, d3.aspect)
+                res["portrait_reopen"] = a14.get_photo_edit_defaults().get("portrait") is True and (
+                    (d3.portrait.isChecked() and d3.crop() == tuple(box)) if box else "Лицо не найдено" in d3.status.text())
+                d3.reject()
+                a14.set_photo_edit_defaults({**a14.get_photo_edit_defaults(), "portrait": False})
+                res["defaults"] = bool(saved) and d.sp["brightness"].value() == 25 and d.autoeffect.isChecked() \
+                    and a14.get_photo_edit_defaults()["brightness"] == 25
+                res["apply"] = d.apply(); res["path"] = d.result_path; res["status"] = d.status.text()
+                if d.isVisible(): d.reject()
+            pe.editor_hook = _drive
             try: QTest.mouseDClick(pb.still, Qt.MouseButton.LeftButton); spin(50)
             finally: pe.editor_hook = None
-            pb.stop(); f.reject(); spin(30)
+            val = pb.text(); fv = val if f.save() is not False else None; spin(30); pb.stop()
+            # существующая запись: «Применить», затем «Отмена» формы → значение поля в БД не меняется
+            pid = a14.list_persons()[-1]["id"]; db0 = a14.get_person(pid)["fields"].get("foto"); r2 = {}
+            f2 = RecordForm(a14, pid, w2); f2.show(); spin(30); pb2 = f2.edits["foto"]
+            from PyQt6.QtGui import QImage
+            def _sz(rel):
+                q = QImage(str(tmp / rel)) if rel else QImage(); return [q.width(), q.height()]
+            pe.editor_hook = lambda d: (r2.update(ok=d.apply(), path=d.result_path), r2.update(sz=_sz(d.result_path)), d.isVisible() and d.reject())
+            try: tgt44 = a14.photo_edit_target("foto")
+            except (LookupError, ValueError): tgt44 = None
+            try: QTest.mouseDClick(pb2.still, Qt.MouseButton.LeftButton); spin(50)
+            finally: pe.editor_hook = None
+            mid = a14.get_person(pid)["fields"].get("foto"); form2 = pb2.text(); pb2.stop(); f2.reject(); spin(30)
+            # «Из файла…» + «Отмена»: копия сессии удаляется, исходник пользователя цел (в т.ч. уже лежащий в photos/)
+            ff = []
+            if real_d:
+                (tmp / "photos").mkdir(exist_ok=True); inph = tmp / "photos" / "qa14_user.jpg"; shutil.copy(ph, inph)
+                for srcf in (ph, inph):
+                    f3 = RecordForm(a14, pid, w2); b3 = f3.edits["foto"]; ok3 = b3.from_file(str(srcf)); cp = b3.text()
+                    tracked = list(f3.photo_session.created); f3.reject(); spin(10)
+                    ff.append((srcf.name, ok3 and cp != str(srcf) and tracked == [cp] and srcf.is_file() and not (tmp / cp).is_file(), cp))
+            db1 = a14.get_person(pid)["fields"].get("foto"); p2 = r2.get("path")
+            gone = p2 is not None and not (tmp / p2).is_file(); disc = getattr(f2, "discarded", None); a14.close()
             chk("DLG «Редактировать изображение» по двойному клику на фото формы записи (не открывается сам после файла)",
                 not auto and seen and seen[0][:2] == ("Редактировать изображение", True) and pb.act_edit in pb.still.actions() and len(EXC) == n,
                 seen or "не открылся")
+            if ba.photo_edit_available():
+                chk("DLG Редактор фото: ползунки меняют превью (Backend apply_photo_edit)", res.get("preview"), res)
+                chk("DLG Редактор фото: «Портрет» ставит рамку по лицу или статус «Лицо не найдено»", res.get("portrait"), res.get("status"))
+                chk("DLG Редактор фото: «Автоэффект» в параметрах", res.get("auto"), res)
+                chk("DLG Редактор фото D42: рамка с пером целиком видна (центр и края изображения)", res.get("frame4"), res)
+                if "portrait" in ba.PHOTO_EDIT_DEFAULTS:     # D41: Backend хранит ключ portrait
+                    chk("DLG Редактор фото D41: «Портрет» сохраняется в умолчаниях, восстанавливается и при открытии ставит рамку по лицу",
+                        res.get("sent_portrait") and res.get("portrait_restored") and res.get("portrait_reopen"), res)
+                chk("DLG Редактор фото: пропорции рамки = Backend photo_edit_target (поле image)", res.get("aspect") and res["aspect"][0] == res["aspect"][1], res.get("aspect"))
+                if tgt44:
+                    chk("DLG Редактор фото D44: «Применить» (target_field) → файл размера photo_edit_target['size']",
+                        r2.get("sz") == list(tgt44["size"]), (r2.get("sz"), tgt44.get("size")))
+                if real_d:
+                    chk("DLG «Из файла…» + «Отмена»: копия сессии удалена, исходник цел (вне и внутри photos/)", len(ff) == 2 and all(x[1] for x in ff), ff)
+                    chk("DLG Редактор фото D43: «Отмена» формы → PhotoSession.discard() удаляет файл редактора без ссылок",
+                        disc == [p2] and gone and db1 == db0 and (tmp / db0).is_file(), (disc, p2, gone))
+                chk("DLG Редактор фото: умолчания проекта сохраняются и восстанавливаются (Backend)", res.get("defaults"), res)
+                chk("DLG Редактор фото: «Применить» → новый photos/… в поле image", res.get("apply") is True and str(res.get("path", "")).startswith("photos/")
+                    and val == res["path"] and (tmp / val).is_file() and ph.is_file() and db0 == fv, res)
+                chk("DLG Редактор фото: «Применить» + «Отмена» формы существующей записи — значение в БД не меняется",
+                    r2.get("ok") is True and form2 == r2.get("path") != db0 and mid == db0 == db1, {**r2, "db0": db0, "db1": db1})
         except Exception:  # noqa: BLE001
             chk("DLG Импорт/экспорт этапа 13 без исключений", False, traceback.format_exc()[-800:])
         finally:

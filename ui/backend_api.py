@@ -299,22 +299,29 @@ BackendAPI.import_rows = _bapi_import_rows
 BackendAPI.export_persons = _bapi_export_persons
 
 
-# ---------------- Этап 14: редактор фото (адаптер; функций пока нет в Backend) ----------------
-# Ожидается: apply_photo_edit(img: PIL.Image, params: dict) -> PIL.Image
-#            params = {"brightness": int -50..50, "contrast": int -50..50, "scale": int 10..400 (%),
-#                      "rotate": float -180..180 (°, по часовой), "crop": (x, y, w, h) | None (px исходника), "autoeffect": bool}
-#            detect_face_crop(img: PIL.Image, aspect: float) -> (x, y, w, h) | None   (aspect = w / h фото-элемента)
-PHOTO_EDIT_DEFAULTS = {"brightness": 0, "contrast": 0, "scale": 100, "rotate": 0.0, "crop": None, "autoeffect": False}
+# ---------------- Этап 14: редактор фото — Backend ee79d16 (badge_backend.api) ----------------
+# apply_photo_edit(img, params) -> Image; порядок autoeffect → яркость → контраст → масштаб → поворот по часовой
+#   (белая заливка) → crop (x,y,w,h) в пикселях уже преобразованного изображения; ValueError.
+# detect_face_crop(img, aspect) -> (x,y,w,h)|None; get/set_photo_edit_defaults(con[, params]) — без crop (project_settings, v6);
+# apply_and_save_photo(con, source_path, params, *, person_id, field_name, base_dir) -> "photos/…" (новый файл).
+PHOTO_EDIT_DEFAULTS = dict(getattr(_api, "DEFAULT_PHOTO_EDIT", None) or
+                           {"brightness": 0, "contrast": 0, "scale": 100, "rotate": 0.0, "crop": None, "autoeffect": False})
 
 
 def photo_edit_available(): return callable(getattr(_api, "apply_photo_edit", None))
 def face_detect_available(): return callable(getattr(_api, "detect_face_crop", None))
+def apply_and_save_available(): return callable(getattr(_api, "apply_and_save_photo", None))
 
 
-def open_image(path):
-    """Файл → PIL.Image (только чтение, без обработки)."""
-    from PIL import Image
-    with Image.open(path) as im: return im.copy()
+def load_photo_available(): return callable(getattr(_api, "load_photo_for_edit", None))
+
+
+def open_image(path, base_dir=None):
+    """Исходник редактора — только Backend load_photo_for_edit (EXIF-поворот как в apply_and_save_photo, рамка совпадает).
+    Нет функции → LookupError(«Редактор недоступен: нет load_photo_for_edit»); битый/нет файла → ValueError Backend."""
+    fn = getattr(_api, "load_photo_for_edit", None)
+    if fn is None: raise LookupError("Редактор недоступен: нет load_photo_for_edit")
+    return fn(path, base_dir=base_dir)
 
 
 def apply_photo_edit(img, params):
@@ -331,3 +338,69 @@ def detect_face_crop(img, aspect):
 def image_png_bytes(img):
     import io
     b = io.BytesIO(); img.save(b, "PNG"); return b.getvalue()
+
+
+def _bapi_get_photo_edit_defaults(self):
+    """Умолчания редактора фото проекта (Backend); нет функции/ошибка → DEFAULT_PHOTO_EDIT."""
+    fn = getattr(_api, "get_photo_edit_defaults", None)
+    try: return {**PHOTO_EDIT_DEFAULTS, **(fn(self.con) if fn else {}), "crop": None}
+    except Exception: return dict(PHOTO_EDIT_DEFAULTS)  # noqa: BLE001
+
+
+def _bapi_set_photo_edit_defaults(self, params):
+    fn = getattr(_api, "set_photo_edit_defaults", None)
+    if fn is None: raise ValueError("сохранение умолчаний недоступно: в Backend нет set_photo_edit_defaults")
+    return fn(self.con, {**params, "crop": None})
+
+
+def _bapi_apply_and_save_photo(self, source_path, params, *, person_id=None, field_name=None, size=None, target_field=None):
+    """D44/D45: target_field (имя image-поля) и size=(w, h) передаются Backend — размер результата считает Backend."""
+    kw = {k: v for k, v in (("size", size), ("target_field", target_field)) if v is not None}
+    fn = getattr(_api, "apply_and_save_photo", None)
+    if fn is None: raise ValueError("применение недоступно: в Backend нет apply_and_save_photo")
+    return fn(self.con, source_path, dict(params), person_id=person_id, field_name=field_name, base_dir=self.base_dir, **kw)
+
+
+def _backend_fn(name):
+    """Функция Backend этапа 14: сначала badge_backend.api, затем badge_backend.services.photo_edit; нет → None."""
+    fn = getattr(_api, name, None)
+    if fn is None:
+        try:
+            from badge_backend.services import photo_edit as _pe
+            fn = getattr(_pe, name, None)
+        except ImportError:
+            fn = None
+    return fn if callable(fn) else None
+
+
+NO_TARGET_FN = "Нет функции Backend для пропорций"
+NO_TARGET = "К полю не привязан фото-элемент шаблона"
+
+
+def _bapi_photo_edit_target(self, field_name):
+    """Backend photo_edit_target(con, field_name) → {"aspect", "size", "width_mm", "height_mm", "element_id"} | None.
+    Пропорции рамки и размер результата — только отсюда (UI ничего не вычисляет). Нет функции → LookupError."""
+    fn = _backend_fn("photo_edit_target")
+    if fn is None: raise LookupError(NO_TARGET_FN)
+    return fn(self.con, field_name)
+
+
+def _bapi_discard_photo(self, rel_path):
+    """Backend discard_photo(con, rel_path | [paths], base_dir) → bool | список удалённых (только photos/ без ссылок). Нет → None."""
+    fn = _backend_fn("discard_photo")
+    return fn(self.con, rel_path, base_dir=self.base_dir) if fn else None
+
+
+def _bapi_photo_session(self):
+    """D43: Backend PhotoSession(con, base_dir) — учёт фото, созданных в форме записи (.save_photo / .apply_and_save_photo /
+    .track; «Отмена» → .discard(), «Сохранить» → .commit()). Нет класса в Backend → None (форма работает без учёта)."""
+    cls = _backend_fn("PhotoSession")
+    return cls(self.con, self.base_dir) if cls else None
+
+
+BackendAPI.photo_session = _bapi_photo_session
+BackendAPI.photo_edit_target = _bapi_photo_edit_target
+BackendAPI.discard_photo = _bapi_discard_photo
+BackendAPI.get_photo_edit_defaults = _bapi_get_photo_edit_defaults
+BackendAPI.set_photo_edit_defaults = _bapi_set_photo_edit_defaults
+BackendAPI.apply_and_save_photo = _bapi_apply_and_save_photo

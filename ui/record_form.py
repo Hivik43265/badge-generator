@@ -118,14 +118,12 @@ class RecordForm(QDialog):
         bb.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
         bb.accepted.connect(self.save); bb.rejected.connect(self.reject)
         # фото записи (persons.photo_path) нужно только объектам «Фото», не связанным с image-полем
+        self.photo_session = api.photo_session()     # D43: Backend PhotoSession — все новые фото формы
         els = api.list_elements()
         unlinked = any(e["type"] == "photo" and not e.get("field_name") for e in els)
-        def _aspect(fn):   # этап 14: пропорции рамки = фото-элемент (связанный с полем; иначе любой «Фото»)
-            e = next((e for e in els if e["type"] == "photo" and e.get("field_name") == fn), None) or \
-                next((e for e in els if e["type"] == "photo"), None)
-            return (e["w"] / e["h"]) if e and e.get("w") and e.get("h") else 3 / 4
         for blk, fn in [(self.photo_block, None), *[(e, n) for n, e in self.image_edits.items()]]:
-            blk.save_photo, blk.aspect = api.save_photo, _aspect(fn)
+            blk.save_photo, blk.api, blk.session = api.save_photo, api, self.photo_session      # пропорции рамки — Backend photo_edit_target(field_name)
+            blk.field_name, blk.person_id = fn, (person_id if p else None)
         self.photo_box = box; box.setVisible(not self.image_edits or unlinked)
         left = QVBoxLayout(); left.addLayout(form); left.addWidget(box); left.addStretch()
         main = QHBoxLayout(); main.addLayout(left); main.addLayout(pv)
@@ -168,10 +166,11 @@ class RecordForm(QDialog):
             msg = "\n".join(f"• {b.get('field')}: {b.get('details') or b.get('code')}" for b in bad)
             if validate_hook is not None: validate_hook(msg); return False
             QMessageBox.warning(self, "Проверка полей", f"Значения не соответствуют типу поля:\n{msg}"); return False
+        save_photo = self.photo_session.save_photo if self.photo_session is not None else self.api.save_photo
         try:
             for n, e in self.image_edits.items():          # image-поле: save_photo без person_id → путь в значение поля
-                if e.captured: fields[n] = e.commit(self.api.save_photo, None) or ""
-            photo = self.photo_block.commit(self.api.save_photo, self.person_id or None) if self.photo_block.captured \
+                if e.captured: fields[n] = e.commit(save_photo, None) or ""
+            photo = self.photo_block.commit(save_photo, self.person_id or None) if self.photo_block.captured \
                 else (self.photo_path.text() or None)
         except ValueError as e:
             msg = f"Снимок не сохранён: изображение пустое или повреждено ({e}). Переснимите или выберите файл."
@@ -187,6 +186,7 @@ class RecordForm(QDialog):
             self.api.update_photo_config(self.person_id, self.config_string())   # только эта запись
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "Ошибка сохранения", str(e)); return
+        if self.photo_session is not None: self.committed = self.photo_session.commit(discard_unreferenced=True)  # промежуточные
         self.stop_cameras(); self.accept()
 
     def stop_cameras(self):
@@ -194,4 +194,8 @@ class RecordForm(QDialog):
         for e in self.image_edits.values(): e.stop()
 
     def reject(self):
-        self.stop_cameras(); super().reject()
+        """«Отмена»: D43 — Backend PhotoSession.discard() удаляет созданные в этой форме фото без ссылок (сами не удаляем)."""
+        self.stop_cameras()
+        try: self.discarded = self.photo_session.discard() if self.photo_session is not None else []
+        except Exception as e: self.discarded = [f"ошибка: {e}"]  # noqa: BLE001
+        super().reject()
