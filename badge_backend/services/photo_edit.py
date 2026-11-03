@@ -4,6 +4,7 @@ apply_photo_edit(img, params) -> Image             правка фото (вхо
 detect_face_crop(img, aspect) -> (x,y,w,h)|None    кадр по лицу (OpenCV Haar), w/h == aspect
 get_photo_edit_defaults(con) / set_photo_edit_defaults(con, params)   умолчания проекта (project_settings)
 apply_and_save_photo(con, source_path, params, *, person_id=None, field_name=None, base_dir=None) -> rel_path
+load_photo_for_edit(path, base_dir=None) -> Image   EXIF-поворот + режим (одно место для UI и сохранения)
 
 Параметры (DEFAULT_PHOTO_EDIT; неизвестные ключи игнорируются, значения приводятся к типу и обрезаются в диапазон):
   brightness int  -50..50   0 — без изменений; множитель яркости 1 + b/100
@@ -144,6 +145,23 @@ def set_photo_edit_defaults(con, params: dict | None) -> dict:
                           (SETTINGS_KEY, json.dumps(p)))
     return p
 
+# ---------- загрузка ----------
+def load_photo_for_edit(path, base_dir=None) -> Image.Image:
+    """Открыть фото для редактора/сохранения: относительный путь — от base_dir (иначе cwd), EXIF-поворот
+    (ImageOps.exif_transpose), режим → RGB (прозрачность → RGBA, оттенки серого → L). Файл закрывается.
+    Нет файла/не картинка → ValueError. Единая точка для UI-превью и apply_and_save_photo."""
+    from .photos import abs_path
+    src = abs_path(path, base_dir)
+    if src is None: raise ValueError("путь к фото пуст")
+    try:
+        with Image.open(src) as im:
+            im = ImageOps.exif_transpose(im); im.load()
+    except (OSError, ValueError, SyntaxError) as e:
+        raise ValueError(f"не удалось открыть фото {path}: {e}") from None
+    if im.mode in ("RGB", "L", "RGBA"): return im
+    has_alpha = im.mode in ("LA", "PA") or (im.mode == "P" and "transparency" in im.info)
+    return im.convert("RGBA" if has_alpha else "L" if im.mode in ("1", "I", "I;16", "F") else "RGB")
+
 # ---------- применить и сохранить ----------
 def apply_and_save_photo(con, source_path, params, *, person_id=None, field_name=None, base_dir=None) -> str:
     """Загрузить исходник (относительный — от base_dir/каталога проекта; EXIF-поворот учитывается),
@@ -151,18 +169,13 @@ def apply_and_save_photo(con, source_path, params, *, person_id=None, field_name
     field_name (поле data_type='image', нужен person_id) → значение поля; иначе person_id → persons.photo_path.
     Нет записи/поле не image → ValueError (новый файл удаляется). → относительный путь 'photos/…'."""
     import io
-    from .photos import abs_path, project_base_dir, save_photo
+    from .photos import project_base_dir, save_photo
     base = Path(base_dir) if base_dir else project_base_dir(con)
     if field_name is not None:
         if person_id is None: raise ValueError("field_name требует person_id")
         r = con.execute("SELECT data_type FROM person_fields WHERE name=?", (field_name,)).fetchone()
         if r is None or r[0] != "image": raise ValueError(f"поле «{field_name}» не существует или не типа «изображение»")
-    src = abs_path(source_path, base)
-    try:
-        with Image.open(src) as im: im = ImageOps.exif_transpose(im); im.load()
-    except (OSError, ValueError) as e:
-        raise ValueError(f"не удалось открыть исходное фото {source_path}: {e}") from None
-    out = apply_photo_edit(im, params)
+    out = apply_photo_edit(load_photo_for_edit(source_path, base), params)
     if out.mode != "RGB":
         bg = Image.new("RGB", out.size, (255, 255, 255))
         o = out.convert("RGBA"); bg.paste(o, mask=o.getchannel("A")); out = bg

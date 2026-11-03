@@ -129,3 +129,16 @@ def test_cascade_path_frozen(tmp_path, monkeypatch):
     assert photo_edit.cascade_path() == str(tmp_path / "cv2" / "data" / photo_edit.CASCADE)
     monkeypatch.setattr(sys, "frozen", False)
     assert Path(photo_edit.cascade_path()).is_file()
+
+def test_load_photo_for_edit_exif(tmp_path):
+    im = Image.new("RGB", (40, 20), "white"); im.paste((255, 0, 0), (0, 0, 10, 10))
+    ex = Image.Exif(); ex[0x0112] = 6   # Orientation=6: показать с поворотом на 90° по часовой
+    im.save(tmp_path / "rot.jpg", exif=ex, quality=95)
+    a = api.load_photo_for_edit("rot.jpg", tmp_path)
+    assert a.size == (20, 40) and a.mode == "RGB" and a.getpixel((15, 5))[1] < 80   # красный угол → правый верхний
+    con = api.connect(tmp_path / "p.db")
+    rel = api.apply_and_save_photo(con, "rot.jpg", None)
+    b = Image.open(tmp_path / rel)
+    assert b.size == a.size and b.getpixel((15, 5))[1] < 80
+    Image.new("P", (5, 5)).save(tmp_path / "p.png"); assert api.load_photo_for_edit(tmp_path / "p.png").mode == "RGB"
+    with pytest.raises(ValueError): api.load_photo_for_edit("nope.jpg", tmp_path)
