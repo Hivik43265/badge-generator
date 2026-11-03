@@ -1,0 +1,5 @@
+face_astronaut.jpg — 200x200 JPEG, downscaled from scikit-image's data/astronaut.png
+(Eileen Collins, NASA portrait; public domain as a work of the US federal government, per NASA media
+usage guidelines and scikit-image data/README). Source:
+https://raw.githubusercontent.com/scikit-image/scikit-image/v0.19.3/skimage/data/astronaut.png
+Used by tests/test_photo_edit.py for Haar face detection.

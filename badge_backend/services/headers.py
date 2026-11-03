@@ -26,6 +26,11 @@ SYNONYMS = {
     "printed_at": ["printed_at", "дата печати"],
     "__fio__": ["фио", "ф.и.о.", "фамилия имя отчество", "full name", "full_name", "fullname"],
 }
+# D36: единая цель сопоставления «фото записи». UI показывает одну колонку фото с ключом PHOTO_TARGET;
+# в ручном mapping принимаются и псевдонимы PHOTO_ALIASES. Бэкенд (sources.auto_match) разрешает цель:
+# в проекте есть поле data_type='image' → первое такое поле (по sort_order), иначе persons.photo_path.
+PHOTO_TARGET = "photo_path"
+PHOTO_ALIASES = ("photo_path", "photo", "__photo__")
 SERVICE_KEYS = ("photo_path", "photo_config", "print_mark", "printed", "printed_at")
 LABELS = {"last_name": "Фамилия", "first_name": "Имя", "middle_name": "Отчество", "position": "Должность",
           "department": "Отдел", "email": "Email", "phone": "Телефон", "employee_id": "Табельный номер"}

@@ -185,7 +185,7 @@ def test_migration_v2_to_v3_with_data(tmp_path):
         raw.execute("INSERT INTO template_elements(type,x,y,w,h) VALUES ('line',0,0,5,5)")
     before = raw.execute("SELECT * FROM template_elements ORDER BY id").fetchall(); raw.close()
     c = api.connect(p)
-    assert api.get_schema_version(c) == 5  # v3→…→LATEST
+    assert api.get_schema_version(c) == 6  # v3→…→LATEST
     assert [tuple(r) for r in c.execute("SELECT * FROM template_elements ORDER BY id")] == before
     idx = {r[1] for r in c.execute("PRAGMA index_list(template_elements)")}
     assert "idx_te_side_z" in idx
