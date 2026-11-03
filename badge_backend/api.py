@@ -381,4 +381,5 @@ from .services.sources import (Sheet, open_source, read_rows, auto_match, label_
 from .services.table_export import export_persons, XLS_MAX_ROWS  # noqa: F401
 from .services.photos import save_photo, project_base_dir, resolve_photo_path  # noqa: F401,E402
 from .services.photo_edit import (DEFAULT_PHOTO_EDIT, apply_photo_edit, detect_face_crop,  # noqa: F401,E402
-                                  get_photo_edit_defaults, set_photo_edit_defaults, apply_and_save_photo)
+                                  get_photo_edit_defaults, set_photo_edit_defaults, apply_and_save_photo,
+                                  load_photo_for_edit)
