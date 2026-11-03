@@ -238,8 +238,9 @@ class PhotoEditor(QDialog):
         p = self.params()
         try:
             if apply_and_save_available() and self.path:
-                self.result_path = (self.session.apply_and_save_photo(self.path, p) if self.session is not None
-                                    else self.api.apply_and_save_photo(self.path, p))
+                kw = {"target_field": self.field_name} if self.field_name else {}   # D44: размер — только Backend
+                self.result_path = (self.session.apply_and_save_photo(self.path, p, **kw) if self.session is not None
+                                    else self.api.apply_and_save_photo(self.path, p, **kw))
             else:
                 save = self.session.save_photo if self.session is not None else self.api.save_photo
                 self.result_path = save(image_png_bytes(apply_photo_edit(self.src, p)), person_id=None, ext="png")

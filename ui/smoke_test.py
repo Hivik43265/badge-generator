@@ -872,6 +872,10 @@ if _ba14.photo_edit_available():
     # Применить (новая запись → apply_and_save_photo без field_name; путь в поле формы → «Сохранить»)
     assert ed14.apply() is True and ed14.result_path.startswith("photos/") and (tmp / ed14.result_path).is_file()
     assert ie14.text() == ed14.result_path and (tmp / "p14.jpg").is_file(), (ie14.text(), ed14.result_path)
+    if _REAL_TARGET:   # D44: файл «Применить» ровно размера photo_edit_target(field)['size']
+        from PyQt6.QtGui import QImage
+        _q = QImage(str(tmp / ed14.result_path)); _t = api14.photo_edit_target("foto")
+        assert _t and [_q.width(), _q.height()] == list(_t["size"]), ((_q.width(), _q.height()), _t)
     rf14.save(); pid14 = api14.list_persons()[-1]["id"]; assert api14.list_persons()[-1]["fields"]["foto"] == ed14.result_path
     # существующая запись: «Применить» → путь только в форме; «Отмена» формы → значение в БД не меняется
     rf14b = RecordForm(api14, pid14, w); ie14b = rf14b.edits["foto"]; old = api14.get_person(pid14)["fields"]["foto"]

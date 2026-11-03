@@ -209,7 +209,12 @@ def scenario(tmp, chk, out, EXC):
             # существующая запись: «Применить», затем «Отмена» формы → значение поля в БД не меняется
             pid = a14.list_persons()[-1]["id"]; db0 = a14.get_person(pid)["fields"].get("foto"); r2 = {}
             f2 = RecordForm(a14, pid, w2); f2.show(); spin(30); pb2 = f2.edits["foto"]
-            pe.editor_hook = lambda d: (r2.update(ok=d.apply(), path=d.result_path), d.isVisible() and d.reject())
+            from PyQt6.QtGui import QImage
+            def _sz(rel):
+                q = QImage(str(tmp / rel)) if rel else QImage(); return [q.width(), q.height()]
+            pe.editor_hook = lambda d: (r2.update(ok=d.apply(), path=d.result_path), r2.update(sz=_sz(d.result_path)), d.isVisible() and d.reject())
+            try: tgt44 = a14.photo_edit_target("foto")
+            except (LookupError, ValueError): tgt44 = None
             try: QTest.mouseDClick(pb2.still, Qt.MouseButton.LeftButton); spin(50)
             finally: pe.editor_hook = None
             mid = a14.get_person(pid)["fields"].get("foto"); form2 = pb2.text(); pb2.stop(); f2.reject(); spin(30)
@@ -235,6 +240,9 @@ def scenario(tmp, chk, out, EXC):
                     chk("DLG Редактор фото D41: «Портрет» сохраняется в умолчаниях, восстанавливается и при открытии ставит рамку по лицу",
                         res.get("sent_portrait") and res.get("portrait_restored") and res.get("portrait_reopen"), res)
                 chk("DLG Редактор фото: пропорции рамки = Backend photo_edit_target (поле image)", res.get("aspect") and res["aspect"][0] == res["aspect"][1], res.get("aspect"))
+                if tgt44:
+                    chk("DLG Редактор фото D44: «Применить» (target_field) → файл размера photo_edit_target['size']",
+                        r2.get("sz") == list(tgt44["size"]), (r2.get("sz"), tgt44.get("size")))
                 if real_d:
                     chk("DLG «Из файла…» + «Отмена»: копия сессии удалена, исходник цел (вне и внутри photos/)", len(ff) == 2 and all(x[1] for x in ff), ff)
                     chk("DLG Редактор фото D43: «Отмена» формы → PhotoSession.discard() удаляет файл редактора без ссылок",
