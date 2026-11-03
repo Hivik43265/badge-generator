@@ -72,6 +72,15 @@ jobs:
       - name: Build (PyInstaller)
         run: pyinstaller --noconfirm --clean packaging/badge_generator.spec
 
+      - name: Check bundled Qt plugins/DLLs (camera, print, jpeg)
+        shell: pwsh
+        run: |
+          $m = "dist\BadgeGenerator.bundle.txt"
+          if (-not (Test-Path $m)) { throw "$m not produced by spec" }
+          Get-Content $m
+          $miss = Get-Content $m | Where-Object { $_ -like "MISSING*" }
+          if ($miss) { throw "Qt files missing in BadgeGenerator.exe: $($miss -join '; ')" }
+
       - name: Smoke test (backend exe)
         shell: pwsh
         run: |
@@ -90,9 +99,9 @@ jobs:
           if (-not (Test-Path "$env:APPDATA\BadgeGenerator\project.db")) { throw "project.db not created in %APPDATA%\BadgeGenerator" }
 
       - name: Self-test (GUI exe --self-test)
-        # Контракт (Frontend, ui/self_test.py): BadgeGenerator.exe --self-test [--log <path>]
-        #   сценарий встроен в exe (копия reports/qa/e2e_click_all.py), лог — <path> или
-        #   %APPDATA%\BadgeGenerator\self_test.log; процесс сам завершается: 0 — успех, !=0 — провал.
+        # Контракт (Frontend, ui/self_test.py): BadgeGenerator.exe --self-test --log <path>
+        #   сценарий — ui/qa_click_all.py (встроен в exe; от reports/qa/* сборка не зависит), лог — <path>
+        #   (запасной: %APPDATA%\BadgeGenerator\self_test.log); watchdog Frontend 170 c; 0 — успех, !=0 — провал.
         #   Таймаут 180 c -> провал job. Шаг выполняется всегда (без условия): нет хука -> job падает.
         shell: pwsh
         timeout-minutes: 5

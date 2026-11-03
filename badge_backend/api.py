@@ -374,3 +374,4 @@ def restore_db(target_path, backup_path) -> None:
 from .services.sources import (Sheet, open_source, read_rows, auto_match, label_mapping, import_rows,  # noqa: F401
                                save_mapping, load_mapping)
 from .services.table_export import export_persons, XLS_MAX_ROWS  # noqa: F401
+from .services.photos import save_photo, project_base_dir  # noqa: F401,E402
