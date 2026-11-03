@@ -1,0 +1,5 @@
+portrait_biden.jpg — 640×800 JPEG (downscaled from Wikimedia 960px thumbnail, original 2400×3000).
+Source: https://commons.wikimedia.org/wiki/File:Joe_Biden_presidential_portrait.jpg
+Author: Adam Schultz (White House photographer)
+License: Public domain (work of the U.S. federal government, 17 U.S.C. §105).
+Used as a realistic head-and-shoulders portrait for detect_face_crop tests (Haar finds exactly one face: 212×212 at (215,157)).

@@ -87,3 +87,60 @@ def photo_file_issue(path) -> str | None:
     except Exception:
         return "PHOTO_BROKEN"
     return None
+
+
+# ---------- D43: отмена формы записи ----------
+def referenced_photo_paths(con) -> set[str]:
+    """Все пути фото, на которые ссылаются записи: persons.photo_path и значения image-полей."""
+    import json
+    refs = {r[0] for r in con.execute("SELECT photo_path FROM persons WHERE photo_path IS NOT NULL AND photo_path<>''")}
+    img = [r[0] for r in con.execute("SELECT name FROM person_fields WHERE data_type='image'")]
+    if img:
+        for (fj,) in con.execute("SELECT fields_json FROM persons"):
+            try: d = json.loads(fj or "{}")
+            except (TypeError, ValueError): continue
+            for n in img:
+                v = d.get(n)
+                if isinstance(v, str) and v: refs.add(v)
+    return {str(p).replace("\\", "/") for p in refs}
+
+def discard_photo(con, paths, base_dir=None) -> list[str]:
+    """Удалить файлы фото, созданные в отменённой сессии формы (D43).
+    paths — относительные пути 'photos/…' (то, что вернули save_photo/apply_and_save_photo); str или список.
+    Не удаляется: путь вне <base>/photos/ (исходники, абсолютные пути вне каталога), путь, на который
+    ссылается любая запись (photo_path или image-поле), несуществующий файл. → список удалённых путей."""
+    if isinstance(paths, (str, Path)): paths = [paths]
+    base = (Path(base_dir) if base_dir else project_base_dir(con)).resolve()
+    photos = base / PHOTO_SUBDIR
+    refs = {(base / r).resolve() if not Path(r).is_absolute() else Path(r).resolve() for r in referenced_photo_paths(con)}
+    out = []
+    for rel in paths or []:
+        if not rel: continue
+        p = Path(str(rel)); p = (p if p.is_absolute() else base / p).resolve()
+        if p.parent != photos or p in refs or not p.is_file(): continue
+        p.unlink(); out.append(str(rel))
+    return out
+
+class PhotoSession:
+    """Сессия формы записи (D43). Frontend: s = PhotoSession(con) при открытии формы;
+    все новые фото — через s.save_photo(...) / s.apply_and_save_photo(...) или s.track(rel);
+    «Отмена» → s.discard() (удаляет созданные в сессии файлы без ссылок); «Сохранить» → s.commit()
+    (ничего не удаляет). Если в сессии фото заменили несколько раз, при сохранении записи
+    s.commit(discard_unreferenced=True) уберёт промежуточные файлы, на которые запись не ссылается."""
+    def __init__(self, con, base_dir=None):
+        self.con, self.base_dir, self.created = con, base_dir, []
+    def track(self, rel):
+        if rel and rel not in self.created: self.created.append(rel)
+        return rel
+    def save_photo(self, image_bytes, **kw):
+        kw.setdefault("base_dir", self.base_dir)
+        return self.track(save_photo(self.con, image_bytes, **kw))
+    def apply_and_save_photo(self, source_path, params, **kw):
+        from .photo_edit import apply_and_save_photo
+        kw.setdefault("base_dir", self.base_dir)
+        return self.track(apply_and_save_photo(self.con, source_path, params, **kw))
+    def discard(self) -> list[str]:
+        out = discard_photo(self.con, self.created, self.base_dir); self.created = []; return out
+    def commit(self, discard_unreferenced: bool = False) -> list[str]:
+        out = discard_photo(self.con, self.created, self.base_dir) if discard_unreferenced else []
+        self.created = []; return out

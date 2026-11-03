@@ -101,9 +101,9 @@ def apply_photo_edit(img: Image.Image, params: dict | None) -> Image.Image:
 
 # ---------- лицо ----------
 CASCADE = "haarcascade_frontalface_default.xml"
-FACE_HEIGHT = 0.65      # доля высоты кадра, занимаемая головой (макушка..низ Haar), 60–70%
-HEAD_TOP = 0.30         # макушка выше верха прямоугольника Haar на HEAD_TOP·fh (Haar начинается ото лба)
-TOP_SHARE = 0.40        # доля свободного места кадра над макушкой (остальное — под подбородком)
+HEAD_TOP = 0.25     # макушка = верх Haar − HEAD_TOP·fh (Haar начинается ото лба)
+HEAD_SHARE = 0.50   # голова (макушка..подбородок = низ Haar) занимает ~50 % высоты рамки (45–55 %)
+HEADROOM = 0.10     # запас над макушкой — 10 % высоты рамки; ниже подбородка ~40 % (шея, плечи)
 
 def cascade_path() -> str:
     """Путь к Haar-каскаду: в exe (PyInstaller) — <_MEIPASS>/cv2/data/, иначе cv2.data.haarcascades."""
@@ -124,30 +124,59 @@ def _classifier():
     return _clf
 
 def detect_face_crop(img: Image.Image, aspect: float):
-    """Кадр (x, y, w, h) в пикселях переданного img по самому крупному лицу; нет лица → None.
-    Кадр: высота H = лицо / FACE_HEIGHT, ширина W = H·aspect (aspect = w/h элемента photo), лицо по центру
-    по горизонтали, голова = Haar + HEAD_TOP·fh над ним (макушка) занимает FACE_HEIGHT кадра,
-    над макушкой TOP_SHARE свободного места. Без «полей»: если кадр больше изображения,
-    он уменьшается (с сохранением aspect) до вписывания, затем сдвигается внутрь границ."""
+    """Рамка (x, y, w, h) в пикселях img по самому крупному лицу; нет лица → None. D40/D42 (слова Ивана:
+    «рамка не должна полностью брать лицо, учитывается размер рамки в шаблоне»).
+    aspect = w/h фото-элемента шаблона (см. get_photo_frame_spec()['aspect']).
+    Макушка = верх Haar − HEAD_TOP·fh; подбородок ≈ низ прямоугольника Haar. Голова занимает HEAD_SHARE
+    высоты рамки, над макушкой HEADROOM высоты, остальное (~40 %) — шея и плечи. Лицо по центру по горизонтали.
+    Рамка за краем фото: сначала сдвиг внутрь; если рамка больше фото — уменьшение (aspect сохраняется,
+    центр по горизонтали — лицо, верх — по возможности на месте) и снова сдвиг."""
     import numpy as np
-    import cv2
     aspect = float(aspect)
     if not aspect > 0: raise ValueError("aspect должен быть > 0")
     g = np.asarray(img.convert("L"))
     m = max(20, min(g.shape) // 12)
     faces = _classifier().detectMultiScale(g, scaleFactor=1.1, minNeighbors=5, minSize=(m, m))
     if len(faces) == 0: return None
-    fx, fy, fw, fh = max(faces, key=lambda f: int(f[2]) * int(f[3]))
-    head_top = fy - HEAD_TOP * fh; head_h = fh + HEAD_TOP * fh
-    H = head_h / FACE_HEIGHT; W = H * aspect
-    k = min(1.0, img.width / W, img.height / H); W *= k; H *= k
-    cx = fx + fw / 2
-    x = _clamp(cx - W / 2, 0, img.width - W)
-    y = _clamp(head_top - TOP_SHARE * max(0.0, H - head_h), 0, img.height - H)
-    h = max(1, int(round(H))); w = max(1, min(img.width, int(round(h * aspect))))
-    if w > img.width: w = img.width; h = max(1, int(round(w / aspect)))
-    x = int(_clamp(round(x), 0, img.width - w)); y = int(_clamp(round(y), 0, img.height - h))
+    fx, fy, fw, fh = (float(v) for v in max(faces, key=lambda f: int(f[2]) * int(f[3])))
+    iw, ih = img.width, img.height
+    head_top = fy - HEAD_TOP * fh; head_h = fy + fh - head_top
+    H = head_h / HEAD_SHARE; W = H * aspect
+    cx = fx + fw / 2; y = head_top - HEADROOM * H
+    k = min(1.0, iw / W, ih / H)          # сдвиг не помогает только если рамка больше фото
+    if k < 1.0: W *= k; H *= k
+    x = _clamp(cx - W / 2, 0, iw - W); y = _clamp(y, 0, ih - H)
+    h = max(1, min(ih, int(round(H)))); w = max(1, int(round(h * aspect)))
+    if w > iw: w = iw; h = max(1, min(ih, int(round(w / aspect))))
+    x = int(_clamp(round(x), 0, iw - w)); y = int(_clamp(round(y), 0, ih - h))
     return (x, y, w, h)
+
+# ---------- рамка из шаблона ----------
+def get_photo_frame_spec(con, field=None):
+    """Пропорции и размер выходного фото для image-поля (D42).
+    field: имя поля (str) или rowid (int) из person_fields; None — фото записи (persons.photo_path),
+    т.е. фото-элементы без field_name. Берётся первый фото-элемент (type='photo') с этим field_name:
+    сначала лицевая сторона, затем z_order, id. Размеры элемента в px холста 300 DPI → мм = px·25.4/300.
+    → {'aspect': w/h, 'width_mm', 'height_mm', 'width_px', 'height_px' (300 DPI, округл.), 'element_id', 'side'}
+    Нет связанного элемента (или поле не image / не найдено) → None: редактор работает без фикс. пропорций."""
+    from .. import DPI
+    name = None
+    if field is not None:
+        col = "rowid" if isinstance(field, int) and not isinstance(field, bool) else "name"
+        r = con.execute(f"SELECT name, data_type FROM person_fields WHERE {col}=?", (field,)).fetchone()
+        if r is None or r[1] != "image": return None
+        name = r[0]
+    cond = "field_name=?" if name is not None else "(field_name IS NULL OR field_name='')"
+    r = con.execute(f"SELECT id, w, h, side FROM template_elements WHERE type='photo' AND {cond} "
+                    "ORDER BY side<>'front', z_order, id LIMIT 1", (name,) if name is not None else ()).fetchone()
+    if r is None: return None
+    eid, w, h, side = r
+    wmm, hmm = w * 25.4 / DPI, h * 25.4 / DPI
+    return {"aspect": w / h, "width_mm": round(wmm, 2), "height_mm": round(hmm, 2),
+            "width_px": int(round(wmm / 25.4 * DPI)), "height_px": int(round(hmm / 25.4 * DPI)),
+            "element_id": eid, "side": side}
+
+from .photos import PhotoSession, discard_photo  # noqa: E402,F401  (D43, ре-экспорт)
 
 # ---------- умолчания проекта ----------
 def get_photo_edit_defaults(con) -> dict:
