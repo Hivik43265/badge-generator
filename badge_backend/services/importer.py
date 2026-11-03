@@ -199,7 +199,7 @@ def import_file(con, path, mapping=None, photo_dir=None, validate=True, *, label
                    report.cancelled=True, added=0.
     """
     from .sources import label_mapping
-    mapping = {**label_mapping(con, read_table(path)[0], mapping), **(mapping or {})} or mapping
+    mapping = {**(mapping or {}), **label_mapping(con, read_table(path)[0], mapping)} or mapping
     recs, labs = parse_file(path, mapping, labels, strip=validate)
     return import_records(con, recs, labs, photo_dir, validate, labels=labels, require_photo=require_photo,
                           progress=progress)
