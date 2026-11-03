@@ -49,9 +49,10 @@ def test_xlsx_photo_and_errors(con, tmp_path):
                 ["Сидоров", "Олег", "none.jpg", None, 3]]: ws.append(row)
     wb.save(tmp_path / "p.xlsx")
     r = api.import_file(con, tmp_path / "p.xlsx", photo_dir=tmp_path / "ph")
-    assert (r.added, r.skipped) == (1, 2)
+    assert (r.added, r.skipped) == (2, 1)        # этап 13: ненайденное фото — предупреждение, не пропуск
     codes = {(e["row"], e["code"]) for e in r.errors}
-    assert (4, "REQUIRED_MISSING") in codes and (5, "PHOTO_NOT_FOUND") in codes
+    assert (4, "REQUIRED_MISSING") in codes and not any(c == "PHOTO_NOT_FOUND" for _, c in codes)
+    assert (5, "PHOTO_MISSING") in {(w["row"], w["code"]) for w in r.warnings}
     p = api.list_persons(con)[0]
     assert p["photo_path"] == "a.jpg" and p["photo_config"] == "5;5;1.5;0;0;10"
     assert p["fields"]["employee_id"] == "123" and "photo_path" not in p["fields"]

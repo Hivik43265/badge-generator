@@ -62,12 +62,36 @@ class Sheet:   # dataclass
   первая картинка; `ws._images` — внутренний атрибут openpyxl (проверено на 3.1.5); без `photo_dir` картинки не
   извлекаются (RuntimeWarning). Встроенные картинки .xls не поддерживаются (xlrd их не читает).
 
+## Решения Архитектора (этап 13)
+1. `export_persons` принимает `con` первым аргументом, доп. параметры `photo_dir`, `csv_encoding`; возвращает dict.
+2. `ids=None` в `export_persons` — **все записи** (по id), а не только помеченные (в отличие от `snapshot`, где None = print_mark=1).
+3. `.xls` > 65535 строк данных → `ValueError` на русском с советом: «Слишком много записей для формата .xls: выбрано N,
+   максимум 65535. Выберите формат .xlsx (Excel 2007+) — в нём ограничения нет.» Файл не создаётся.
+4. Round-trip ключей: заголовки экспорта — label полей. Стандартные поля (Фамилия, Имя, Должность…) при обратном импорте
+   получают те же ключи (синонимы headers.py); пользовательское поле в новой БД получает ключ из label (slugify), исходный
+   ключ не сохраняется. Ключи полностью сохраняются только в формате `.db`.
+5. Фото: при `require_photo=False` строка, у которой файл фото не найден (`PHOTO_NOT_FOUND` валидатора), **импортируется**
+   с предупреждением `PHOTO_MISSING` (details: «файл фото не найден: … (PHOTO_NOT_FOUND)»), photo_path сохраняется как указан.
+   Обрабатывается в backend (`importer.import_records`), `data_tools/` не менялся. Повреждённый/пустой файл
+   (`PHOTO_BROKEN`/`PHOTO_EMPTY`) — по-прежнему ошибка. При `require_photo=True` такие строки пропускаются.
+   Касается и `import_file`, и `import_rows`.
+
 ## Замечания
-- Валидатор `data_tools.validate_import` (как и раньше) нормализует пробелы/переносы в текстовых полях и отклоняет строки
-  с несуществующим фото (PHOTO_NOT_FOUND) — это поведение существующего импорта, не менялось; `validate=False` отключает.
+- Валидатор `data_tools.validate_import` (как и раньше) нормализует пробелы/переносы в текстовых полях — это поведение существующего импорта, не менялось (решение Архитектора: допустимо); `validate=False` отключает.
 
 ## Тесты
 - `tests/test_stage13.py` — 25 тестов: round-trip экспорт→импорт для xlsx/xls/csv/db с кириллицей, лимит .xls,
   прогресс, отмена (callable / Event / progress→False), save/load mapping, импорт проектных БД v1–v4 (исходник не меняется),
   произвольная SQLite read-only, колонка фото, встроенные картинки xlsx, cp1251, листы/limit/header=False.
-- Полный прогон `QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -v tests data_tools/tests` — **312 passed**.
+- `tests/test_stage13.py` +2 (ненайденное фото → импорт + PHOTO_MISSING; require_photo=True → пропуск), русский текст ошибки .xls;
+  `tests/test_d19_keys.py` — 3 регрессионных теста D19.
+- Полный прогон `QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -v tests data_tools/tests` — **317 passed**.
+
+## D19 (пустые превью/значения после добавления записи)
+Backend проверен: `create_person`/`update_person` сохраняют ключи как есть, `list_fields` отдаёт `name`, рендер ищет
+`field_name` точным совпадением (без label/регистра) — для стандартных и пользовательских полей работает
+(тесты `test_d19_keys.py`). Причина — в UI (до коммита Frontend D19): форма записи при пустом `person_fields` подставляла
+стандартные ключи (`last_name`, `first_name`… из LABELS), а поля шаблона с другими `field_name` (напр. `familiya`)
+в форме не показывались; таблица/очередь брали захардкоженные ключи ФИО/position. Значения писались под ключи,
+которых нет в шаблоне → пустое превью. Исправлено Frontend (record_form/records_table/main_view: набор полей только из
+`list_fields()` + поля шаблона без person_fields регистрируются `upsert_field`). Изменений backend не требуется.

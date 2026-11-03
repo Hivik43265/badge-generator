@@ -101,7 +101,8 @@ def export_persons(con, path, format: str | None = None, ids=None, *, photo_dir=
     if f == "db": return _export_db(con, p, ids, photo_dir)
     heads, rows = table_rows(con, ids)
     if f == "xls" and len(rows) > XLS_MAX_ROWS:
-        raise ValueError(f"формат .xls вмещает не более {XLS_MAX_ROWS} строк данных, выбрано {len(rows)}; используйте .xlsx")
+        raise ValueError(f"Слишком много записей для формата .xls: выбрано {len(rows)}, максимум {XLS_MAX_ROWS}. "
+                         f"Выберите формат .xlsx (Excel 2007+) — в нём ограничения нет.")
     p.parent.mkdir(parents=True, exist_ok=True)
     if f == "csv":
         if csv_encoding.lower().replace("_", "-") not in ("utf-8-sig", "utf-8", "cp1251"):

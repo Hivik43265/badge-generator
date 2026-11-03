@@ -67,7 +67,9 @@ def test_xls_row_limit(tmp_path):
     con = api.connect(); api.upsert_field(con, "n", "N")
     with con: con.executemany("INSERT INTO persons(fields_json) VALUES (?)",
                               [(json.dumps({"n": str(i)}),) for i in range(api.XLS_MAX_ROWS + 1)])
-    with pytest.raises(ValueError, match="65535"): api.export_persons(con, tmp_path / "big.xls")
+    with pytest.raises(ValueError) as ei: api.export_persons(con, tmp_path / "big.xls")
+    msg = str(ei.value)
+    assert "65535" in msg and "Выберите формат .xlsx" in msg and "65536" in msg
     assert not (tmp_path / "big.xls").exists()
     ok = api.export_persons(con, tmp_path / "ok.xls", ids=range(1, api.XLS_MAX_ROWS + 1))
     assert ok["rows"] == api.XLS_MAX_ROWS
@@ -244,3 +246,32 @@ def test_import_file_still_works_and_xls(src):
     api.export_persons(con, d / "t.xls")
     tgt = api.connect(); rep = api.import_file(tgt, d / "t.xls", photo_dir=d / "ph")
     assert rep.added == 3 and _by_label(tgt) == _expected()
+
+# ---------- решение Архитектора: ненайденное фото — предупреждение ----------
+def _photo_csv(tmp_path):
+    (tmp_path / "ph").mkdir(exist_ok=True); Image.new("RGB", (5, 5)).save(tmp_path / "ph" / "ok.jpg")
+    (tmp_path / "ph" / "broken.jpg").write_bytes(b"not an image")
+    p = tmp_path / "ph.csv"
+    p.write_text("Фамилия;Имя;Фото\nЁжиков;Пётр;ok.jpg\nЩукина;Юлия;nope.jpg\nИванов;Иван;\nСидоров;Олег;broken.jpg\n",
+                 encoding="utf-8")
+    return p
+
+def test_missing_photo_file_imported_with_warning(tmp_path):
+    p = _photo_csv(tmp_path)
+    for run in ("import_rows", "import_file"):
+        con = api.connect()
+        rep = (api.import_rows(con, api.open_source(p)[0], photo_dir=tmp_path / "ph") if run == "import_rows"
+               else api.import_file(con, p, photo_dir=tmp_path / "ph"))
+        assert (rep.added, rep.skipped) == (3, 1), run
+        assert {(w["row"], w["code"]) for w in rep.warnings} == {(3, "PHOTO_MISSING"), (4, "PHOTO_MISSING")}
+        assert any("nope.jpg" in w["details"] for w in rep.warnings)
+        assert [e["code"] for e in rep.errors] == ["PHOTO_BROKEN"]          # битый файл — по-прежнему ошибка
+        ps = api.list_persons(con)
+        assert [x["photo_path"] for x in ps] == ["ok.jpg", "nope.jpg", None]
+        assert api.missing_photos(con, [x["id"] for x in ps], base_dir=tmp_path / "ph") == [ps[1]["id"], ps[2]["id"]]
+
+def test_missing_photo_file_require_photo_skips(tmp_path):
+    p = _photo_csv(tmp_path); con = api.connect()
+    rep = api.import_rows(con, api.open_source(p)[0], photo_dir=tmp_path / "ph", require_photo=True)
+    assert rep.added == 1 and rep.skipped == 3 and rep.warnings == []
+    assert {e["code"] for e in rep.errors} >= {"PHOTO_NOT_FOUND", "PHOTO_MISSING", "PHOTO_BROKEN"}

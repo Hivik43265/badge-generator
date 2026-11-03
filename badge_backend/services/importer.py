@@ -158,7 +158,8 @@ def import_file(con, path, mapping=None, photo_dir=None, validate=True, *, label
 
     mapping        см. headers.map_headers; None/'' у заголовка исключает колонку.
     labels         {key: label} для person_fields (перезаписывает существующий label).
-    require_photo  False (по умолчанию): записи без фото импортируются, PHOTO_MISSING → report.warnings,
+    require_photo  False (по умолчанию): записи без фото или с ненайденным файлом фото импортируются,
+                   PHOTO_MISSING → report.warnings (photo_path сохраняется как указан),
                    рендер рисует плейсхолдер. True: PHOTO_MISSING — ошибка, строка пропускается
                    (проверяется и без photo_dir).
     progress       callable(done, total) по вставкам; вернул False → отмена: откат всей транзакции,
@@ -180,9 +181,14 @@ def import_records(con, recs, labs, photo_dir=None, validate=True, *, labels=Non
         if require_photo and not r.get("photo_path") and not any(e["code"] == "PHOTO_MISSING" for e in verrs.get(i, [])):
             verrs.setdefault(i, []).append({"field": "photo_path", "code": "PHOTO_MISSING", "details": "фото не указано"})
         if not require_photo and i in verrs:
-            pm = [e for e in verrs[i] if e["code"] == "PHOTO_MISSING"]
+            # фото не указано (PHOTO_MISSING) или файл не найден (PHOTO_NOT_FOUND от валидатора) — не причина
+            # пропускать строку: запись импортируется, в warnings — PHOTO_MISSING (решение Архитектора, этап 13).
+            # PHOTO_EMPTY / PHOTO_BROKEN (файл есть, но испорчен) остаются ошибками.
+            pm = [e if e["code"] == "PHOTO_MISSING" else
+                  {**e, "code": "PHOTO_MISSING", "details": f"файл фото не найден: {e.get('details')} (PHOTO_NOT_FOUND)"}
+                  for e in verrs[i] if e["code"] in ("PHOTO_MISSING", "PHOTO_NOT_FOUND")]
             rep.warnings += [{"row": r["_row"], **e} for e in pm]
-            verrs[i] = [e for e in verrs[i] if e["code"] != "PHOTO_MISSING"]
+            verrs[i] = [e for e in verrs[i] if e["code"] not in ("PHOTO_MISSING", "PHOTO_NOT_FOUND")]
             if not verrs[i]: del verrs[i]
     total = len(recs)
     try:
