@@ -183,3 +183,22 @@ Backend этапа 13 — **принят** (D25–D29 закрыты, 62/62, CI 
 
 ## Вердикт
 Backend этапа 13 (включая 91b0208, 2a68954) — **принят**. Frontend: закоммиченное (D16, D19–D22, D24, плоский Менеджер полей fd9614b) — **принято**. Этап 13 в целом — **не принят** до D31–D35 (новые диалоги импорта/экспорта).
+
+## Перепроверка Frontend c916ec1 (D31–D35), 2026-11-03
+
+Чистый worktree HEAD c916ec1. Команды: pytest 363 passed; smoke ALL OK; `--self-test` 89/89; e2e_click_all 89/89; e2e_check 31/31; e2e_stage10 20/20; e2e_stage12 32/32; e2e_stage13 67/67; **новый e2e_stage13b 29/29**.
+
+| Дефект | Итог | Доказательство (e2e_stage13b) |
+|---|---|---|
+| D31 импорт xlsx/xls/csv/.db, выбор листа | PASS | xls с 2 листами, список листов, смена листа → превью, импорт выбранного листа, поля не создаются; open_source/read_rows/import_rows Backend |
+| D32 сохранить/загрузить привязку | PASS | roundtrip save→load даёт тот же mapping; битый JSON → сообщение |
+| D33 превью строк и фото | PASS | таблица превью, «Колонка/Значение», pixmap фото |
+| D34 экспорт xlsx/xls/csv/.db через act_export | PASS | 4 файла через ExportDialog (export_persons); подсказка D29 видна для xlsx/xls/csv, скрыта для .db (это QLabel, не tooltip) |
+| D35 .db с подтверждением import_fields | PASS | отмена → 0 записей; «Только существующие» → без новых полей; «Создать поля» → поле + default_value |
+
+Дубли: нет. QAction act_import/act_export/act_field_manager по одному; «Менеджер полей…» = setDefaultAction(act_field_manager); ui/ не импортирует openpyxl/xlrd/xlwt/csv/sqlite3; путь к фото в ui/ не вычисляется; реэкспорт map_headers убран.
+Замечание (не дубль по правилу, мёртвый код): `BackendAPI.import_file` (ui/backend_api.py:215) больше нигде не вызывается — предложить удалить.
+
+Макет: reports/mockup/reference_import.png ЕСТЬ на диске, но не в git (untracked). Сравнение import.png с эталоном — структура совпадает (лист, заголовок, Поле БД|Тип|Сопоставлено|Колонка, справа фото+значения, превью, прогресс, кнопки привязки). Отличия на решение Архитектора: справа таблица «Колонка|Значение» вместо столбца карточек; добавлены «Фото: папка», «Требовать фото», окно отчёта; в эталоне третья кнопка (подпись нечитаема, «…жавЮСд») отсутствует; в превью два столбца «Фото» (image-поле и photo_path) — путает; экспорт — один диалог с «Что».
+
+Git: c916ec1 закоммичен, stash пуст. Но в основном дереве снова есть незакоммиченные Frontend-правки этапа 14: M ui/backend_api.py, ui/photo_block.py, ui/record_form.py, ui/smoke_test.py, ?? ui/photo_editor.py; M reports/screenshot_*.png; эталоны reports/mockup/*.png не в git.
