@@ -12,6 +12,14 @@ ICON = os.path.join(SPECPATH, "icon.ico")
 datas = [(os.path.join(ROOT, "badge_backend", "schema.sql"), "badge_backend")]
 datas += collect_data_files("barcode")   # шрифты python-barcode (ImageWriter)
 datas += collect_data_files("qrcode")
+# Этап 14: Haar-каскад лица для detect_face_crop → <_MEIPASS>/cv2/data/ (photo_edit.cascade_path ищет там в exe)
+try:
+    import cv2 as _cv2
+    _casc = os.path.join(_cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
+    if os.path.isfile(_casc): datas.append((_casc, os.path.join("cv2", "data")))
+    else: print("WARNING: haarcascade_frontalface_default.xml not found (opencv>=5 wheels ship no cascades)", file=__import__("sys").stderr)
+except ImportError:
+    print("WARNING: opencv-python-headless not installed: face detection will be unavailable", file=__import__("sys").stderr)
 hidden = collect_submodules("badge_backend") + collect_submodules("barcode") + ["qrcode.image.pil"]
 # Этап 13 / D22: аудит hiddenimports. Модули ui/ импортируются статически из main_window (PyInstaller
 # находит их сам), но ленивые импорты внутри функций (QtMultimedia в main_view.camera_available /
@@ -21,6 +29,7 @@ hidden = collect_submodules("badge_backend") + collect_submodules("barcode") + [
 hidden += [m for m in collect_submodules("ui") if m != "ui.smoke_test"]
 hidden += ["PyQt6.QtMultimedia", "PyQt6.QtMultimediaWidgets", "PyQt6.QtPrintSupport", "PyQt6.sip"]
 hidden += collect_submodules("openpyxl") + ["xlrd", "xlwt"]
+hidden += ["cv2", "numpy"]   # этап 14: импорт ленивый (внутри detect_face_crop)
 
 # --- Qt-плагины и DLL (камера D22, печать, jpeg). Ищем в установленном PyQt6 (PyQt6/Qt6/{bin,plugins}),
 # кладём по тем же относительным путям, что и штатные хуки PyInstaller (PyQt6/Qt6/...), только если файл есть.
@@ -65,9 +74,11 @@ def _exe(a, name, console):
 
 
 a_app = _analysis("main.py", binaries=list(qt_binaries))
+# OpenCV videoio-FFmpeg (~20–30 МБ) не нужен: камера идёт через QtMultimedia, cv2 — только Haar по картинке
+a_app.binaries = [b for b in a_app.binaries if "opencv_videoio_ffmpeg" not in os.path.basename(str(b[0])).lower()]
 app = _exe(a_app, "BadgeGenerator", console=False)
 
-a_smoke = _analysis(os.path.join("packaging", "smoke_entry.py"), extra_excludes=["PyQt6", "ui"])
+a_smoke = _analysis(os.path.join("packaging", "smoke_entry.py"), extra_excludes=["PyQt6", "ui", "cv2"])
 smoke = _exe(a_smoke, "BadgeSmoke", console=True)
 
 # Отчёт о Qt-файлах для CI (dist/BadgeGenerator.bundle.txt): по строке на шаблон "FOUND|MISSING<TAB>шаблон<TAB>файлы"
@@ -77,3 +88,5 @@ with open(os.path.join(_dist, "BadgeGenerator.bundle.txt"), "w", encoding="utf-8
     for st, pat, files in _qt_report:
         inb = [n for n in files if n.lower() in _names]
         f.write(f"{'FOUND' if inb else 'MISSING'}\t{pat}\t{','.join(inb)}\n")
+    _casc_in = any(str(t[0]).replace("\\", "/").endswith("cv2/data/haarcascade_frontalface_default.xml") for t in a_app.datas)
+    f.write(f"{'FOUND' if _casc_in else 'MISSING'}\tcv2/data/haarcascade_frontalface_default.xml\t\n")

@@ -6,3 +6,6 @@ python-barcode>=0.15
 qrcode[pil]>=7.4
 xlrd>=2.0
 xlwt>=1.3
+# этап 14: распознавание лица (Haar). <5: в колёсах opencv 5.x нет cv2/data/haarcascade_*.xml
+opencv-python-headless>=4.8,<5
+numpy

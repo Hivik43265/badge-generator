@@ -93,7 +93,10 @@ def _v5_field_types(con):
         con.execute("ALTER TABLE person_fields ADD COLUMN data_type TEXT NOT NULL DEFAULT 'text' "
                     "CHECK (data_type IN ('text','number','date','image','bool'))")
 
-MIGRATIONS = [SCHEMA, _v2_printed_at, _v3_line, _v4_ellipse_defaults, _v5_field_types]   # индекс + 1 = user_version; str — SQL-скрипт, callable — шаг на Python
+_V6_SETTINGS = """CREATE TABLE IF NOT EXISTS project_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);"""
+# v6 (этап 14): настройки проекта key → value (JSON-строка); первая — photo_edit_defaults.
+
+MIGRATIONS = [SCHEMA, _v2_printed_at, _v3_line, _v4_ellipse_defaults, _v5_field_types, _V6_SETTINGS]   # индекс + 1 = user_version; str — SQL-скрипт, callable — шаг на Python
 LATEST = len(MIGRATIONS)
 
 def now_iso() -> str:

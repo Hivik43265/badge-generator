@@ -16,24 +16,24 @@ def test_v3_to_v4_keeps_data_and_ids(tmp_path):
         raw.execute("INSERT INTO template_elements(type,x,y,w,h) VALUES ('ellipse',0,0,10,10)")
     raw.commit(); raw.close()
     con = api.connect(p)
-    assert api.get_schema_version(con) == 5 == db.LATEST
+    assert api.get_schema_version(con) == 6 == db.LATEST
     assert [(e["id"], e["type"]) for e in api.list_elements(con)] == [(7, "line"), (9, "field")]
     assert "default_value" in db._cols(con, "person_fields")
     assert api.list_fields(con)[0]["default_value"] is None
     eid = api.create_element(con, "ellipse", 0, 0, 10, 10)
     assert api.list_elements(con)[-1]["id"] == eid
     with pytest.raises(sqlite3.IntegrityError): api.create_element(con, "ellipse", 0, 0, 0, 10)
-    assert db.migrate(con) == 5
+    assert db.migrate(con) == 6
 
 def test_v4_idempotent_rerun():
     con = api.connect()
-    con.execute("PRAGMA user_version=3"); assert db.migrate(con) == 5
+    con.execute("PRAGMA user_version=3"); assert db.migrate(con) == 6
     assert list(db._cols(con, "person_fields")).count("default_value") == 1
 
 def test_legacy_helper_v4(tmp_path):
     raw = sqlite3.connect(create_legacy_db(tmp_path / "v4.db", version=4))
     assert api.get_schema_version(raw) == 4
-    with pytest.raises(ValueError): create_legacy_db(tmp_path / "v6.db", version=6)
+    with pytest.raises(ValueError): create_legacy_db(tmp_path / "v7.db", version=7)
 
 # ---------- ellipse ----------
 def _el(**k): return {"id": 1, "type": "ellipse", "x": 100, "y": 100, "w": 400, "h": 200, **k}
@@ -229,7 +229,7 @@ def test_backup_and_vacuum(tmp_path):
     p, con = _filled(tmp_path)
     out = api.backup_db(con, tmp_path / "bk" / "b1.db")
     assert out == tmp_path / "bk" / "b1.db" and not (tmp_path / "bk" / "b1.db.tmp").exists()
-    b = api.connect(out); assert len(api.list_persons(b)) == 5 and api.get_schema_version(b) == 5; b.close()
+    b = api.connect(out); assert len(api.list_persons(b)) == 5 and api.get_schema_version(b) == 6; b.close()
     with pytest.raises(ValueError): api.backup_db(con, p)
     r = api.vacuum_db(con)
     assert set(r) == {"size_before", "size_after"} and r["size_after"] < r["size_before"]
@@ -252,7 +252,7 @@ def test_restore_db(tmp_path):
     # бэкап старой версии мигрирует
     old = create_legacy_db(tmp_path / "v2.db", version=2)
     api.restore_db(tmp_path / "t.db", old)
-    assert api.get_schema_version(sqlite3.connect(tmp_path / "t.db")) == 5
+    assert api.get_schema_version(sqlite3.connect(tmp_path / "t.db")) == 6
     bad = tmp_path / "bad.db"; bad.write_bytes(b"not a database" * 100)
     with pytest.raises(ValueError): api.restore_db(tmp_path / "t2.db", bad)
     zero = tmp_path / "zero.db"; sqlite3.connect(zero).execute("CREATE TABLE x(a)").connection.commit()

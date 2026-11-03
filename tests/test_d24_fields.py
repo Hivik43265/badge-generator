@@ -11,7 +11,7 @@ def _csv(p, text): p.write_text(text, encoding="utf-8"); return p
 
 def test_new_db_has_no_fields():
     con = api.connect()
-    assert api.list_fields(con) == [] and api.get_schema_version(con) == 5 == db.LATEST
+    assert api.list_fields(con) == [] and api.get_schema_version(con) == 6 == db.LATEST
 
 def test_v4_to_v5_existing_fields_become_text(tmp_path):
     p = create_legacy_db(tmp_path / "v4.db", version=4); raw = sqlite3.connect(p)
@@ -20,7 +20,7 @@ def test_v4_to_v5_existing_fields_become_text(tmp_path):
     assert api.list_fields(con) == [{"name": "a", "label": "А", "sort_order": 0, "default_value": None, "data_type": "text"}]
     with pytest.raises(sqlite3.IntegrityError):
         with con: con.execute("UPDATE person_fields SET data_type='blob'")
-    con.execute("PRAGMA user_version=4"); assert db.migrate(con) == 5   # идемпотентно
+    con.execute("PRAGMA user_version=4"); assert db.migrate(con) == 6   # идемпотентно
 
 def test_upsert_field_data_type():
     con = api.connect()
