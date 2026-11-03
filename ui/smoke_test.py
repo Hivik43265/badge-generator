@@ -794,6 +794,11 @@ lg = d48.log.toPlainText()
 assert "Не удалось закрыть источник «a48.db»" in lg and "занят a48.db" in lg and "«c48.db»" in lg and b48.calls == 1 and d48.sheets == [], lg
 d48.reject(); app.processEvents()                                     # закрытие: одна повторная попытка для неудачных
 assert a48.calls == 2 and c48.calls == 2 and b48.calls == 1 and d48._close_failed == [], (a48.calls, c48.calls)
+L48 = d48.log.toPlainText().splitlines()
+assert sum("Не удалось закрыть источник «a48.db»" in l for l in L48) == 1 and sum("«c48.db»" in l for l in L48) == 1, L48   # первая ошибка — одна полная запись
+assert sum(l == "Повторная попытка закрыть c48.db не удалась" for l in L48) == 1, L48                                   # повтор не удался — одна короткая
+assert sum("занят c48.db" in l for l in L48) == 1, L48                                                                   # текст ошибки не повторён
+assert not any("a48.db" in l for l in L48[L48.index("Повторная попытка закрыть c48.db не удалась"):]) and len(L48) == 3, L48  # повтор a48 удался — без строки
 d48b = ImportDialog(api, w); u48, v48 = _Sh48("u48.db", 1, KeyError), _Sh48("v48.db", 0); d48b.sheets = [u48, v48]
 try: d48b.close_sheets(); raise AssertionError("KeyError проглочен")
 except KeyError: pass

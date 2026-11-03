@@ -128,13 +128,18 @@ class ImportDialog(QDialog):
     # D48: Sheet.close() → OSError (временная копия .db занята; своего класса исключений у Backend нет) пишется
     # в журнал диалога по-русски с именем файла, остальные листы закрываются; при закрытии диалога неудачные листы
     # пробуются ещё раз (один раз). Прочие исключения не глотаются (пробрасываются после закрытия остальных листов).
-    def _close_list(self, sheets):
+    def _close_list(self, sheets, retry=False):
         failed, unexpected = [], None
         for sh in sheets:
+            fn = getattr(sh, "_bg_close_name", None) or getattr(getattr(sh, "work_path", None) or getattr(sh, "path", None), "name", None) \
+                or getattr(sh, "name", "?")
             try: sh.close()
             except OSError as e:
-                fn = getattr(getattr(sh, "work_path", None) or getattr(sh, "path", None), "name", None) or getattr(sh, "name", "?")
-                self.log.appendPlainText(f"Не удалось закрыть источник «{fn}» (временная копия не удалена): {e}")
+                if retry: self.log.appendPlainText(f"Повторная попытка закрыть {fn} не удалась")      # кратко, без текста ошибки
+                else:
+                    self.log.appendPlainText(f"Не удалось закрыть источник «{fn}» (временная копия не удалена): {e}")
+                    try: sh._bg_close_name = fn          # то же имя в строке повтора
+                    except AttributeError: pass
                 failed.append(sh)
             except BaseException as e:  # noqa: BLE001 — не глотается: закрыть остальные и пробросить первое
                 unexpected = unexpected or e
@@ -146,7 +151,7 @@ class ImportDialog(QDialog):
         self._close_failed = getattr(self, "_close_failed", []) + failed
         if final and self._close_failed:            # закрытие диалога: одна повторная попытка для неудачных
             retry, self._close_failed = self._close_failed, []
-            _left, unexpected2 = self._close_list(retry); unexpected = unexpected or unexpected2
+            _left, unexpected2 = self._close_list(retry, retry=True); unexpected = unexpected or unexpected2
         if unexpected is not None: raise unexpected
 
     def done(self, r):
