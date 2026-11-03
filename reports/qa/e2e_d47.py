@@ -88,13 +88,38 @@ left = wp.exists(); old = time.time() - 7 * 3600; os.utime(wp, (old, old))
 wd = wp.parent; foreign = wd / "other_keep.db"; foreign.write_bytes(b"x"); os.utime(foreign, (old, old))
 fresh = wd / "bg_import_qa_fresh.db"; fresh.write_bytes(b"x")
 root_old = pathlib.Path(_tf.gettempdir()) / "bg_import_qa_rootold.db"; root_old.write_bytes(b"x"); os.utime(root_old, (old, old))
+_r = pathlib.Path(_tf.gettempdir())
+root_sidecars = [_r / f"bg_import_qa_rootold.db{x}" for x in ("-journal", "-wal", "-shm")]
+for x in root_sidecars: x.write_bytes(b"x"); os.utime(x, (old, old))
+root_fresh = _r / "bg_import_qa_rootfresh.db"; root_fresh.write_bytes(b"x")
+root_other = _r / "qa_other_keep.db"; root_other.write_bytes(b"x"); os.utime(root_other, (old, old))
+root_odd = _r / "bg_import_qa_keep.txt"; root_odd.write_bytes(b"x"); os.utime(root_odd, (old, old))
 code = f"import sys; sys.path.insert(0, {str(ROOT)!r}); from ui.backend_api import BackendAPI; BackendAPI({str(TMP / 'r.db')!r}, {str(TMP)!r})"
 r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
 chk("D48 сквозной: close() упал → копия осталась → перезапуск удалил её", left and r.returncode == 0 and not wp.exists(), (left, r.returncode, wp.exists(), r.stderr[-200:]))
 chk("D48: чужой файл и свежая копия (<6 ч) не тронуты", foreign.exists() and fresh.exists(), (foreign.exists(), fresh.exists()))
-chk("D48 (к сведению): старые bg_import_* в корне tempdir не чистятся", root_old.exists(), root_old)
-for f in (foreign, fresh, root_old): f.unlink(missing_ok=True)
+rr = pathlib.Path(_tf.gettempdir())
+chk("D48.5: старые bg_import_*.db в корне tempdir удалены", not root_old.exists(), root_old)
+chk("D48.5: свежая копия в корне и чужое имя в корне не тронуты", root_fresh.exists() and root_other.exists() and root_odd.exists(), (root_fresh.exists(), root_other.exists(), root_odd.exists()))
+chk("D48.5: -journal/-wal/-shm старой копии в корне удалены", not any(x.exists() for x in root_sidecars), [x.exists() for x in root_sidecars])
+for f in (foreign, fresh, root_old, root_fresh, root_other, root_odd, *root_sidecars): f.unlink(missing_ok=True)
 code2 = f"import sys; sys.path.insert(0, {str(ROOT)!r}); import badge_backend.services.sources as S; S._cleanup_stale_work_copies=lambda *a,**k: 1/0; from ui.backend_api import BackendAPI; BackendAPI({str(TMP / 'r2.db')!r}, {str(TMP)!r}); print('OK')"
 r = subprocess.run([sys.executable, "-c", code2], capture_output=True, text=True)
 chk("D48: ошибка очистки не ломает старт", r.returncode == 0 and "OK" in r.stdout, (r.returncode, r.stderr[-200:]))
+
+# ---- D48 (b): журнал повтора ----
+def mk():
+    dd = ImportDialog(a, mw); dd.set_file(str(src)); return dd, pathlib.Path(dd.current_sheet().work_path)
+dd, wp = mk(); Sheet.close = boom
+try: dd.reject()
+finally: Sheet.close = orig
+L = [l for l in dd.log.toPlainText().splitlines() if wp.name in l]
+chk("D48b: оба сбоя → полная первая строка + одна краткая «Повторная попытка закрыть <файл> не удалась»",
+    len(L) == 2 and "busy" in L[0] and L[1] == f"Повторная попытка закрыть {wp.name} не удалась", L)
+Sheet.close = orig; dd.close_sheets(); wp.unlink(missing_ok=True)
+dd, wp = mk(); n = {"c": 0}; Sheet.close = once
+try: dd.reject()
+finally: Sheet.close = orig
+L = [l for l in dd.log.toPlainText().splitlines() if wp.name in l]
+chk("D48b: повтор успешен → только первая строка, лишней нет", len(L) == 1 and "busy" in L[0] and not wp.exists(), L)
 print(f"ИТОГО: {sum(r[1] for r in RES)}/{len(RES)} PASS; tmp={TMP}")
