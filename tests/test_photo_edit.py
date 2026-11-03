@@ -18,7 +18,7 @@ def test_defaults_identity_and_not_mutated():
     assert out is not src and out.tobytes() == before and api.apply_photo_edit(src, {}).tobytes() == before
     api.apply_photo_edit(src, {"brightness": 30, "contrast": -20, "scale": 150, "rotate": 33, "crop": (1, 1, 5, 5), "autoeffect": True})
     assert src.tobytes() == before and src.size == (60, 40)
-    assert api.DEFAULT_PHOTO_EDIT == {"brightness": 0, "contrast": 0, "scale": 100, "rotate": 0.0, "crop": None, "autoeffect": False}
+    assert api.DEFAULT_PHOTO_EDIT == {"brightness": 0, "contrast": 0, "scale": 100, "rotate": 0.0, "crop": None, "autoeffect": False, "portrait": False}
 
 def test_brightness_contrast():
     src = _grad(); m = _mean(src)
@@ -31,7 +31,7 @@ def test_brightness_contrast():
 def test_clamping_and_types():
     from badge_backend.services.photo_edit import normalize_params
     p = normalize_params({"brightness": 999, "contrast": "-80", "scale": 1, "rotate": 500, "autoeffect": 1, "crop": [1.4, 2, 3, 4], "junk": 5})
-    assert p == {"brightness": 50, "contrast": -50, "scale": 10, "rotate": 180.0, "crop": (1, 2, 3, 4), "autoeffect": True}
+    assert p == {"brightness": 50, "contrast": -50, "scale": 10, "rotate": 180.0, "crop": (1, 2, 3, 4), "autoeffect": True, "portrait": False}
     assert normalize_params({"scale": 9999})["scale"] == 400
     with pytest.raises(ValueError): normalize_params({"brightness": "abc"})
     with pytest.raises(ValueError): normalize_params({"crop": (0, 0, 0, 5)})
@@ -77,12 +77,12 @@ def test_detect_face_crop():
         x, y, w, h = r
         assert 0 <= x and 0 <= y and x + w <= img.width and y + h <= img.height
         assert abs(w / h - aspect) < 0.03
-    # лицо по центру кадра по горизонтали, 60–70% высоты (кадр помещается целиком)
+    # лицо по центру по горизонтали; маленькое фото → рамка уменьшена, макушка (Haar−0.25·fh) внутри (D42)
     import cv2, numpy as np
     from badge_backend.services.photo_edit import _classifier
     fx, fy, fw, fh = max(_classifier().detectMultiScale(np.asarray(img.convert("L")), 1.1, 5, minSize=(20, 20)), key=lambda f: f[2] * f[3])
     x, y, w, h = api.detect_face_crop(img, 0.75)
-    assert abs((x + w / 2) - (fx + fw / 2)) <= 2 and 0.6 <= fh / h <= 0.7 and y < fy
+    assert abs((x + w / 2) - (fx + fw / 2)) <= 2 and y <= fy - 0.25 * fh
 
 def test_detect_face_crop_clamps_big_frame():
     img = Image.open(FACE).crop((40, 10, 140, 90))   # лицо почти во весь кадр → кадр уменьшен и вписан
