@@ -115,10 +115,10 @@ for with_img in (False, True):
     chk(f"D36 [{tag}] в превью один столбец «Фото»", sum("фото" in h.lower() for h in hdr) == 1, hdr)
     pm = d.photo.pixmap(); chk(f"D36 [{tag}] превью фото показано", pm is not None and not pm.isNull(), d.photo.text())
     d.run(); app.processEvents(); p0 = a3.list_persons()[0]
-    rp = a3.resolve_photo_path(p0, "foto" if with_img else None, base_dir=PH)
+    rp = a3.resolve_photo_path(p0, "foto" if with_img else None)  # D39: копия в <проект>/photos/
     if with_img: chk(f"D36 [{tag}] импорт: фото в image-поле, photo_path пуст", p0["fields"].get("foto") and not p0.get("photo_path"), (p0["fields"], p0.get("photo_path")))
     else: chk(f"D36 [{tag}] импорт: фото в photo_path", bool(p0.get("photo_path")), p0.get("photo_path"))
-    chk(f"D36 [{tag}] resolve_photo_path(base=папка фото) → существующий файл", rp is not None and pathlib.Path(rp).is_file(), rp)
+    chk(f"D36 [{tag}] resolve_photo_path(база проекта, D39) → существующий файл", rp is not None and pathlib.Path(rp).is_file(), rp)
     d.done(0); a3.close()
 chk("D36 BackendAPI.import_file удалён", not hasattr(BackendAPI, "import_file"))
 callers = [f"{f.relative_to(ROOT)}" for f in list((ROOT / "ui").glob("*.py")) + [ROOT / "main.py"] if re.search(r"\bimport_file\(", f.read_text(encoding="utf-8"))]
@@ -139,6 +139,90 @@ legacy = [n for n, s in src_ui.items() if re.search(r"\.import_file\(", s) and n
 chk("Дубли: старый путь import_file не вызывается из ui/", not legacy, legacy)
 ph = [f"{n}:{i+1}" for n, s in src_ui.items() for i, l in enumerate(s.splitlines()) if re.search(r"""['"]photos['"]|photo_dir\s*/|base_dir\s*/\s*.*photo""", l)]
 chk("Фото: путь не вычисляется в ui/ вне resolve_photo_path", not ph, ph)
+
+# ---- D37 (QA): .db confirm только реальные новые поля; подсказка без image-поля ----
+from badge_backend.services import headers as _hdr, sources as _srcm, importer as _impm
+asked = []; dialogs.confirm_fields_hook = lambda new: (asked.append(list(new)), False)[1]
+a4 = BackendAPI(TMP / "d37.db", TMP); a4.upsert_field("last_name", "Фамилия", 0, data_type="text")
+dd = ImportDialog(a4, w); dd.set_file(str(TMP / "src.db")); dd.run(); app.processEvents()
+chk("D37 .db: подтверждение предлагает только ['extra']", asked == [["extra"]], asked)
+dialogs.confirm_fields_hook = None
+chk("D37 подсказка видна без image-поля", dd.no_image_hint.isVisibleTo(dd) and dd.no_image_hint.text() == "Добавьте поле типа Изображение в Менеджере полей", dd.no_image_hint.text())
+dd.done(0); a4.close()
+a5 = BackendAPI(TMP / "d37i.db", TMP); a5.upsert_field("foto", "Фото", 0, data_type="image")
+dd = ImportDialog(a5, w); dd.set_file(str(xp)); app.processEvents()
+chk("D37 подсказка скрыта при наличии image-поля", not dd.no_image_hint.isVisibleTo(dd))
+dd.done(0); a5.close()
+_ds = pathlib.Path(dialogs.__file__).read_text(encoding="utf-8") + pathlib.Path(dialogs.__file__).with_name("backend_api.py").read_text(encoding="utf-8")
+chk("D37 ui/ без своего списка служебных колонок (SERVICE_KEYS/PROJECT_COLS из Backend)", "SERVICE_KEYS" in _ds and "PROJECT_COLS" in _ds and not re.search(r"""\{\s*['"]photo_path['"]\s*,\s*['"]photo_config['"]""", _ds), "")
+
+# ---- D38 (QA): встроенная картинка xlsx ----
+import hashlib, shutil
+from openpyxl import Workbook
+from openpyxl.drawing.image import Image as XLImage
+def mk_xlsx(path):
+    g = TMP / "g_emb.png"; Image.new("RGB", (21, 33), (0, 128, 0)).save(g)
+    wb = Workbook(); ws = wb.active; ws.append(["Фамилия", "Снимок"]); ws.append(["Ёжиков", None]); ws.append(["Щукина", None])
+    ws.add_image(XLImage(str(g)), "B2"); wb.save(path); return path
+def opens(con, person, el):
+    p = bapi.resolve_photo_path(person, el, bapi.project_base_dir(con))
+    try:
+        with Image.open(p) as im: im.load(); return im.size
+    except Exception as e: return repr(e)
+for img in (True, False):
+    tag = "с image-полем" if img else "без image-поля"
+    pd = TMP / f"d38_{int(img)}"; pd.mkdir(); c = bapi.connect(pd / "p.db"); bapi.upsert_field(c, "last_name", "Фамилия")
+    if img: bapi.upsert_field(c, "a", "A", data_type="image"); bapi.upsert_field(c, "b", "B", data_type="image")
+    out = TMP / f"d38x_{int(img)}"; out.mkdir()
+    rep = bapi.import_rows(c, bapi.open_source(mk_xlsx(TMP / f"e{int(img)}.xlsx"))[0], *([{"Снимок": "b"}] if img else []), photo_dir=out)
+    p0, p1 = bapi.list_persons(c)
+    files = list((pd / "photos").iterdir()) if (pd / "photos").exists() else []
+    if img:
+        chk(f"D38 [{tag}] картинка → сопоставленное поле b, photo_path пуст, a пусто", str(p0["fields"].get("b", "")).startswith("photos/") and not p0["photo_path"] and not p0["fields"].get("a"), (p0["fields"], p0["photo_path"]))
+        chk(f"D38 [{tag}] фото открывается", opens(c, p0, "b") == (21, 33), opens(c, p0, "b"))
+    else:
+        chk(f"D38 [{tag}] картинка → photo_path (photos/…)", str(p0["photo_path"] or "").startswith("photos/"), p0["photo_path"])
+        chk(f"D38 [{tag}] фото открывается", opens(c, p0, None) == (21, 33), opens(c, p0, None))
+    chk(f"D38 [{tag}] без дублей хранения: 1 файл в photos/, 0 во временной папке, 2-я запись без фото", len(files) == 1 and list(out.iterdir()) == [] and not p1["photo_path"] and not any(p1["fields"].get(k) for k in ("a", "b")), f"photos={[f.name for f in files]}; tmp={list(out.iterdir())}")
+    c.close()
+
+# ---- D39 (QA): «Фото: папка» копируется; удаление исходника; отмена удаляет копии ----
+pd = TMP / "d39"; pd.mkdir(); c = bapi.connect(pd / "p.db"); bapi.upsert_field(c, "last_name", "Фамилия"); bapi.upsert_field(c, "pic", "Фото", data_type="image")
+sd = TMP / "d39src"; sd.mkdir(); Image.new("RGB", (40, 50), "navy").save(sd / "x.png"); h_src = hashlib.sha256((sd / "x.png").read_bytes()).hexdigest()
+cs = TMP / "d39.csv"; cs.write_text("Фамилия;Фото\nА;x.png\nБ;x.png\n", encoding="utf-8")
+bapi.import_rows(c, bapi.open_source(cs)[0], photo_dir=sd); shutil.rmtree(sd)
+ps = bapi.list_persons(c); v = [p["fields"].get("pic") for p in ps]
+chk("D39 путь в записи = photos/…, один файл на один исходник", all(str(x).startswith("photos/") for x in v) and v[0] == v[1] and len(list((pd / "photos").iterdir())) == 1, v)
+fa = pd / v[0]
+chk("D39 после удаления исходной папки фото открывается, байты = исходник", opens(c, ps[0], "pic") == (40, 50) and hashlib.sha256(fa.read_bytes()).hexdigest() == h_src, opens(c, ps[0], "pic"))
+c.close()
+# рендер в UI (превью карточки/формы) через BackendAPI.resolve_photo_path → QPixmap
+from PyQt6.QtGui import QPixmap
+a6 = BackendAPI(pd / "p.db", pd); rp = a6.resolve_photo_path(a6.list_persons()[0], "pic")
+pmx = QPixmap(str(rp)) if rp else QPixmap()
+chk("D39 после удаления исходника фото рендерится (QPixmap)", not pmx.isNull() and pmx.width() == 40, rp); a6.close()
+# отмена
+pd2 = TMP / "d39c"; pd2.mkdir(); c = bapi.connect(pd2 / "p.db"); bapi.upsert_field(c, "last_name", "Фамилия")
+sd2 = TMP / "d39src2"; sd2.mkdir()
+for i in range(3): Image.new("RGB", (10, 10), (i * 50, 0, 0)).save(sd2 / f"{i}.png")
+cs2 = TMP / "d39c.csv"; cs2.write_text("Фамилия;Фото\n" + "".join(f"Ч{i};{i}.png\n" for i in range(3)), encoding="utf-8")
+cnt = {"n": 0}
+def cancel_after():
+    cnt["n"] += 1; return cnt["n"] > 3
+r = bapi.import_rows(c, bapi.open_source(cs2)[0], photo_dir=sd2, cancel=cancel_after)
+left = list((pd2 / "photos").iterdir()) if (pd2 / "photos").exists() else []
+chk("D39 отмена: cancelled, 0 записей, копии в photos/ удалены", r.cancelled and not bapi.list_persons(c) and left == [], f"cancelled={r.cancelled}; ticks={cnt['n']}; left={[f.name for f in left]}")
+c.close()
+
+# ---- Дубли (D38/D39): логика сохранения фото только в Backend ----
+ui_copy = [f"{n}:{i+1}" for n, s in src_ui.items() for i, l in enumerate(s.splitlines()) if re.search(r"shutil\.copy|copyfile|write_bytes\(|\.save\(\s*os\.path\.join\([^)]*photos", l)]
+chk("Дубли: в ui/ нет своего копирования фото (только BackendAPI.save_photo)", not ui_copy, ui_copy)
+imp_src = pathlib.Path(_impm.__file__).read_text(encoding="utf-8")
+other = [i + 1 for i, l in enumerate(imp_src.splitlines()) if re.search(r"save_photo\(|shutil\.copy|copyfile|write_bytes\(", l)]
+ps_src = inspect.getsource(_impm._PhotoStore); ps_lines = set(range(inspect.getsourcelines(_impm._PhotoStore)[1], inspect.getsourcelines(_impm._PhotoStore)[1] + len(ps_src.splitlines())))
+chk("Дубли: в importer копирование/save_photo только внутри _PhotoStore", other and all(x in ps_lines for x in other), f"строки={other}")
+_imp_rec = inspect.getsource(_impm.import_records)
+chk("Дубли: import_records — единственная точка, все фото-поля через store.store", _imp_rec.count("_PhotoStore(") == 1 and "store.store(" in _imp_rec, "")
 
 w.close(); n_ok = sum(r[1] for r in RES)
 (ROOT / "reports/qa/e2e_stage13b_results.json").write_text(json.dumps(RES, ensure_ascii=False, indent=1), encoding="utf-8")

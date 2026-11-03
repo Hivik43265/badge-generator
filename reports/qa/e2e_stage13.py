@@ -52,8 +52,15 @@ for fmt in ("xlsx", "xls", "csv", "db"):
         f_ok = [g["fields"] for g in got] == [w_["fields"] for w_ in want]
         diff = [(i, {k: (w_["fields"].get(k), g["fields"].get(k)) for k in set(w_["fields"]) | set(g["fields"]) if w_["fields"].get(k) != g["fields"].get(k)}) for i, (w_, g) in enumerate(zip(want, got))]
         chk(f"RT-{fmt} D27: поля без strip при validate=False (кириллица, пустые, переносы, кавычки, ведущие нули)", rep.added == 3 and f_ok and not rep.errors, f"added={rep.added}, errors={rep.errors[:2]}, diff={[d for d in diff if d[1]] or 'нет'}")
-        chk(f"RT-{fmt} photo_path + photo_config", [(g["photo"], g["cfg"]) for g in got][:1] == [(want[0]["photo"], want[0]["cfg"])] and got[1]["photo"] is None,
-            [(g["photo"], g["cfg"]) for g in got])
+        # D39: photo_path = photos/<уникальное имя> в проекте цели, файл открывается, байты = исходник
+        _ph = got[0]["photo"] or ""; _abs = pathlib.Path(TMP / f"tgt_{fmt}.db").parent / _ph
+        try:
+            with Image.open(_abs) as _im: _im.load(); _opn = True
+        except Exception: _opn = False
+        _same = _abs.is_file() and _abs.read_bytes() == (PH / "фото_1.png").read_bytes()
+        chk(f"RT-{fmt} photo_path + photo_config (D39: photos/…, открывается, байты = исходник)",
+            _ph.startswith("photos/") and _opn and _same and got[0]["cfg"] == want[0]["cfg"] and got[1]["photo"] is None,
+            f"{[(g['photo'], g['cfg']) for g in got]}; opens={_opn}; bytes_eq={_same}")
         if fmt == "db":
             chk(f"RT-{fmt} print_mark / printed_at", [(g["mark"], g["printed"]) for g in got] == [(w_["mark"], w_["printed"]) for w_ in want],
                 f"ожидалось {[(w_['mark'], w_['printed']) for w_ in want]}, получено {[(g['mark'], g['printed']) for g in got]}")
