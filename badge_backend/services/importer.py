@@ -44,13 +44,34 @@ def _cell(v):
     elif isinstance(v, _dt.date): v = v.isoformat()
     return str(v).replace("\r\n", "\n").replace("\r", "\n").strip()
 
+def xls_rows(wb, sh) -> list[list]:
+    """Строки листа xlrd; даты (XL_CELL_DATE) → datetime, как у openpyxl."""
+    import xlrd
+    out = []
+    for r in range(sh.nrows):
+        row = []
+        for c in range(sh.ncols):
+            cell = sh.cell(r, c)
+            if cell.ctype == xlrd.XL_CELL_DATE:
+                try: row.append(xlrd.xldate.xldate_as_datetime(cell.value, wb.datemode))
+                except Exception: row.append(cell.value)
+            elif cell.ctype == xlrd.XL_CELL_BOOLEAN: row.append(bool(cell.value))
+            elif cell.ctype in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK): row.append(None)
+            else: row.append(cell.value)
+        out.append(row)
+    return out
+
 def read_table(path) -> tuple[list, list]:
-    """Прочитать файл → (headers, rows). Публичная, может использоваться Data."""
+    """Прочитать файл (.xlsx/.xlsm/.xls — первый лист, .csv/.txt) → (headers, rows). Публичная, может использоваться Data."""
     path = Path(path); suf = path.suffix.lower()
     if suf in (".xlsx", ".xlsm"):
         from openpyxl import load_workbook
         wb = load_workbook(path, read_only=True, data_only=True)
         rows = [list(r) for r in wb.active.iter_rows(values_only=True)]; wb.close()
+    elif suf == ".xls":
+        import xlrd
+        wb = xlrd.open_workbook(str(path))
+        rows = xls_rows(wb, wb.sheet_by_index(0)); wb.release_resources()
     elif suf in (".csv", ".txt"):
         raw = path.read_bytes()
         for enc in ("utf-8-sig", "cp1251"):
@@ -95,7 +116,12 @@ def _validate(records, photo_dir):
 class _Cancel(Exception):
     pass
 
-def _tick(progress, done, total):
+def _cancelled(cancel):
+    if cancel is None: return False
+    return bool(cancel.is_set() if hasattr(cancel, "is_set") else cancel())
+
+def _tick(progress, done, total, cancel=None):
+    if _cancelled(cancel): raise _Cancel
     if progress is not None and progress(done, total) is False: raise _Cancel
 
 def parse_file(path, mapping=None, labels=None):
@@ -103,10 +129,15 @@ def parse_file(path, mapping=None, labels=None):
     mapping — см. headers.map_headers (синонимы, ручное назначение, None/'' — исключить колонку).
     labels {key: label} — явные подписи для person_fields."""
     headers, rows = read_table(path)
+    return parse_rows(headers, rows, mapping, labels)
+
+def parse_rows(headers, rows, mapping=None, labels=None, first_row: int = 2):
+    """(headers, rows) → (records, labels); общий разбор для import_file и import_rows.
+    first_row — номер первой строки данных для '_row' (по умолчанию 2: заголовок=1)."""
     keys = map_headers(headers, mapping)
     labs = column_labels(headers, keys, mapping, labels)
     recs = []
-    for rn, raw in enumerate(rows, start=2):
+    for rn, raw in enumerate(rows, start=first_row):
         vals = [_cell(c) for c in raw]
         if all(v == "" for v in vals): continue
         rec = {"_row": rn}
@@ -134,6 +165,14 @@ def import_file(con, path, mapping=None, photo_dir=None, validate=True, *, label
                    report.cancelled=True, added=0.
     """
     recs, labs = parse_file(path, mapping, labels)
+    return import_records(con, recs, labs, photo_dir, validate, labels=labels, require_photo=require_photo,
+                          progress=progress)
+
+def import_records(con, recs, labs, photo_dir=None, validate=True, *, labels=None, require_photo=False,
+                   progress=None, cancel=None, extra=None) -> ImportReport:
+    """Общее ядро импорта (одна транзакция): валидация, person_fields, вставка persons.
+    cancel — callable() → True (или объект с is_set(), напр. threading.Event) — отмена с откатом.
+    extra  {idx: {'print_mark':…, 'printed_at':…}} — доп. колонки persons (импорт из проектной БД)."""
     rep = ImportReport()
     if validate: verrs, norm, rep.validator = _validate(recs, photo_dir)
     else: verrs, norm, rep.validator = {}, (lambda r: r), "off"
@@ -153,7 +192,7 @@ def import_file(con, path, mapping=None, photo_dir=None, validate=True, *, label
             for i, (k, lab) in enumerate(labs.items()):
                 con.execute("INSERT INTO person_fields(name,label,sort_order) VALUES (?,?,?) ON CONFLICT(name) DO "
                             + ("UPDATE SET label=excluded.label" if k in explicit else "NOTHING"), (k, lab, n0 + 1 + i))
-            _tick(progress, 0, total)
+            _tick(progress, 0, total, cancel)
             for idx, r in enumerate(recs):
                 if idx in verrs:
                     rep.skipped += 1
@@ -162,10 +201,12 @@ def import_file(con, path, mapping=None, photo_dir=None, validate=True, *, label
                     n = norm({k: v for k, v in r.items() if k != "_row"})
                     fields = {k: v for k, v in n.items() if k not in ("photo_path", "photo_config") and v != ""}
                     pc = normalize(n.get("photo_config")) if n.get("photo_config") else DEFAULT
-                    cur = con.execute("INSERT INTO persons(fields_json, photo_path, photo_config) VALUES (?,?,?)",
-                                      (json.dumps(fields, ensure_ascii=False), n.get("photo_path") or None, pc))
+                    ex = (extra or {}).get(idx) or {}
+                    cur = con.execute("INSERT INTO persons(fields_json, photo_path, photo_config, print_mark, printed_at) "
+                                      "VALUES (?,?,?,?,?)", (json.dumps(fields, ensure_ascii=False),
+                                      n.get("photo_path") or None, pc, int(bool(ex.get("print_mark"))), ex.get("printed_at")))
                     rep.added += 1; rep.ids.append(cur.lastrowid)
-                _tick(progress, idx + 1, total)
+                _tick(progress, idx + 1, total, cancel)
     except _Cancel:
         return ImportReport(validator=rep.validator, cancelled=True)
     return rep

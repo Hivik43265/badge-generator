@@ -322,3 +322,8 @@ def restore_db(target_path, backup_path) -> None:
         finally: dst.close()
     finally:
         src.close()
+
+# ---------- этап 13: импорт/экспорт таблиц и БД ----------
+from .services.sources import (Sheet, open_source, read_rows, auto_match, import_rows,  # noqa: F401
+                               save_mapping, load_mapping)
+from .services.table_export import export_persons, XLS_MAX_ROWS  # noqa: F401
