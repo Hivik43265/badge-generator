@@ -52,3 +52,14 @@ w/h ≈ aspect (округление). Нет лица → None. 800×800 ≈ 22
 ## Тесты
 tests/test_photo_edit.py (14), tests/test_d36_photo_column.py (10); номера версии схемы в старых тестах → 6.
 Фикстура лица: tests/fixtures/face_astronaut.jpg (NASA, public domain; источник — face_astronaut.SOURCE.txt).
+
+## Доработки по проверке Контролёра (D40, D41)
+- **D40** (59ce004): detect_face_crop считает запас от оценённой макушки: `head_top = haar_top − 0.30·fh`,
+  голова (макушка..низ Haar, 1.3·fh) = 65 % высоты кадра (`FACE_HEIGHT`), над макушкой 40 % свободного места (`TOP_SHARE`).
+  face_astronaut.jpg (200×200, Haar 70,26,37,37), aspect 0.75: было: запас 7 px от лба → стало (61, 5, 56, 74):
+  от верха Haar 21 px, от оценённой макушки (y≈14.9) ≈10 px; голова/кадр = 48.1/74 = 0.65. Тест: tests/test_d40_headroom.py.
+- **D41** (6be18c3): в DEFAULT_PHOTO_EDIT добавлен `"portrait": False` (bool; строки true/false/1/0/да/нет, иначе ValueError).
+  Хранится в project_settings key `photo_edit_defaults` (JSON) через `set_photo_edit_defaults(con, {..., "portrait": True})`,
+  читается `get_photo_edit_defaults(con)["portrait"]`; старые записи без ключа → False. На пиксели в apply_photo_edit
+  не влияет (флаг UI: кадрировать через detect_face_crop). Тест: tests/test_d41_portrait.py.
+- pytest 402 passed; e2e_stage13 67/67, e2e_stage13b 29/29 (e2e_stage14 в reports/qa не найден).
