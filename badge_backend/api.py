@@ -161,16 +161,22 @@ def list_field_links(con) -> dict[str, list[dict]]:
         out.setdefault(r[3], []).append({"element_id": r[0], "id": r[0], "type": r[1], "side": r[2], "label": r[4] or ""})
     return out
 
-_LINKABLE = ("field", "barcode", "qr")
+_LINKABLE = ("text", "field", "barcode", "qr")
 
 def link_field(con, element_id: int, field_name: str) -> bool:
-    """Привязать элемент типа field|barcode|qr к полю (поле должно существовать, иначе ValueError;
-    другой тип → ValueError). Нет элемента → False."""
+    """Привязать элемент типа text|field|barcode|qr к полю (поле должно существовать, иначе ValueError;
+    другой тип → ValueError). text → field (static_value очищается, style и геометрия сохраняются).
+    Нет элемента → False."""
     _need_field(con, field_name)
     r = con.execute("SELECT type FROM template_elements WHERE id=?", (element_id,)).fetchone()
     if r is None: return False
     if r[0] not in _LINKABLE: raise ValueError(f"тип {r[0]!r} нельзя привязать к полю (только {_LINKABLE})")
-    with con: con.execute("UPDATE template_elements SET field_name=? WHERE id=?", (field_name, element_id))
+    with con:
+        if r[0] == "text":
+            con.execute("UPDATE template_elements SET type='field', field_name=?, static_value=NULL WHERE id=?",
+                        (field_name, element_id))
+        else:
+            con.execute("UPDATE template_elements SET field_name=? WHERE id=?", (field_name, element_id))
     return True
 
 def _unlink(con, element_id, static_value):

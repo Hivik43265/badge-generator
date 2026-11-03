@@ -29,7 +29,7 @@ set_field_default(con, name, default_value) -> None    # None/'' — сброс;
 delete_field(con, name, *, unlink=True) -> bool        # unlink=False и поле используется → ValueError; нет поля → False
 list_fields(con) -> list[dict]                         # name, label, sort_order, default_value
 list_field_links(con) -> dict[str, list[dict]]         # field → [{"element_id", "id", "type", "side", "label"}]
-link_field(con, element_id, field_name) -> bool        # только field|barcode|qr; иначе ValueError; нет элемента → False
+link_field(con, element_id, field_name) -> bool        # text|field|barcode|qr; text → field (static_value=NULL, style/геометрия сохраняются); иначе ValueError; нет элемента → False
 unlink_field(con, element_id, static_value=None) -> bool   # field → text; barcode/qr остаются; static_value если задан
 create_element(con, "ellipse", x, y, w, h, style={"fill", "stroke", "stroke_width"})   # сигнатура прежняя
 ```
@@ -47,8 +47,13 @@ Condition = {"field": <имя из person_fields> | "id" | "print_mark" | "print
 - `order_by`: `id`, `printed_at`, `print_mark` или имя поля; префикс `-` — по убыванию.
 - Имена полей, op, join и order_by проверяются по белым спискам, значения — только параметры `?`. Ошибка → `ValueError`.
 
+## Решение Архитектора: link/unlink обратимы
+- `link_field` принимает и `text`: элемент становится `field`, static_value очищается, style и геометрия не меняются.
+- `unlink_field`: field → text (static_value — переданный или прежний), barcode/qr остаются своим типом.
+- Цикл link → unlink → link (и unlink со static_value) покрыт тестами для text, barcode, qr.
+
 ## Тесты
-- Новый файл `tests/test_stage12.py` — 27 тестов (миграция v3→v4, ellipse + golden `ellipse_mixed.png`, default_value в рендере/snapshot/QR, поля и связи, delete_persons/clear_printed, query_persons включая попытки инъекций, backup/vacuum/compact/restore).
+- Новый файл `tests/test_stage12.py` — 30 тестов (циклы link/unlink для text/barcode/qr, миграция v3→v4, ellipse + golden `ellipse_mixed.png`, default_value в рендере/snapshot/QR, поля и связи, delete_persons/clear_printed, query_persons включая попытки инъекций, backup/vacuum/compact/restore).
 - Обновлены проверки версии схемы (3 → 4) в старых тестах.
-- Полный прогон: `QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -v tests data_tools/tests` — **284 passed**.
+- Полный прогон: `QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -v tests data_tools/tests` — **287 passed**.
 - Golden `ellipse_mixed` без текста — от шрифтов не зависит, в Windows-deselect не добавлен.

@@ -121,7 +121,8 @@ def test_link_unlink_and_links():
     assert {k: [(e["element_id"], e["type"], e["side"]) for e in v] for k, v in L.items()} == \
         {"fio": [(f, "field", "front"), (q, "qr", "back")], "code": [(b, "barcode", "front")]}
     assert L["fio"][0]["label"] == "Иванов" and L["fio"][0]["id"] == f
-    with pytest.raises(ValueError): api.link_field(con, t, "fio")          # text — не привязывается
+    r = api.create_element(con, "rect", 0, 0, 10, 10)
+    with pytest.raises(ValueError): api.link_field(con, r, "fio")          # rect — не привязывается
     with pytest.raises(ValueError): api.link_field(con, f, "nope")
     assert api.link_field(con, 999, "fio") is False
     assert api.unlink_field(con, f)
@@ -258,3 +259,40 @@ def test_restore_db(tmp_path):
     with pytest.raises(ValueError): api.restore_db(tmp_path / "t3.db", zero)        # schema_version 0
     with pytest.raises(FileNotFoundError): api.restore_db(tmp_path / "t4.db", tmp_path / "missing.db")
     with pytest.raises(ValueError): api.restore_db(bk, bk)
+
+# ---------- цикл link → unlink → link (решение Архитектора) ----------
+def _el_by_id(con, i): return [x for x in api.list_elements(con) if x["id"] == i][0]
+_GEOM = ("x", "y", "w", "h", "side", "z_order", "style")
+
+def test_cycle_text():
+    con = api.connect(); api.upsert_field(con, "fio", "ФИО")
+    t = api.create_element(con, "text", 11, 22, 333, 44, side="back", z_order=3, static_value="Иванов",
+                           style={"font_size": 30, "bold": True})
+    g0 = {k: _el_by_id(con, t)[k] for k in _GEOM}
+    assert api.link_field(con, t, "fio")
+    e = _el_by_id(con, t); assert (e["type"], e["field_name"], e["static_value"]) == ("field", "fio", None)
+    assert {k: e[k] for k in _GEOM} == g0
+    assert api.unlink_field(con, t)
+    e = _el_by_id(con, t); assert (e["type"], e["field_name"], e["static_value"]) == ("text", None, None)
+    assert api.link_field(con, t, "fio") and _el_by_id(con, t)["type"] == "field"
+    assert api.unlink_field(con, t, static_value="Петров")
+    e = _el_by_id(con, t); assert (e["type"], e["field_name"], e["static_value"]) == ("text", None, "Петров")
+    assert api.link_field(con, t, "fio")
+    e = _el_by_id(con, t); assert (e["type"], e["field_name"], e["static_value"]) == ("field", "fio", None)
+    assert {k: e[k] for k in _GEOM} == g0
+    assert api.list_field_links(con)["fio"][0]["element_id"] == t
+
+@pytest.mark.parametrize("typ", ["barcode", "qr"])
+def test_cycle_barcode_qr(typ):
+    con = api.connect(); api.upsert_field(con, "code", "Код")
+    i = api.create_element(con, typ, 5, 6, 300, 300, static_value="111", style={"format": "code128"})
+    g0 = {k: _el_by_id(con, i)[k] for k in _GEOM}
+    for _ in range(2):
+        assert api.link_field(con, i, "code")
+        e = _el_by_id(con, i); assert (e["type"], e["field_name"]) == (typ, "code")
+        assert api.unlink_field(con, i)
+        e = _el_by_id(con, i); assert (e["type"], e["field_name"], e["static_value"]) == (typ, None, "111")
+    assert api.link_field(con, i, "code") and api.unlink_field(con, i, static_value="222")
+    e = _el_by_id(con, i); assert (e["type"], e["field_name"], e["static_value"]) == (typ, None, "222")
+    assert api.link_field(con, i, "code") and _el_by_id(con, i)["field_name"] == "code"
+    assert {k: _el_by_id(con, i)[k] for k in _GEOM} == g0
