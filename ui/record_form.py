@@ -14,18 +14,14 @@ DATE_FMT = "dd.MM.yyyy"
 validate_hook = None   # тесты: validate_hook(text) вместо QMessageBox
 
 
-class ImageFieldEdit(QWidget):
-    """Поле типа «Изображение»: путь + «Из файла…» (камера — в блоке «Фото» записи)."""
+class ImageFieldEdit(PhotoBlock):
+    """Поле типа «Изображение» (Backend 91b0208): блок камера / «Из файла…».
+    Значение поля — относительный путь, который вернул save_photo (снимок) или выбранный файл."""
     def __init__(self, value, base_dir, parent=None):
-        super().__init__(parent); self.base_dir = base_dir
-        self.edit = QLineEdit(value); b = QPushButton("Из файла…"); b.clicked.connect(self._pick)
-        l = QHBoxLayout(self); l.setContentsMargins(0, 0, 0, 0); l.addWidget(self.edit, 1); l.addWidget(b)
-        self.textChanged = self.edit.textChanged
-    def _pick(self):
-        p, _ = QFileDialog.getOpenFileName(self, "Изображение", self.base_dir or "", "Изображения (*.png *.jpg *.jpeg *.bmp)")
-        if p: self.edit.setText(p)
-    def text(self): return self.edit.text()
-    def setText(self, t): self.edit.setText(t)
+        super().__init__(base_dir, value, parent)
+        self.textChanged = self.changed
+    def text(self): return self.path or ""
+    def setText(self, t): self.path = t or ""; self.captured = None; self._show_still(); self.changed.emit(self.path)
 
 
 def make_editor(kind, value, base_dir=None):
@@ -86,8 +82,9 @@ class RecordForm(QDialog):
         if not self.edits:
             form.addRow(QLabel("Нет полей: создайте их в «Настр. поля» или импортируйте данные."))
 
+        self.image_edits = {n: e for n, e in self.edits.items() if getattr(e, "kind", "") == "image"}
         cfg = PhotoConfig.parse(self.person["photo_config"])
-        box = QGroupBox("Фото"); pf = QFormLayout(box)
+        box = QGroupBox("Фото записи (объекты «Фото» без поля)" if self.image_edits else "Фото"); pf = QFormLayout(box)
         self.photo_path = QLineEdit(self.person["photo_path"] or ""); self.photo_path.setReadOnly(True)
         self.photo_block = PhotoBlock(api.base_dir, self.person["photo_path"] or "", self)       # D22: камера / файл
         self.photo_block.changed.connect(lambda p: (self.photo_path.setText(p), self.update_preview()))
@@ -120,6 +117,9 @@ class RecordForm(QDialog):
         bb.button(QDialogButtonBox.StandardButton.Save).setText("Сохранить")
         bb.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
         bb.accepted.connect(self.save); bb.rejected.connect(self.reject)
+        # фото записи (persons.photo_path) нужно только объектам «Фото», не связанным с image-полем
+        unlinked = any(e["type"] == "photo" and not e.get("field_name") for e in api.list_elements())
+        self.photo_box = box; box.setVisible(not self.image_edits or unlinked)
         left = QVBoxLayout(); left.addLayout(form); left.addWidget(box); left.addStretch()
         main = QHBoxLayout(); main.addLayout(left); main.addLayout(pv)
         lay = QVBoxLayout(self); lay.addLayout(main); lay.addWidget(bb)
@@ -162,6 +162,8 @@ class RecordForm(QDialog):
             if validate_hook is not None: validate_hook(msg); return False
             QMessageBox.warning(self, "Проверка полей", f"Значения не соответствуют типу поля:\n{msg}"); return False
         try:
+            for n, e in self.image_edits.items():          # image-поле: save_photo без person_id → путь в значение поля
+                if e.captured: fields[n] = e.commit(self.api.save_photo, None) or ""
             photo = self.photo_block.commit(self.api.save_photo, self.person_id or None) if self.photo_block.captured \
                 else (self.photo_path.text() or None)
         except ValueError as e:
@@ -178,4 +180,11 @@ class RecordForm(QDialog):
             self.api.update_photo_config(self.person_id, self.config_string())   # только эта запись
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "Ошибка сохранения", str(e)); return
-        self.photo_block.stop(); self.accept()
+        self.stop_cameras(); self.accept()
+
+    def stop_cameras(self):
+        self.photo_block.stop()
+        for e in self.image_edits.values(): e.stop()
+
+    def reject(self):
+        self.stop_cameras(); super().reject()

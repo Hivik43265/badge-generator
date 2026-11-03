@@ -125,6 +125,40 @@ def scenario(tmp, chk, out, EXC):
         chk("DLG Менеджер полей открылся (Поле | Тип данных | Значение по умолчанию)",
             vis and cols == ["Поле", "Тип данных", "Значение по умолчанию"] and fm.tree.topLevelItemCount() > 0 and len(EXC) == n, cols)
         fm.reject(); spin(30)
+        # этап 13: экспорт данных (D34) и импорт (D31–D33, D35) на API Backend
+        keys = [fm.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole) for i in range(fm.tree.topLevelItemCount())]
+        chk("Менеджер полей: фото — поле типа image (нет постоянной строки «Фото», вариант а)",
+            all(k_ and k_[0] == "field" for k_ in keys) and "photo" in fm.LINKABLE, keys)
+        tm.stop()   # авто-закрыватель не должен закрывать проверяемые диалоги
+        try:
+            from . import dialogs as dlg
+            n = len(EXC); xl = tmp / "qa13.xlsx"; dbo = tmp / "qa13.db"
+            ed = dlg.ExportDialog(w2.api, [], w2, filtered_ids=[PID]); ed.m_data.setChecked(True); ed.show(); spin(50)
+            fm_ok = [ed.data_fmt.itemData(i) for i in range(ed.data_fmt.count())] == ["xlsx", "xls", "csv", "db"]
+            hint_xlsx = not ed.hint.isHidden(); ed.d_filtered.setChecked(True); ed.target.setText(str(xl)); r1 = ed.start()
+            ed.data_fmt.setCurrentIndex(3); hint_db = not ed.hint.isHidden(); ed.d_all.setChecked(True); ed.target.setText(str(dbo)); r2 = ed.start()
+            ed.close()
+            chk("DLG Экспорт данных: xlsx/xls/csv/db, отфильтрованные, подсказка D29 (не для .db)",
+                fm_ok and r1 and r2 and xl.exists() and dbo.exists() and hint_xlsx and not hint_db and len(EXC) == n,
+                f"xlsx={r1} db={r2} hint xlsx/db={hint_xlsx}/{hint_db}; {ed.status.text()[:120]}")
+            n = len(EXC); di = dlg.ImportDialog(w2.api, w2); di.set_file(str(xl)); di.show(); spin(50)
+            cols = [di.table.horizontalHeaderItem(i).text() for i in range(4)]
+            okb = di._save_binding(path=str(tmp / "qa13.json")) is not None and di._load_binding(path=str(tmp / "qa13.json"))
+            before = len(w2.api.list_persons()); di.run(); added = di.report.added if di.report else None
+            di.reject(); spin(30)
+            chk("DLG Импорт xlsx: «Поле БД | Тип | Сопоставлено | Колонка файла ▾», привязка, превью, импорт, sheet.close()",
+                cols == ["Поле БД", "Тип", "Сопоставлено", "Колонка файла ▾"] and okb and added == 1 and di.sheets == []
+                and len(w2.api.list_persons()) == before + 1 and di.preview.rowCount() == 1 and len(EXC) == n, f"{cols}; added={added}")
+            n = len(EXC); api3 = BackendAPI(str(tmp / "qa13_fresh.db"), base_dir=str(tmp)); dd = dlg.ImportDialog(api3, w2)
+            dd.set_file(str(dbo)); asked = []
+            dlg.confirm_fields_hook = lambda new: asked.append(new) or True; dd.run(); dlg.confirm_fields_hook = None
+            got = dd.report.added if dd.report else None; nf = len(api3.list_fields()); dd.reject(); api3.close()
+            chk("DLG Импорт .db: подтверждение → import_fields=True, поля созданы", bool(asked) and nf > 0 and got and len(EXC) == n,
+                f"новые поля={asked[:1]}; создано полей={nf}; добавлено={got}")
+        except Exception:  # noqa: BLE001
+            chk("DLG Импорт/экспорт этапа 13 без исключений", False, traceback.format_exc()[-800:])
+        finally:
+            tm.start()
         w2.close()
         # --- 3. добавить запись → текст на превью ---
         for tag, wf in (("поля_есть", True), ("без_person_fields", False)):

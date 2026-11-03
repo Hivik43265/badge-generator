@@ -133,7 +133,7 @@ class MainWindow(QMainWindow):
         self.act_open = A("act_open", "Открыть проект…", self.open_db, "open", "Ctrl+O", icon_text="Открыть")
         self.act_save_as = A("act_save_as", "Сохранить как…", self.save_as, "save", "Ctrl+Shift+S", icon_text="Сохранить\nкак…")
         self.act_import = A("act_import", "Импорт записей…", self.do_import, "import", "Ctrl+I", icon_text="Импорт")
-        self.act_export = A("act_export", "Экспорт PNG/PDF…", self.do_export, "export", "Ctrl+E", icon_text="Экспорт")
+        self.act_export = A("act_export", "Экспорт…", self.do_export, "export", "Ctrl+E", icon_text="Экспорт")
         self.act_settings = A("act_settings", "Настройки…", self.open_settings, "settings", "Ctrl+,", icon_text="Настройки")
         self.act_exit = A("act_exit", "Выход", self.close, "exit", "Ctrl+Q")
         # Главная
@@ -585,7 +585,7 @@ class MainWindow(QMainWindow):
         ImportDialog(self.api, self).exec(); self.refresh_all()
 
     def do_export(self):
-        ExportDialog(self.api, self.records.selected_ids(), self).exec()
+        ExportDialog(self.api, self.records.selected_ids(), self, filtered_ids=self.records.visible_ids()).exec()
 
     def do_print(self, _=False, printer=None, sides=("front", "back")):
         """QPrintDialog → предпроверка фото → snapshot (GUI) → print_snapshot в рабочем потоке.

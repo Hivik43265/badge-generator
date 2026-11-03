@@ -66,7 +66,8 @@ class PreviewPanel(QWidget):
         rows = []
         for e in self.api.list_elements():
             if e["type"] == "photo":
-                rows.append((f"{TYPE_NAMES['photo']} · {SIDE_NAMES[e['side']].lower()}", (p or {}).get("photo_path") or "—"))
+                lab = labels.get(e.get("field_name"), TYPE_NAMES["photo"]) if e.get("field_name") else TYPE_NAMES["photo"]
+                rows.append((f"{lab} · {TYPE_NAMES['photo']} · {SIDE_NAMES[e['side']].lower()}", self.api.photo_value(p, e) if p else "—"))
             elif e.get("field_name"):
                 rows.append((f"{labels.get(e['field_name'], e['field_name'])} · {TYPE_NAMES.get(e['type'], e['type'])} · "
                              f"{SIDE_NAMES[e['side']].lower()}", display_value(types.get(e["field_name"]), vals.get(e["field_name"], ""))))
@@ -146,7 +147,7 @@ class FieldManager(QDialog):
     """Менеджер полей (эталон reports/mockup/reference_field_manager.png): «Поле | Тип данных | Значение по умолчанию»;
     у поля — иконки стороны (F/B) и типа объекта; ниже «Описание» с легендой.
     Данные: list_fields / list_field_links; изменения — upsert_field, delete_field, set_field_default, link_field, unlink_field."""
-    LINKABLE = ("field", "text", "barcode", "qr")   # Backend 01a1768: text → field при связывании
+    LINKABLE = ("field", "text", "barcode", "qr", "photo")   # Backend 91b0208: photo ↔ только поле типа image
 
     def __init__(self, api: BackendAPI, parent=None):
         super().__init__(parent); self.api = api; self.setWindowTitle("Менеджер полей"); self.resize(720, 560)
@@ -182,16 +183,12 @@ class FieldManager(QDialog):
 
     def reload(self):
         """Плоский список: одна строка = одно поле. Значки: F/B (стороны, где поле есть на шаблоне) + тип объекта.
-        Несвязанное поле — без значков. Фото записи (photo_path; объекты «Фото» шаблона) — отдельная строка «Изображение»."""
+        Несвязанное поле — без значков. Фото — обычные поля data_type=image (Backend 91b0208), связь photo ↔ image через link_field."""
         from PyQt6.QtWidgets import QTreeWidgetItem
         self.tree.blockSignals(True); self.tree.clear()
         links = self.api.list_field_links(); els = self.api.list_elements()
         rows = [(f["label"] or f["name"], field_type(f), f.get("default_value"), ("field", f["name"]), links.get(f["name"], []))
                 for f in self.api.list_fields()]
-        if True:   # строка фото записи есть всегда
-            # фото записи — колонка persons.photo_path, к ней привязаны все объекты «Фото» шаблона (render: t == "photo")
-            rows.append((TYPE_NAMES.get("photo", "Фото"), "image", None, ("photo", "photo_path"),
-                         [{"side": e["side"], "type": "photo", "element_id": e["id"]} for e in els if e["type"] == "photo"]))
         for label, t, dv, key, ls in rows:
             it = QTreeWidgetItem(self.tree, [label, FIELD_TYPE_NAMES[t], display_value(t, dv)])
             it.setData(0, Qt.ItemDataRole.UserRole, key); it.setToolTip(0, key[1])
@@ -200,7 +197,7 @@ class FieldManager(QDialog):
                 blank = QPixmap(66, 20); blank.fill(Qt.GlobalColor.transparent); it.setIcon(0, QIcon(blank))   # без значков, выравнивание
             else:
                 sides = [s_ for s_ in ("front", "back") if any(e["side"] == s_ for e in ls)]
-                it.setIcon(0, _side_type_icon(sides, "image" if t == "image" and ls[0]["type"] == "photo" else ls[0]["type"]))
+                it.setIcon(0, _side_type_icon(sides, ls[0]["type"]))
         self.tree.blockSignals(False); self._sel()
 
     # объект на макете: выделенный в редакторе главного окна (или заданный тестом через set_element)
@@ -276,7 +273,11 @@ class FieldManager(QDialog):
     def _sel(self):
         fld = self.selected_field() is not None; e = self._element_info()
         self.b_rename.setEnabled(fld); self.b_delete.setEnabled(fld)
-        self.b_link.setEnabled(fld and e is not None and e["type"] in self.LINKABLE)
+        ok = fld and e is not None and e["type"] in self.LINKABLE
+        if ok:   # подсказка UI; окончательное правило — link_field (ValueError показывается как есть)
+            is_img = field_type(self._field(self.selected_field())) == "image"
+            ok = (e["type"] == "photo") == is_img
+        self.b_link.setEnabled(bool(ok))
         self.b_unlink.setEnabled(e is not None and bool(e.get("field_name")))
 
     def _edited(self, item, col):
@@ -294,7 +295,10 @@ class FieldManager(QDialog):
         try:
             r = self.api.link_field(eid, field_name)
         except ValueError as e:
-            QMessageBox.warning(self, "Связать поле", str(e)); return False
+            self.last_error = str(e)                                   # текст Backend как есть
+            if field_manager_hook is not None: field_manager_hook("error", self.last_error)
+            else: QMessageBox.warning(self, "Связать поле", self.last_error)
+            return False
         self.reload(); return r
 
     def unlink(self):

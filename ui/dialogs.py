@@ -9,9 +9,12 @@ from PyQt6.QtCore import QThread, pyqtSignal, Qt, QEventLoop
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QPushButton,
                              QFileDialog, QTableWidget, QTableWidgetItem, QComboBox, QPlainTextEdit,
                              QDialogButtonBox, QRadioButton, QCheckBox, QLabel, QHeaderView,
-                             QButtonGroup, QMessageBox, QProgressDialog, QApplication)
-from .backend_api import (person_caption, BackendAPI, LABELS, MissingPhotosError,
-                          export_png_from_snapshot, export_pdf_from_snapshot, print_snapshot)
+                             QButtonGroup, QMessageBox, QProgressDialog, QApplication, QProgressBar, QToolButton)
+from PyQt6.QtGui import QColor, QPixmap
+from .backend_api import (person_caption, BackendAPI, MissingPhotosError,
+                          export_png_from_snapshot, export_pdf_from_snapshot, print_snapshot,
+                          IMPORT_FORMATS, DATA_FORMATS, SHEET_KINDS, XLS_MAX_ROWS, FIELD_TYPE_NAMES, field_type,
+                          open_source, read_rows, save_mapping, load_mapping)
 
 AUTO, SKIP = "__auto__", "__skip__"
 # Хуки для тестов: confirm_hook(parent, ids, names) -> bool; progress_hook(QProgressDialog)
@@ -48,38 +51,94 @@ def confirm_missing_photos(parent, api: BackendAPI, ids):
 
 
 # ---------------- импорт ----------------
+NONE_COL = "—"
+PREVIEW_LIMIT = 200
+# Служебные цели сопоставления (колонки Backend D28 / фото); подписи — для таблицы «Поле БД»
+SERVICE_TARGETS = [("photo_path", "Фото записи (photo_path)", "Изображение"), ("photo_config", "Настройки фото", "Строка"),
+                   ("print_mark", "Отметка печати", "Да/Нет"), ("printed", "Напечатано", "Да/Нет"),
+                   ("printed_at", "Дата печати", "Дата"), ("__fio__", "ФИО (разбить на поля БД)", "Строка")]
+SERVICE_KEYS = {k for k, *_ in SERVICE_TARGETS}
+confirm_fields_hook = None   # тесты: confirm_fields_hook(new_fields) -> True (создать) | False (только существующие) | None (отмена)
+
+
 class ImportDialog(QDialog):
+    """Импорт: источник (.xlsx/.xls/.csv/.db) → лист → «Поле БД | Тип | Сопоставлено | Колонка файла ▾» → import_rows."""
+
     def __init__(self, api: BackendAPI, parent=None):
         super().__init__(parent)
-        self.api, self.report, self.headers = api, None, []
-        self.setWindowTitle("Импорт записей"); self.resize(820, 600)
-        self.file = QLineEdit(); self.photo_dir = QLineEdit()
+        self.api, self.report = api, None
+        self.sheets, self.headers, self.rows, self.fields, self.auto = [], [], [], [], {}
+        self.setWindowTitle("Импорт записей"); self.resize(1000, 680)
+        self.file = QLineEdit(); self.file.setReadOnly(True); self.file.setPlaceholderText("Файл .xlsx / .xls / .csv / .db")
+        self.photo_dir = QLineEdit(); self.photo_dir.setPlaceholderText("Папка с фото (необязательно)")
         bf = QPushButton("Обзор…"); bf.clicked.connect(self._pick_file)
         bd = QPushButton("Обзор…"); bd.clicked.connect(self._pick_dir)
-        self.require_photo = QCheckBox("Требовать фото (строки без фото пропускать)")
-        form = QFormLayout()
-        form.addRow("Файл (.xlsx/.csv):", self._row(self.file, bf)); form.addRow("Папка с фото:", self._row(self.photo_dir, bd))
-        form.addRow(self.require_photo)
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Колонка файла", "Поле записи", "Заголовок в таблице"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.log = QPlainTextEdit(readOnly=True); self.log.setPlaceholderText("Здесь будет отчёт об импорте")
-        self.btn = QPushButton("Импортировать"); self.btn.clicked.connect(self.run); self.btn.setEnabled(False)
-        close = QPushButton("Закрыть"); close.clicked.connect(self.accept)
+        self.sheet = QComboBox(); self.sheet.setMinimumWidth(200); self.sheet.currentIndexChanged.connect(lambda *_: self._load())
+        self.sheet_kind = QLabel()
+        self.use_header = QCheckBox("Временно использовать заголовок"); self.use_header.setChecked(True)
+        self.use_header.setToolTip("Первая строка листа — имена колонок. Снимите, если заголовка нет: колонки станут «Колонка 1…N»")
+        self.use_header.toggled.connect(lambda *_: self._load())
+        self.require_photo = QCheckBox("Требовать фото"); self.require_photo.setToolTip("Строки без фото не импортировать")
+        top = QHBoxLayout(); top.addWidget(QLabel("Источник:")); top.addWidget(self.file, 3); top.addWidget(bf)
+        top.addSpacing(10); top.addWidget(QLabel("Фото:")); top.addWidget(self.photo_dir, 2); top.addWidget(bd)
         act = getattr(parent, "act_field_manager", None)   # тот же QAction ленты, нового действия нет
         if act is not None:
-            from PyQt6.QtWidgets import QToolButton
             self.b_fields = QToolButton(); self.b_fields.setDefaultAction(act)
             self.b_fields.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly); self.b_fields.setText("Менеджер полей…")
             act.triggered.connect(self._fields_changed)
         else:
             self.b_fields = QPushButton("Менеджер полей…"); self.b_fields.clicked.connect(lambda: self.open_fields())
-        lay = QVBoxLayout(self); lay.addLayout(form); lay.addLayout(self._row(QLabel("Сопоставление колонок (только поля БД):"), self.b_fields))
-        lay.addWidget(self.table, 2); lay.addWidget(self.log, 1); lay.addLayout(self._row(self.btn, close, stretch=False))
+        top2 = QHBoxLayout(); top2.addWidget(QLabel("Лист:")); top2.addWidget(self.sheet); top2.addWidget(self.sheet_kind)
+        top2.addSpacing(10); top2.addWidget(self.use_header); top2.addWidget(self.require_photo); top2.addStretch(1)
+        top2.addWidget(self.b_fields)
+        # сопоставление
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Поле БД", "Тип", "Сопоставлено", "Колонка файла ▾"])
+        hh = self.table.horizontalHeader(); hh.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        # справа: значения выбранной строки + фото
+        self.values = QTableWidget(0, 2); self.values.setHorizontalHeaderLabels(["Колонка", "Значение"])
+        self.values.verticalHeader().setVisible(False); self.values.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.values.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.photo = QLabel("нет фото"); self.photo.setAlignment(Qt.AlignmentFlag.AlignCenter); self.photo.setFixedHeight(150)
+        self.photo.setStyleSheet("background:#F4F7F7; border:1px solid #D5DCDA; color:#7A8A8A;")
+        right = QVBoxLayout(); cap = QLabel("Выбранная строка файла"); cap.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        right.addWidget(cap); right.addWidget(self.photo); right.addWidget(self.values, 1)
+        mid = QHBoxLayout(); mid.addWidget(self.table, 3); mid.addLayout(right, 1)
+        # превью строк
+        self.preview = QTableWidget(0, 0); self.preview.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.preview.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.preview.currentCellChanged.connect(lambda r, *_: self._show_row(r))
+        self.log = QPlainTextEdit(readOnly=True); self.log.setPlaceholderText("Здесь будет отчёт об импорте"); self.log.setMaximumHeight(90)
+        # низ
+        self.progress = QProgressBar(); self.progress.setRange(0, 100); self.progress.setValue(0); self.progress.setFormat("%p%")
+        self.b_save = QPushButton("Сохранить привязку"); self.b_save.clicked.connect(self._save_binding)
+        self.b_load = QPushButton("Загрузить привязку"); self.b_load.clicked.connect(self._load_binding)
+        self.btn = QPushButton("Импорт"); self.btn.clicked.connect(self.run); self.btn.setEnabled(False); self.btn.setDefault(True)
+        self.b_close = QPushButton("Отмена"); self.b_close.clicked.connect(self.reject)
+        bottom = QHBoxLayout(); bottom.addWidget(QLabel("Ход импорта:")); bottom.addWidget(self.progress, 1)
+        for b in (self.b_save, self.b_load, self.btn, self.b_close): bottom.addWidget(b)
+        lay = QVBoxLayout(self); lay.addLayout(top); lay.addLayout(top2); lay.addLayout(mid, 3)
+        lay.addWidget(QLabel("Превью строк:")); lay.addWidget(self.preview, 2); lay.addWidget(self.log); lay.addLayout(bottom)
+
+    # ---- жизненный цикл: временные копии .db удаляет Sheet.close() ----
+    def close_sheets(self):
+        for sh in self.sheets:
+            try: sh.close()
+            except Exception: pass  # noqa: BLE001
+        self.sheets = []
+
+    def done(self, r):
+        self.close_sheets(); super().done(r)
+
+    def closeEvent(self, e):
+        self.close_sheets(); super().closeEvent(e)
 
     def _fields_changed(self, *_):
         try:
-            if self.isVisible() and self.file.text(): self.set_file(self.file.text())
+            if self.isVisible() and self.sheets: self._load()
         except RuntimeError:
             pass
 
@@ -87,17 +146,12 @@ class ImportDialog(QDialog):
         from .main_view import FieldManager, field_manager_hook
         fm = FieldManager(self.api, self)
         if field_manager_hook is None: fm.exec()
-        if self.file.text(): self.set_file(self.file.text())
+        if self.sheets: self._load()
         return fm
 
-    @staticmethod
-    def _row(*ws, stretch=True):
-        l = QHBoxLayout()
-        for i, w in enumerate(ws): l.addWidget(w, 1 if stretch and i == 0 else 0)
-        return l
-
+    # ---- источник ----
     def _pick_file(self):
-        p, _ = QFileDialog.getOpenFileName(self, "Файл импорта", "", "Таблицы (*.xlsx *.xlsm *.csv *.txt)")
+        p, _ = QFileDialog.getOpenFileName(self, "Источник импорта", "", IMPORT_FORMATS)
         if p: self.set_file(p)
 
     def _pick_dir(self):
@@ -105,62 +159,204 @@ class ImportDialog(QDialog):
         if d: self.photo_dir.setText(d)
 
     def set_file(self, path):
-        self.file.setText(path)
+        self.close_sheets()
         try:
-            headers = [str(h) if h is not None else "" for h in self.api.read_headers(path)]
+            self.sheets = open_source(path)
         except Exception as e:  # noqa: BLE001
-            QMessageBox.warning(self, "Импорт", f"Не удалось прочитать файл: {e}"); return
-        auto = self.api.auto_match(headers)            # Backend de864fc: только существующие поля БД
-        existing = {f["name"]: f["label"] for f in self.api.list_fields()}
-        # D24: сопоставлять можно только с существующими полями (Менеджер полей) + служебные фото-колонки
-        names = {**existing, "photo_path": "Фото (путь)", "photo_config": "Настройки фото", "print_mark": "Отметка печати",
-                 "__fio__": "ФИО (разбить на поля БД)"}
-        targets = [*existing, "photo_path", "photo_config", "print_mark", "__fio__"]
-        self.table.setRowCount(len(headers)); self.headers = headers
-        for r, (h, k) in enumerate(zip(headers, auto)):
-            it = QTableWidgetItem(h); it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable); self.table.setItem(r, 0, it)
-            cb = QComboBox()
-            cb.addItem(f"(авто: {names.get(k, k) if k else 'игнор'})", AUTO)
-            cb.addItem("— не импортировать —", SKIP)
-            for t in targets: cb.addItem(f"{names.get(t, t)} [{t}]", t)
-            if k and k not in names: cb.setCurrentIndex(1)   # авто-поля нет в БД → не импортировать
-            self.table.setCellWidget(r, 1, cb)
-            self.table.setItem(r, 2, QTableWidgetItem(""))   # пусто = label по умолчанию Backend
-        self.table.setToolTip("Третья колонка: свой заголовок поля (необязательно)")
-        self.btn.setEnabled(bool(headers))
+            self.file.setText(str(path)); self.log.setPlainText(f"Не удалось открыть источник: {e}"); self.btn.setEnabled(False)
+            return False
+        self.file.setText(str(path))
+        self.sheet.blockSignals(True); self.sheet.clear()
+        for sh in self.sheets: self.sheet.addItem(sh.name)
+        self.sheet.blockSignals(False)
+        self._load(); return True
+
+    def current_sheet(self):
+        i = self.sheet.currentIndex()
+        return self.sheets[i] if 0 <= i < len(self.sheets) else None
+
+    def is_db(self):
+        sh = self.current_sheet(); return sh is not None and sh.kind in ("project", "sqlite")
+
+    def _load(self):
+        sh = self.current_sheet()
+        if sh is None: return
+        self.sheet_kind.setText(f"({SHEET_KINDS.get(sh.kind, sh.kind)})")
+        self.use_header.setEnabled(not self.is_db())
+        try:
+            self.headers, self.rows = read_rows(sh, header=self.use_header.isChecked() or self.is_db(), limit=PREVIEW_LIMIT)
+        except Exception as e:  # noqa: BLE001
+            self.log.setPlainText(f"Не удалось прочитать лист: {e}"); return
+        auto = self.api.auto_match(self.headers)            # D26: только существующие поля БД
+        self.auto = {}
+        for h, k in zip(self.headers, auto):
+            if k and k not in self.auto: self.auto[k] = h
+        flds = self.api.list_fields()
+        self.fields = [(f["name"], f.get("label") or f["name"], FIELD_TYPE_NAMES[field_type(f)]) for f in flds] + \
+                      [t for t in SERVICE_TARGETS if t[0] != "__fio__" or "__fio__" in self.auto]
+        self.table.setRowCount(len(self.fields))
+        for r, (key, lab, typ) in enumerate(self.fields):
+            it = QTableWidgetItem(lab); it.setData(Qt.ItemDataRole.UserRole, key); it.setToolTip(key)
+            it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable); self.table.setItem(r, 0, it)
+            t = QTableWidgetItem(typ); t.setFlags(t.flags() & ~Qt.ItemFlag.ItemIsEditable); self.table.setItem(r, 1, t)
+            m = QTableWidgetItem(""); m.setFlags(Qt.ItemFlag.ItemIsEnabled); self.table.setItem(r, 2, m)
+            cb = QComboBox(); cb.addItem(NONE_COL, None)
+            for h in self.headers: cb.addItem(h, h)
+            if key in self.auto: cb.setCurrentIndex(cb.findData(self.auto[key]))
+            cb.currentIndexChanged.connect(lambda _i, r=r: self._changed(r))
+            self.table.setCellWidget(r, 3, cb); self._mark(r)
+        self.preview.clear(); self.preview.setColumnCount(len(self.headers)); self.preview.setHorizontalHeaderLabels(self.headers)
+        self.preview.setRowCount(len(self.rows))
+        for i, row in enumerate(self.rows):
+            for j in range(len(self.headers)):
+                self.preview.setItem(i, j, QTableWidgetItem(row[j] if j < len(row) else ""))
+        if self.rows: self.preview.selectRow(0); self._show_row(0)
+        else: self.values.setRowCount(0); self._set_photo(None)
+        self.btn.setEnabled(bool(self.headers)); self.progress.setValue(0)
+
+    def _combo(self, r): return self.table.cellWidget(r, 3)
+    def _keys(self): return [k for k, *_ in self.fields]
+
+    def _changed(self, r):
+        h = self._combo(r).currentData()
+        if h is not None:                                      # одна колонка — одно поле
+            for o in range(self.table.rowCount()):
+                if o != r and self._combo(o).currentData() == h:
+                    cb = self._combo(o); cb.blockSignals(True); cb.setCurrentIndex(0); cb.blockSignals(False); self._mark(o)
+        self._mark(r)
+
+    def _mark(self, r):
+        h = self._combo(r).currentData(); key = self.fields[r][0]
+        it = self.table.item(r, 2)
+        if h is None: it.setText(""); it.setForeground(QColor("#7A8A8A"))
+        else:
+            it.setText("✓ авто" if self.auto.get(key) == h else "✓ вручную"); it.setForeground(QColor("#1E7B4E"))
+
+    def _set_photo(self, pm):
+        if pm is not None and not pm.isNull():
+            self.photo.setPixmap(pm.scaled(110, 140, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        else:
+            self.photo.setPixmap(QPixmap()); self.photo.setText("нет фото")
+
+    def _show_row(self, r):
+        if not (0 <= r < len(self.rows)): return
+        row = self.rows[r]; self.values.setRowCount(len(self.headers))
+        for j, h in enumerate(self.headers):
+            a = QTableWidgetItem(h); a.setBackground(QColor("#E3F0FB"))
+            self.values.setItem(j, 0, a); self.values.setItem(j, 1, QTableWidgetItem(row[j] if j < len(row) else ""))
+        # фото: колонка, сопоставленная полю типа «Изображение» (вариант а), иначе photo_path
+        cands = [k for k, _l, t in self.fields if t == FIELD_TYPE_NAMES["image"] and k != "photo_path"] + ["photo_path"]
+        val = ""
+        for k in cands:
+            h = self.field_column(k)
+            if h in self.headers and self.headers.index(h) < len(row) and row[self.headers.index(h)]:
+                val = row[self.headers.index(h)]; break
+        if not val:   # поле-изображение ещё не создано (напр. .db до import_fields) — первая ячейка с файлом картинки
+            val = next((c for c in row if isinstance(c, str) and c.lower().endswith((".png", ".jpg", ".jpeg", ".bmp"))), "")
+        pm = None
+        if val:
+            import pathlib
+            p = pathlib.Path(val); src = pathlib.Path(self.file.text())
+            if not p.is_absolute():
+                bases = [self.photo_dir.text()] if self.photo_dir.text() else []
+                bases += [str(src.parent), str(src.parent / f"{src.stem}_photos")]
+                p = next((pathlib.Path(b) / p for b in bases if (pathlib.Path(b) / p).is_file()), pathlib.Path(bases[0]) / p)
+            pm = QPixmap(str(p))
+        self._set_photo(pm)
+
+    # ---- сопоставление ----
+    def field_column(self, field):
+        keys = self._keys()
+        return self._combo(keys.index(field)).currentData() if field in keys else None
 
     def set_target(self, header, target):
-        """target: ключ поля, None — исключить, AUTO — автоматически."""
-        r = self.headers.index(header); cb = self.table.cellWidget(r, 1)
-        cb.setCurrentIndex(cb.findData(SKIP if target is None else target))
+        """Колонку header → в поле target (None — не импортировать колонку)."""
+        for r in range(self.table.rowCount()):
+            if self._combo(r).currentData() == header: self._combo(r).setCurrentIndex(0)
+        if target is not None:
+            keys = self._keys()
+            if target not in keys: raise KeyError(target)
+            cb = self._combo(keys.index(target)); cb.setCurrentIndex(cb.findData(header))
 
     def mapping(self):
-        """{"Заголовок": "field" | None} — новый формат import_file(mapping=...)."""
+        """{"Заголовок": "field" | None} для import_rows(mapping=...): только отличия от auto_match."""
+        chosen = {self._combo(r).currentData(): k for r, k in enumerate(self._keys()) if self._combo(r).currentData() is not None}
+        auto = dict(zip(self.headers, self.api.auto_match(self.headers)))
         m = {}
-        for r, h in enumerate(self.headers):
-            t = self.table.cellWidget(r, 1).currentData()
-            if t == SKIP: m[h] = None
-            elif t != AUTO: m[h] = t
+        for h in self.headers:
+            if h in chosen:
+                if chosen[h] != auto.get(h): m[h] = chosen[h]
+            elif auto.get(h): m[h] = None
         return m or None
 
     def labels(self):
-        """{key: label} для заданных вручную заголовков (только для явно назначенных колонок)."""
-        out = {}
-        for r, h in enumerate(self.headers):
-            t = self.table.cellWidget(r, 1).currentData(); lab = self.table.item(r, 2).text().strip()
-            if lab and t not in (AUTO, SKIP, "photo_path", "photo_config", "__fio__"): out[t] = lab
-        return out or None
+        return None
 
+    def _save_binding(self, _=False, path=None):
+        if path is None:
+            path, _ = QFileDialog.getSaveFileName(self, "Сохранить привязку", "binding.json", "Привязка (*.json)")
+        if not path: return None
+        try:
+            p = save_mapping(path, self.mapping(), columns=self.headers)
+        except Exception as e:  # noqa: BLE001
+            self.log.setPlainText(f"Не удалось сохранить привязку: {e}"); return None
+        self.log.setPlainText(f"Привязка сохранена: {p}"); return p
+
+    def _load_binding(self, _=False, path=None):
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(self, "Загрузить привязку", "", "Привязка (*.json)")
+        if not path: return False
+        try:
+            data = load_mapping(path)
+        except Exception as e:  # noqa: BLE001  (Backend: чужой/битый файл → ValueError)
+            self.log.setPlainText(f"Не удалось загрузить привязку: {e}"); return False
+        m = data.get("mapping") if isinstance(data, dict) and "mapping" in data else data
+        self._load()                                           # сначала авто, затем отличия из файла
+        miss = []
+        for h, f in (m or {}).items():
+            if h not in self.headers: miss.append(h); continue
+            try: self.set_target(h, f)
+            except KeyError: miss.append(f"{h}→{f}")
+        self.log.setPlainText(f"Привязка загружена: {path}" + (f"\nНе применено (нет колонки/поля): {', '.join(miss)}" if miss else ""))
+        return True
+
+    def new_source_fields(self):
+        """Поля источника-проекта (.db), которых нет в текущем проекте."""
+        sh = self.current_sheet()
+        if sh is None or sh.kind != "project": return []
+        have = {f["name"] for f in self.api.list_fields()}
+        return [h for h in self.headers if h not in SERVICE_KEYS and h not in have]
+
+    def ask_import_fields(self):
+        """True — создать поля источника, False — только существующие, None — отмена."""
+        new = self.new_source_fields()
+        if not new: return False
+        if confirm_fields_hook is not None: return confirm_fields_hook(new)
+        mb = QMessageBox(QMessageBox.Icon.Question, "Импорт из базы проекта",
+                         "В базе-источнике есть поля, которых нет в текущем проекте:\n\n" + ", ".join(new)
+                         + "\n\nСоздать их (с типом и значением по умолчанию) и импортировать значения?", parent=self)
+        yes = mb.addButton("Создать поля", QMessageBox.ButtonRole.YesRole)
+        no = mb.addButton("Только существующие", QMessageBox.ButtonRole.NoRole)
+        mb.addButton("Отмена", QMessageBox.ButtonRole.RejectRole); mb.exec()
+        return True if mb.clickedButton() is yes else (False if mb.clickedButton() is no else None)
+
+    # ---- импорт ----
     def run(self):
+        sh = self.current_sheet()
+        if sh is None: self.log.setPlainText("Выберите источник"); return
+        imp_fields = self.ask_import_fields()
+        if imp_fields is None: self.log.setPlainText("Импорт отменён."); return
         pd = make_progress(self, "Импорт", "Импорт записей…")
         def progress(done, total):
             pd.setMaximum(max(total, 1)); pd.setValue(done)
+            self.progress.setValue(int(100 * done / max(total, 1)))
             QApplication.processEvents()
             return not pd.wasCanceled()
         try:
-            rep = self.api.import_file(self.file.text(), self.mapping(), self.photo_dir.text() or None,
-                                       labels=self.labels(), require_photo=self.require_photo.isChecked(),
-                                       progress=progress)
+            rep = self.api.import_rows(sh, self.mapping(), header=self.use_header.isChecked() or self.is_db(),
+                                       photo_dir=self.photo_dir.text() or None, labels=self.labels(),
+                                       require_photo=self.require_photo.isChecked(), progress=progress,
+                                       import_fields=bool(imp_fields))
         except Exception as e:  # noqa: BLE001
             self.log.setPlainText(f"Ошибка импорта: {e}"); return
         finally:
@@ -168,16 +364,22 @@ class ImportDialog(QDialog):
         self.report = rep
         lines = ["ИМПОРТ ОТМЕНЁН — изменения откатаны." if getattr(rep, "cancelled", False) else "Импорт завершён.",
                  f"Добавлено: {rep.added}", f"Пропущено: {rep.skipped}", f"Валидатор: {rep.validator}"]
-        fmt = lambda e: f"  строка {e.get('row')}: {e.get('field')} — {e.get('code')} {e.get('details') or ''}"
-        if rep.errors: lines += [f"Отклонено строк: {len({e.get('row') for e in rep.errors})} (не импортированы; FIELD_TYPE — неверный тип значения):", *map(fmt, rep.errors)]
+        if imp_fields: lines.append("Поля источника созданы в проекте (import_fields).")
+        fmt = lambda e: f"  строка {e.get('row')}: {e.get('field') or ''} — {e.get('code')} {e.get('details') or ''}"
+        if rep.errors:
+            lines += [f"Отклонено строк: {len({e.get('row') for e in rep.errors})} (не импортированы; FIELD_TYPE — неверный тип значения):",
+                      *map(fmt, rep.errors)]
         ws = list(getattr(rep, "warnings", None) or [])
-        if ws: lines += ["Предупреждения (строки импортированы, напр. пустое значение):", *map(fmt, ws)]
+        if ws: lines += ["Предупреждения (строки импортированы):", *map(fmt, ws)]
         if getattr(rep, "photo_issues", None):
-            lines += ["Проблемы с фото:", *(f"  {x}" if not isinstance(x, dict) else fmt(x) for x in rep.photo_issues)]
+            lines += ["Проблемы с фото:", *(f"  строка {x.get('row')}: {x.get('code')} {x.get('file') or ''}" if isinstance(x, dict) else f"  {x}"
+                                            for x in rep.photo_issues)]
         if getattr(rep, "skipped_columns", None):
-            lines += ["Колонки файла не импортированы (нет такого поля БД): " + ", ".join(map(str, rep.skipped_columns))]
+            cols = [(c.get("label") or c.get("key")) if isinstance(c, dict) else str(c) for c in rep.skipped_columns]
+            lines += ["Колонки файла не импортированы (нет такого поля БД): " + ", ".join(cols)]
         self.log.setPlainText("\n".join(lines))
-        if not getattr(rep, "cancelled", False): self.btn.setEnabled(False)
+        if not getattr(rep, "cancelled", False): self.btn.setEnabled(False); self.progress.setValue(100)
+        else: self.progress.setValue(0)
 
 
 # ---------------- фоновое выполнение по snapshot ----------------
@@ -257,12 +459,30 @@ EMPTY_TEMPLATE_WARNING = "Шаблон пуст — карточки вывед�
 
 
 # ---------------- экспорт ----------------
+D29_HINT = "Значения по умолчанию сохраняются только в .db"
+
+
 class ExportDialog(QDialog):
-    def __init__(self, api: BackendAPI, selected_ids=(), parent=None):
+    """Экспорт: карточки (PNG/PDF) или данные записей (.xlsx/.xls/.csv/.db, Backend export_persons)."""
+    DATA_FORMATS = DATA_FORMATS
+
+    def __init__(self, api: BackendAPI, selected_ids=(), parent=None, filtered_ids=None):
         super().__init__(parent)
         self.api, self.selected_ids = api, list(selected_ids)
+        self.filtered_ids = None if filtered_ids is None else list(filtered_ids)
         self.result, self.error = None, None
-        self.setWindowTitle("Экспорт карточек")
+        self.setWindowTitle("Экспорт")
+        self.m_cards, self.m_data = QRadioButton("Карточки (PNG / PDF)"), QRadioButton("Данные записей (.xlsx / .xls / .csv / .db)")
+        self.m_cards.setChecked(True); gm = QButtonGroup(self); gm.addButton(self.m_cards); gm.addButton(self.m_data)
+        self.data_fmt = QComboBox()
+        for k, t in self.DATA_FORMATS: self.data_fmt.addItem(t, k)
+        self.data_fmt.currentIndexChanged.connect(self._fmt_changed)
+        n_all = len(self.api.list_persons())
+        self.d_all = QRadioButton(f"Все записи ({n_all})")
+        n_f = len(self.filtered_ids) if self.filtered_ids is not None else n_all
+        self.d_filtered = QRadioButton(f"Только отфильтрованные ({n_f})")
+        self.d_all.setChecked(True); gd = QButtonGroup(self); gd.addButton(self.d_all); gd.addButton(self.d_filtered)
+        self.hint = QLabel(f"ⓘ {D29_HINT}"); self.hint.setStyleSheet("color:#9A5B00;"); self.hint.setWordWrap(True)
         self.png, self.pdf = QRadioButton("PNG (300 DPI, файл на сторону)"), QRadioButton("PDF (CR80, страница на сторону)")
         self.png.setChecked(True); g = QButtonGroup(self); g.addButton(self.png); g.addButton(self.pdf)
         self.front, self.back = QCheckBox("Лицевая"), QCheckBox("Оборотная"); self.front.setChecked(True); self.back.setChecked(True)
@@ -274,16 +494,73 @@ class ExportDialog(QDialog):
         self.target = QLineEdit(); b = QPushButton("Обзор…"); b.clicked.connect(self._pick)
         tr = QHBoxLayout(); tr.addWidget(self.target, 1); tr.addWidget(b)
         sides = QHBoxLayout(); sides.addWidget(self.front); sides.addWidget(self.back)
-        form = QFormLayout(); form.addRow("Формат:", self.png); form.addRow("", self.pdf)
-        form.addRow("Стороны:", sides); form.addRow("Записи:", self.scope); form.addRow("Куда:", tr)
+        mode = QHBoxLayout(); mode.addWidget(self.m_cards); mode.addWidget(self.m_data); mode.addStretch(1)
+        drec = QHBoxLayout(); drec.addWidget(self.d_all); drec.addWidget(self.d_filtered); drec.addStretch(1)
+        form = QFormLayout(); form.addRow("Что:", mode)
+        form.addRow("Формат:", self.png); form.addRow("", self.pdf)
+        form.addRow("Стороны:", sides); form.addRow("Записи:", self.scope)
+        form.addRow("Формат данных:", self.data_fmt); form.addRow("Записи данных:", drec); form.addRow("", self.hint)
+        form.addRow("Куда:", tr)
+        self.form = form
+        self.cards_rows = [self.png, self.pdf, sides, self.scope]; self.data_rows = [self.data_fmt, drec]
         self.status = QLabel(); self.status.setWordWrap(True)
         self.bb = QDialogButtonBox(); self.go = self.bb.addButton("Экспортировать", QDialogButtonBox.ButtonRole.AcceptRole)
         self.bb.addButton("Закрыть", QDialogButtonBox.ButtonRole.RejectRole)
         self.go.clicked.connect(self.start); self.bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self); lay.addLayout(form); lay.addWidget(self.status); lay.addWidget(self.bb)
+        self.m_data.toggled.connect(self._mode); self._mode()
+        self.setMinimumSize(620, 300)
+
+    def _mode(self, *_):
+        data = self.m_data.isChecked()
+        for w in self.cards_rows: self.form.setRowVisible(w, not data)
+        for w in self.data_rows: self.form.setRowVisible(w, data)
+        self._fmt_changed()
+        self.setWindowTitle("Экспорт данных" if data else "Экспорт карточек")
+
+    def _fmt_changed(self, *_):
+        """D29: в табличных форматах default_value полей не переносится."""
+        self.form.setRowVisible(self.hint, self.m_data.isChecked() and self.data_fmt.currentData() != "db")
+        t = self.target.text()
+        if self.m_data.isChecked() and t:
+            import pathlib
+            p = pathlib.Path(t)
+            if p.suffix.lower().lstrip(".") in {k for k, _ in self.DATA_FORMATS}:
+                self.target.setText(str(p.with_suffix("." + self.data_fmt.currentData())))
+
+    def data_ids(self):
+        if self.d_filtered.isChecked() and self.filtered_ids is not None: return list(self.filtered_ids)
+        return [p["id"] for p in self.api.list_persons()]
+
+    def start_data(self):
+        fmt, ids = self.data_fmt.currentData(), self.data_ids()
+        self.result = self.error = None
+        if not self.target.text():
+            self.status.setText("Укажите файл"); return False
+        if not ids:
+            self.status.setText("Нет записей для экспорта"); return False
+        if fmt == "xls" and len(ids) > XLS_MAX_ROWS:
+            self.error = ValueError(f"Слишком много записей для формата .xls: выбрано {len(ids)}, максимум {XLS_MAX_ROWS}. "
+                                    "Выберите формат .xlsx (Excel 2007+) — в нём ограничения нет.")
+            self.status.setText(f"Ошибка: {self.error}"); return False
+        try:
+            self.result = self.api.export_persons(self.target.text(), fmt, ids)
+        except Exception as e:  # noqa: BLE001  (ValueError .xls, FileExistsError .db …)
+            self.error = e
+            msg = f"Файл уже существует: {e}" if isinstance(e, FileExistsError) else str(e)
+            self.status.setText(f"Ошибка: {msg}"); return False
+        r = self.result
+        text = f"Экспорт данных: {r.get('rows')} записей → {r.get('path')}"
+        if r.get("files_copied") is not None: text += f"; файлов скопировано: {r['files_copied']}"
+        for wmsg in r.get("warnings") or []: text += f"\nПредупреждение: {wmsg}"
+        self.status.setText(text)
+        return True
 
     def _pick(self):
-        if self.pdf.isChecked():
+        if self.m_data.isChecked():
+            fmt = self.data_fmt.currentData()
+            p, _ = QFileDialog.getSaveFileName(self, "Файл данных", f"persons.{fmt}", f"*.{fmt}")
+        elif self.pdf.isChecked():
             p, _ = QFileDialog.getSaveFileName(self, "PDF-файл", "cards.pdf", "PDF (*.pdf)")
         else:
             p = QFileDialog.getExistingDirectory(self, "Папка для PNG")
@@ -299,6 +576,7 @@ class ExportDialog(QDialog):
         return [s for s, cb in (("front", self.front), ("back", self.back)) if cb.isChecked()]
 
     def start(self):
+        if self.m_data.isChecked(): return self.start_data()
         ids, sides = self.ids(), self.sides()
         self.result = self.error = None
         if not self.target.text() or not ids or not sides:

@@ -12,7 +12,7 @@ from badge_backend.api import get_schema_version
 from badge_backend import CARD_W_PX, CARD_H_PX  # noqa: F401
 from badge_backend.photo_config import PhotoConfig, DEFAULT as DEFAULT_PHOTO_CONFIG  # noqa: F401
 from badge_backend.services.importer import read_table, ImportReport  # noqa: F401
-from badge_backend.services.headers import map_headers, SYNONYMS, LABELS  # noqa: F401
+from badge_backend.services.headers import SYNONYMS, LABELS  # noqa: F401
 from badge_backend.api import MissingPhotosError  # noqa: F401
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -105,6 +105,16 @@ class BackendAPI:
     def save_photo(self, image_bytes, *, person_id=None, ext="jpg"):
         """Backend fa29d7d: файл в папку фото проекта → "photos/<name>"; с person_id сам пишет photo_path. ValueError — пусто/битые."""
         return _api.save_photo(self.con, image_bytes, person_id=person_id, ext=ext, base_dir=self.base_dir)
+
+    def resolve_photo_path(self, person, element=None):
+        """Backend 91b0208: значение привязанного image-поля, иначе persons.photo_path → абсолютный Path | None."""
+        return _api.resolve_photo_path(person, element, base_dir=self.base_dir)
+
+    def photo_value(self, person, element=None):
+        """Относительное значение фото для показа (image-поле элемента или photo_path)."""
+        fn = element if isinstance(element, str) else (element or {}).get("field_name")
+        v = ((person or {}).get("fields") or {}).get(fn) if fn else None
+        return v or (person or {}).get("photo_path") or ""
 
     def auto_match(self, columns, mapping=None):
         return _api.auto_match(columns, mapping, fields=self.con)
@@ -258,3 +268,31 @@ def desync_text(d):
     if d["template_fields"]: parts.append("в шаблоне есть поля без person_fields: " + ", ".join(d["template_fields"]))
     if d["person_keys"]: parts.append("в записях есть ключи без person_fields: " + ", ".join(d["person_keys"]))
     return ("⚠ Рассинхрон полей: " + "; ".join(parts)) if parts else ""
+# ---------------- Этап 13: источники импорта / экспорт данных (Backend: services.sources / table_export) ----------------
+from badge_backend.api import XLS_MAX_ROWS, Sheet  # noqa: E402,F401
+IMPORT_FORMATS = "Источники (*.xlsx *.xlsm *.xls *.csv *.txt *.db *.sqlite *.sqlite3)"
+DATA_FORMATS = [("xlsx", "Excel (.xlsx)"), ("xls", "Excel 97–2003 (.xls)"), ("csv", "CSV (.csv)"), ("db", "База проекта (.db)")]
+SHEET_KINDS = {"xlsx": "лист Excel", "xls": "лист Excel 97–2003", "csv": "CSV", "project": "БД проекта", "sqlite": "таблица SQLite"}
+
+
+def open_source(path): return _api.open_source(path)
+def read_rows(sheet, header=True, limit=None): return _api.read_rows(sheet, header=header, limit=limit)
+def save_mapping(path, mapping, columns=None): return _api.save_mapping(path, mapping or {}, columns=columns)
+def load_mapping(path): return _api.load_mapping(path)
+
+
+def _bapi_import_rows(self, sheet, mapping=None, **kw):
+    kw.setdefault("photo_dir", None)
+    return _api.import_rows(self.con, sheet, mapping, **kw)
+
+
+def _bapi_export_persons(self, path, fmt=None, ids=None, **kw):
+    return _api.export_persons(self.con, path, fmt, ids, **kw)
+
+
+def _bapi_auto_match_full(self, columns, mapping=None):
+    return _api.auto_match(columns, mapping, fields=self.con)
+
+
+BackendAPI.import_rows = _bapi_import_rows
+BackendAPI.export_persons = _bapi_export_persons

@@ -10,7 +10,7 @@ sys.path.insert(0, str(ROOT))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt, QEventLoop, QTimer, QSettings
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QPixmap, QImage, QColor
 from PyQt6.QtPrintSupport import QPrinter
 _cfg = tempfile.mkdtemp(prefix="bg_ui_cfg_")   # не трогать настройки пользователя
 QSettings.setPath(QSettings.Format.NativeFormat, QSettings.Scope.UserScope, _cfg)
@@ -53,15 +53,14 @@ ok("импорт: отмена через QProgressDialog → cancelled=True, н
 # --- импорт: mapping {header: field|None}, labels, require_photo=False ---
 api.upsert_field("department", "Отдел"); d.set_file(str(csv))   # D24: только существующие поля БД
 d.set_target("Комментарий", "department"); d.set_target("Мусор", None)
-d.table.item(d.headers.index("Комментарий"), 2).setText("Подразделение")
-assert d.mapping()["Комментарий"] == "department" and d.mapping()["Мусор"] is None and d.labels() == {"department": "Подразделение"}
+assert d.mapping() == {"Комментарий": "department"} and d.field_column("department") == "Комментарий", d.mapping()   # «Мусор» без поля → skipped_columns
 d.run(); rep = d.report
 assert not rep.cancelled and rep.added == 3 and rep.skipped == 0 and any(x["code"] == "REQUIRED_MISSING" for x in rep.warnings), rep   # Backend 39c7fca: пустое — только предупреждение
 assert "Предупреждения" in d.log.toPlainText()
 ok(f"импорт: added={rep.added} skipped={rep.skipped} errors={len(rep.errors)} warnings={len(rep.warnings)}")
 w.refresh_all(); m = w.records.model
 labels = [m.headerData(i, Qt.Orientation.Horizontal) for i in range(1, m.columnCount())]
-assert "Подразделение" in labels and not any("Мусор" in str(l) for l in labels), labels
+assert any(l in labels for l in ("Отдел", "Подразделение")) and not any("Мусор" in str(l) for l in labels), labels
 assert all("musor" not in p["fields"] for p in api.list_persons())
 ok(f"таблица: колонки {labels} (Мусор исключён, label задан)")
 # --- строгий режим require_photo ---
@@ -631,7 +630,6 @@ assert next(f for f in api.list_fields() if f["name"] == "position")["default_va
 links = api.list_field_links(); fld = next(k for k, v in links.items() if v)
 top = [fm.tree.topLevelItem(i) for i in range(fm.tree.topLevelItemCount())]
 assert all(t.childCount() == 0 for t in top) and not any(t.text(0) == "Не связаны" for t in top)      # плоский список
-assert [t.data(0, Qt.ItemDataRole.UserRole) for t in top if t.text(1) == "Изображение"], "строка фото обязательна"
 assert not any(t.text(0).startswith("~") for t in top)
 it = next(t for t in top if t.data(0, Qt.ItemDataRole.UserRole) == ("field", fld)); assert not it.icon(0).isNull()
 fm.tree.setCurrentItem(it); fm.set_element(None); assert not fm.b_link.isEnabled() and not fm.b_unlink.isEnabled()
@@ -649,6 +647,27 @@ assert fm.b_link.isEnabled() and not fm.b_unlink.isEnabled(); fm.link("employee_
 assert next(e for e in api.list_elements() if e["id"] == bc)["field_name"] == "employee_id"
 assert any(x["element_id"] == bc for x in api.list_field_links()["employee_id"])
 api.delete_element(bc); fm.set_element(None); fm.reload()
+# Backend 91b0208 (вариант а): фото — обычное поле data_type=image, photo ↔ image через link_field
+assert not any((t.data(0, Qt.ItemDataRole.UserRole) or ("",))[0] == "photo" for t in [fm.tree.topLevelItem(i) for i in range(fm.tree.topLevelItemCount())]), "постоянной строки «Фото» больше нет"
+from ui import main_view as _mv
+_errs = []; _mv.field_manager_hook = lambda kind, arg: _errs.append(arg) if kind == "error" else None
+img_f = fm.add_field("Фото сотрудника", "image"); it_img = next(fm.tree.topLevelItem(i) for i in range(fm.tree.topLevelItemCount())
+                                                              if fm.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole) == ("field", img_f))
+assert it_img.text(1) == "Изображение"
+ph_el = next(e for e in api.list_elements() if e["type"] == "photo")["id"]
+fm._select_field("position"); fm.set_element(ph_el); assert not fm.b_link.isEnabled()          # photo ↔ только image
+assert fm.link("position") is False and _errs and "изображ" in _errs[-1], _errs                 # текст ValueError Backend как есть
+fm._select_field(img_f); fm.set_element(ph_el); assert fm.b_link.isEnabled() and fm.link()
+assert any(x["element_id"] == ph_el and x["type"] == "photo" for x in api.list_field_links()[img_f])
+_mv.field_manager_hook = None
+from ui import record_form as _rfm
+_pid = api.list_persons()[0]["id"]; rf_i = _rfm.RecordForm(api, _pid, w); ie = rf_i.edits[img_f]
+assert isinstance(ie, _rfm.ImageFieldEdit) and hasattr(ie, "b_file")
+_q = QImage(120, 150, QImage.Format.Format_RGB32); _q.fill(QColor("#3A7BD5")); ie.set_captured(_q); rf_i.save()
+_v = api.get_person(_pid)["fields"][img_f]; assert _v.startswith("photos/") and (Path(api.base_dir) / _v).is_file(), _v
+_el = next(e for e in api.list_elements() if e["id"] == ph_el); assert Path(api.resolve_photo_path(api.get_person(_pid), _el)) == Path(api.base_dir) / _v
+fm.set_element(ph_el); fm.unlink(); fm.set_element(None); fm.reload()
+ok(f"фото = поле типа image «{img_f}»: photo↔image через link_field, ValueError показан как есть, камера в форме → save_photo → {_v}; resolve_photo_path")
 assert "Сотрудник" in fm.field_list_text()
 prn = QPrinter(); prn.setOutputFormat(QPrinter.OutputFormat.PdfFormat); prn.setOutputFileName(str(tmp / "fields.pdf"))
 assert fm.print_list(prn) and (tmp / "fields.pdf").stat().st_size > 0
@@ -718,6 +737,50 @@ f3 = rtm.RecordForm(api, None, w); assert "kafedra" in f3.edits and list(f3.edit
 w.records.select_id(new_id); spin(80); assert w.preview_panel.person_id == new_id
 w.preview_panel.grab().save(str(shots / "d19_preview.png"))
 ok(f"D19: колонки/форма = list_fields(); новая запись выделена, превью с текстом (Δ={diff} px), значения заполнены, «(пусто)» серым; рассинхрон {field_desync(api)} → предупреждение")
+# --- этап 13: импорт/экспорт на API Backend (open_source/read_rows/import_rows/export_persons) ---
+def not_elided(dlg):
+    for b in dlg.findChildren(QPushButton):
+        if b.isVisible(): assert b.width() >= b.sizeHint().width(), (b.text(), b.width(), b.sizeHint().width())
+assert w.act_import.text() == "Импорт записей…" and w.act_export.text() == "Экспорт…"
+pid13 = api.list_persons()[0]["id"]
+ed = ExportDialog(api, [], w, filtered_ids=[pid13]); ed.m_data.setChecked(True); ed.show(); spin(50)
+assert [ed.data_fmt.itemData(i) for i in range(ed.data_fmt.count())] == ["xlsx", "xls", "csv", "db"]
+assert not ed.png.isVisible() and ed.d_filtered.isVisible() and ed.hint.isVisible() and "только в .db" in ed.hint.text()
+ed.data_fmt.setCurrentIndex(3); assert not ed.hint.isVisible(); ed.data_fmt.setCurrentIndex(0)
+ed.d_filtered.setChecked(True); assert ed.data_ids() == [pid13]
+ed.target.setText(str(tmp / "out13.xlsx")); assert ed.start() is True and (tmp / "out13.xlsx").exists() and ed.result["rows"] == 1, ed.status.text()
+dialogs.XLS_MAX_ROWS, _xm = 0, dialogs.XLS_MAX_ROWS
+ed.data_fmt.setCurrentIndex(1); assert ed.target.text().endswith(".xls"); assert ed.start() is False and ".xls" in ed.status.text() and not (tmp / "out13.xls").exists()
+dialogs.XLS_MAX_ROWS = _xm
+ed.data_fmt.setCurrentIndex(2); assert ed.start() is True and (tmp / "out13.csv").exists()
+ed.d_all.setChecked(True); ed.data_fmt.setCurrentIndex(3); assert ed.start() is True and (tmp / "out13.db").exists()
+assert ed.start() is False and "существует" in ed.status.text()          # FileExistsError Backend → понятный текст
+not_elided(ed); ed.m_cards.setChecked(True); assert ed.png.isVisible() and not ed.hint.isVisible(); ed.close()
+ok("этап 13: экспорт данных xlsx/xls/csv/db (все/отфильтрованные), подсказка D29, лимит XLS_MAX_ROWS, FileExistsError")
+di = ImportDialog(api, w); assert di.set_file(str(tmp / "out13.xlsx")); di.resize(1000, 680); di.show(); spin(80)
+assert [di.table.horizontalHeaderItem(i).text() for i in range(4)] == ["Поле БД", "Тип", "Сопоставлено", "Колонка файла ▾"]
+assert [b.text() for b in (di.b_save, di.b_load, di.btn, di.b_close)] == ["Сохранить привязку", "Загрузить привязку", "Импорт", "Отмена"]
+assert di.b_fields.defaultAction() is w.act_field_manager and di.sheet.count() >= 1 and di.preview.rowCount() == 1
+f0 = api.list_fields()[0]
+assert di.field_column(f0["name"]) == f0["label"] and di.field_column("print_mark") == "Отметка печати"
+r_pm = di._keys().index("print_mark"); assert di.table.item(r_pm, 0).text() == "Отметка печати" and di.table.item(r_pm, 2).text() == "✓ авто"
+di.set_target(f0["label"], None); assert di.mapping() == {f0["label"]: None}, di.mapping()
+assert di._save_binding(path=str(tmp / "b13.json")); di._load(); assert di.mapping() is None
+assert di._load_binding(path=str(tmp / "b13.json")) and di.mapping() == {f0["label"]: None}
+(tmp / "bad.json").write_text("{}", encoding="utf-8"); assert di._load_binding(path=str(tmp / "bad.json")) is False and "Не удалось" in di.log.toPlainText()
+di.use_header.setChecked(False); assert di.headers[0] == "Колонка 1" and di.preview.rowCount() == 2; di.use_header.setChecked(True)
+n0 = len(api.list_persons()); di.run(); rep = di.report
+assert rep and rep.added == 1 and len(api.list_persons()) == n0 + 1 and "Добавлено: 1" in di.log.toPlainText(), di.log.toPlainText()
+di.reject(); assert di.sheets == []
+api2 = BackendAPI(str(tmp / "fresh13.db"), base_dir=str(tmp)); assert api2.list_fields() == []
+dd = ImportDialog(api2, w); dd.set_file(str(tmp / "out13.db")); sh = dd.current_sheet()
+assert sh.kind == "project" and dd.new_source_fields() and dd.is_db() and not dd.use_header.isEnabled()
+wp = sh.work_path; seen = []
+dialogs.confirm_fields_hook = lambda new: None; dd.run(); assert dd.report is None and "отменён" in dd.log.toPlainText()
+dialogs.confirm_fields_hook = lambda new: seen.append(new) or True; dd.run(); dialogs.confirm_fields_hook = None
+assert seen and dd.report.added == len(api.list_persons()) - 1 and {f["name"] for f in api2.list_fields()} >= {f0["name"]}, (dd.log.toPlainText(), api2.list_fields())
+dd.reject(); assert dd.sheets == [] and (wp is None or not Path(wp).exists()); api2.close()
+ok(f"этап 13: импорт xlsx (лист, заголовок, auto_match, «Отметка печати», привязка save/load/битая), .db → подтверждение → import_fields=True; sheet.close() при закрытии")
 # расположение окна сохраняется автоматически в closeEvent
 _cfg2 = tempfile.mkdtemp(prefix="bg_ui_cfg2_")
 QSettings.setPath(QSettings.Format.NativeFormat, QSettings.Scope.UserScope, _cfg2)

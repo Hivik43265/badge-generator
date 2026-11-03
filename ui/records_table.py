@@ -128,6 +128,9 @@ class PersonsModel(QAbstractTableModel):
             if role == Qt.ItemDataRole.UserRole: return path or ""
             if role == Qt.ItemDataRole.SizeHintRole: return QSize(THUMB + 8, THUMB + 4)
             return None
+        if kind == "field" and self.types.get(self.cols[c][2]) == "image" and role == Qt.ItemDataRole.DecorationRole:
+            rp = self.api.resolve_photo_path(p, self.cols[c][2])      # Backend 91b0208: значение image-поля
+            return self._thumb(str(rp)) if rp else None
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.UserRole):
             return self.text(index.row(), c)
         return None
