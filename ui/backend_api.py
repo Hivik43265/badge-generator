@@ -187,3 +187,20 @@ def export_pdf_from_snapshot(snap, out_path, base_dir, progress=None, allow_miss
 
 def print_snapshot(snap, printer, base_dir, progress=None, allow_missing_photo=False):
     return _api.print_snapshot(snap, printer, base_dir, progress=progress, allow_missing_photo=allow_missing_photo)
+
+
+# ---------------- D19: согласованность полей (адаптер; в Backend нужна check_field_consistency) ----------------
+def field_desync(api):
+    """{"person_keys": [...], "template_fields": [...]} — ключи записей без person_fields и field_name шаблона без поля.
+    Считается по публичным list_fields/list_persons/list_elements (без SQL)."""
+    names = {f["name"] for f in api.list_fields()}
+    keys = sorted({k for p in api.list_persons() for k in (p.get("fields") or {}) if k not in names})
+    tmpl = sorted({e["field_name"] for e in api.list_elements() if e.get("field_name") and e["field_name"] not in names})
+    return {"person_keys": keys, "template_fields": tmpl}
+
+
+def desync_text(d):
+    parts = []
+    if d["template_fields"]: parts.append("в шаблоне есть поля без person_fields: " + ", ".join(d["template_fields"]))
+    if d["person_keys"]: parts.append("в записях есть ключи без person_fields: " + ", ".join(d["person_keys"]))
+    return ("⚠ Рассинхрон полей: " + "; ".join(parts)) if parts else ""

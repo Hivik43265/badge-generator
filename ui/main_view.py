@@ -12,7 +12,8 @@ from .backend_api import BackendAPI, CARD_W_PX, CARD_H_PX
 from .layout_editor import element_caption
 from .records_table import format_printed_at
 
-from .backend_api import TYPE_NAMES, SIDE_NAMES
+from .backend_api import TYPE_NAMES, SIDE_NAMES, field_desync, desync_text
+EMPTY_VALUE = "(пусто)"
 from .ribbon import glyph
 
 
@@ -31,13 +32,15 @@ class PreviewPanel(QWidget):
             self.images[side] = lab; self.sides.addTab(lab, name)
         self.sides.currentChanged.connect(lambda i: self._fit())
         self.caption = QLabel(); self.caption.setStyleSheet("color:#4A5568;")
+        self.warning = QLabel(); self.warning.setWordWrap(True); self.warning.setStyleSheet("color:#9A3412; background:#FFF4E5; padding:3px;")
+        self.warning.hide()
         self.fields = QTableWidget(0, 2); self.fields.setHorizontalHeaderLabels(["Поле шаблона", "Значение из БД"])
         self.fields.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.fields.verticalHeader().setVisible(False)
         self.fields.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.fields.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         lay = QVBoxLayout(self); lay.setContentsMargins(4, 4, 4, 4)
-        lay.addWidget(self.title); lay.addWidget(self.sides, 3); lay.addWidget(self.caption); lay.addWidget(self.fields, 2)
+        lay.addWidget(self.title); lay.addWidget(self.sides, 3); lay.addWidget(self.caption); lay.addWidget(self.warning); lay.addWidget(self.fields, 2)
 
     @property
     def pixmap(self):
@@ -67,10 +70,17 @@ class PreviewPanel(QWidget):
                              f"{SIDE_NAMES[e['side']].lower()}", str(vals.get(e["field_name"], "") or "")))
         self.fields.setRowCount(len(rows))
         for r, (k, v) in enumerate(rows):
-            self.fields.setItem(r, 0, QTableWidgetItem(k)); self.fields.setItem(r, 1, QTableWidgetItem(v))
+            self.fields.setItem(r, 0, QTableWidgetItem(k))
+            it = QTableWidgetItem(v if v not in ("", "—") else EMPTY_VALUE)
+            if v in ("", "—") and p: it.setForeground(QColor("#9AA3AE")); it.setToolTip("В записи нет значения этого поля")
+            self.fields.setItem(r, 1, it)
+        self.desync = field_desync(self.api); t = desync_text(self.desync)
+        self.warning.setText(t); self.warning.setVisible(bool(t))
 
     def db_rows(self):
-        return [(self.fields.item(r, 0).text(), self.fields.item(r, 1).text()) for r in range(self.fields.rowCount())]
+        """[(поле, значение)]; пустое значение — "" (на экране — серым «(пусто)»)."""
+        return [(self.fields.item(r, 0).text(), "" if self.fields.item(r, 1).text() == EMPTY_VALUE else self.fields.item(r, 1).text())
+                for r in range(self.fields.rowCount())]
 
     def _fit(self):
         for side, lab in self.images.items():
@@ -207,7 +217,9 @@ class PrintQueueDialog(QDialog):
     def __init__(self, api: BackendAPI, parent=None):
         super().__init__(parent); self.setWindowTitle("Очередь печати"); self.resize(560, 380)
         self.api = api
-        self.table = QTableWidget(0, 4); self.table.setHorizontalHeaderLabels(["#", "ФИО", "Должность", "Напечатано"])
+        self.flds = [f for f in api.list_fields() if f["name"] != "logo"][:3]          # D19: из list_fields(), не хардкод
+        self.table = QTableWidget(0, 2 + len(self.flds))
+        self.table.setHorizontalHeaderLabels(["#", *[f["label"] or f["name"] for f in self.flds], "Напечатано"])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers); self.table.verticalHeader().setVisible(False)
         self.info = QLabel()
@@ -220,8 +232,7 @@ class PrintQueueDialog(QDialog):
         self.table.setRowCount(len(self.persons))
         for r, p in enumerate(self.persons):
             f = p["fields"]
-            vals = [str(p["id"]), " ".join(str(f.get(k) or "") for k in ("last_name", "first_name", "middle_name")).strip(),
-                    str(f.get("position") or ""), format_printed_at(p.get("printed_at"))]
+            vals = [str(p["id"]), *[str(f.get(x["name"]) or "") for x in self.flds], format_printed_at(p.get("printed_at"))]
             for c, v in enumerate(vals): self.table.setItem(r, c, QTableWidgetItem(v))
         self.info.setText(f"В очереди: {len(self.persons)}. Печать и снятие отметок — лента «База данных → Печать»."
                           if self.persons else "Очередь пуста — отметьте записи в колонке «Печать».")

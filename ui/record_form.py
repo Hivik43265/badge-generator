@@ -16,17 +16,21 @@ class RecordForm(QDialog):
         self.person = p or {"id": None, "fields": {}, "photo_path": None,
                             "photo_config": DEFAULT_PHOTO_CONFIG, "print_mark": 0}
         self.setWindowTitle(f"Запись #{person_id}" if p else "Новая запись")
-        fields = api.list_fields()
-        self._new_fields = []
-        if not fields:  # пустая БД: стандартные поля, создаются через upsert_field при сохранении
-            from .backend_api import LABELS
-            fields = [{"name": k, "label": v, "sort_order": i} for i, (k, v) in
-                      enumerate(list(LABELS.items())[:5])]
-            self._new_fields = fields
+        # Единственный источник набора полей — list_fields() (person_fields). Поля шаблона (field_name), которых нет
+        # в person_fields, показываются отдельно и регистрируются upsert_field при сохранении (D19: рассинхрон).
+        fields = list(api.list_fields())
+        known = {f["name"] for f in fields}
+        tmpl = list(dict.fromkeys(e["field_name"] for e in api.list_elements() if e.get("field_name") and e["field_name"] not in known))
+        base = max([f.get("sort_order") or 0 for f in fields] or [0]) + 1
+        self._new_fields = [{"name": n, "label": n, "sort_order": base + i} for i, n in enumerate(tmpl)]
         form = QFormLayout(); self.edits = {}
-        for f in fields:
-            e = QLineEdit(str(self.person["fields"].get(f["name"], "")))
-            self.edits[f["name"]] = e; form.addRow(f["label"] + ":", e)
+        for f in fields + self._new_fields:
+            e = QLineEdit(str(self.person["fields"].get(f["name"], "") or ""))
+            new = f in self._new_fields
+            if new: e.setToolTip("Поле есть в шаблоне, но нет в person_fields — будет создано при сохранении")
+            self.edits[f["name"]] = e; form.addRow((f["label"] or f["name"]) + (" (новое)" if new else "") + ":", e)
+        if not self.edits:
+            form.addRow(QLabel("Нет полей: создайте их в «Настр. поля» или импортируйте данные."))
 
         cfg = PhotoConfig.parse(self.person["photo_config"])
         box = QGroupBox("Фото"); pf = QFormLayout(box)
@@ -105,7 +109,7 @@ class RecordForm(QDialog):
         photo = self.photo_path.text() or None
         try:
             for f in self._new_fields:
-                self.api.upsert_field(f["name"], f["label"], f["sort_order"])
+                self.api.upsert_field(f["name"], f["label"], f["sort_order"])   # D19: поле шаблона → person_fields
             if self.person_id:
                 self.api.update_person(self.person_id, fields=fields, photo_path=photo)
             else:

@@ -514,7 +514,7 @@ w.show_main(); app.processEvents()
 assert w.stack.currentWidget() is w.db_page and w.splitter.widget(0) is w.records and w.splitter.widget(1) is w.preview_panel
 m = w.records.model; hdr = [m.headerData(c, Qt.Orientation.Horizontal) for c in range(m.columnCount())]
 lab = {f["name"]: f["label"] for f in api.list_fields()}
-assert hdr[:7] == ["Печать", "Логотип", "Фото", "ФИО", lab["position"], lab["department"], lab["employee_id"]] and hdr[-1] == "Напечатано", hdr
+assert hdr[:3] == ["Печать", "Логотип", "Фото"] and hdr[3:-1] == [f["label"] or f["name"] for f in api.list_fields() if f["name"] != "logo"] and hdr[-1] == "Напечатано", hdr
 ok(f"таблица: колонки {hdr}")
 pp = w.preview_panel
 people = api.list_persons(); a_id, b_id = people[0]["id"], people[1]["id"]
@@ -675,6 +675,42 @@ for i, t in enumerate(TABS):
     w.grab().save(str(shots / f"stage12_tab_{i + 1}.png"))
 w.resize(1024, 720); w.ribbon.select("Рисование"); spin(120); w.grab().save(str(shots / "stage12_1024.png"))
 ok("скриншоты: reports/stage12_tab_1..7.png, stage12_1024.png, stage12_field_manager.png")
+# --- D19: набор полей только из list_fields(); добавление → выделение, превью и значения ---
+from ui import records_table as rtm
+from ui.backend_api import field_desync
+ivan_db = tmp / "ivan.db"
+api.open_db(ivan_db)
+for i, (n, l) in enumerate([("familiya", "Фамилия"), ("imya", "Имя"), ("otchestvo", "Отчество"), ("fakultet", "Факультет")]):
+    api.upsert_field(n, l, i)
+    api.create_element(type="field", side="front", x=40, y=40 + 70 * i, w=600, h=60, field_name=n)
+w.refresh_all(); app.processEvents()
+empty = w.preview_panel.pixmaps["front"].toImage()
+assert [m.headerData(c, Qt.Orientation.Horizontal) for c in range(m.columnCount())] == ["Печать", "Фамилия", "Имя", "Отчество", "Факультет", "Напечатано"]
+vals = {"familiya": "Иванова", "imya": "Мария", "otchestvo": "Петровна", "fakultet": "Физмат"}
+def fill(f):
+    assert list(f.edits) == list(vals), list(f.edits)
+    for k, v in vals.items(): f.edits[k].setText(v)
+    f.save(); return f.result() == 1
+rtm.form_hook = fill; new_id = w.records._open_form(None); rtm.form_hook = None; spin(50)
+assert w.records.selected_ids() == [new_id] and w.preview_panel.person_id == new_id
+img = w.preview_panel.pixmaps["front"].toImage(); assert img != empty                       # текст отрисован
+diff = sum(1 for x in range(0, img.width(), 4) for y in range(0, img.height(), 4) if img.pixel(x, y) != empty.pixel(x, y))
+assert diff > 50, diff
+rows = dict(w.preview_panel.db_rows())
+assert [v for k, v in rows.items() if "Поле" in k] == list(vals.values()), rows
+api.update_person(new_id, fields={"familiya": "Иванова", "imya": "", "otchestvo": "Петровна", "fakultet": "Физмат"}); w.preview_panel.refresh()
+it = next(w.preview_panel.fields.item(r, 1) for r in range(w.preview_panel.fields.rowCount()) if w.preview_panel.fields.item(r, 0).text().startswith("Имя"))
+assert it.text() == "(пусто)" and it.foreground().color().name() == "#9aa3ae"
+assert w.preview_panel.warning.isHidden() and field_desync(api) == {"person_keys": [], "template_fields": []}
+# старая БД: ключ записи без person_fields и field_name шаблона без поля → предупреждение
+api.create_person({"familiya": "Старая", "fio": "Старая Запись"}); api.create_element(type="field", side="back", x=10, y=10, w=300, h=50, field_name="kafedra")
+w.refresh_all(); app.processEvents()
+assert field_desync(api) == {"person_keys": ["fio"], "template_fields": ["kafedra"]}
+assert not w.preview_panel.warning.isHidden() and "kafedra" in w.preview_panel.warning.text() and "fio" in w.preview_panel.warning.text()
+f3 = rtm.RecordForm(api, None, w); assert "kafedra" in f3.edits and list(f3.edits)[:4] == list(vals); f3.close()
+w.records.select_id(new_id); spin(80); assert w.preview_panel.person_id == new_id
+w.preview_panel.grab().save(str(shots / "d19_preview.png"))
+ok(f"D19: колонки/форма = list_fields(); новая запись выделена, превью с текстом (Δ={diff} px), значения заполнены, «(пусто)» серым; рассинхрон {field_desync(api)} → предупреждение")
 # расположение окна сохраняется автоматически в closeEvent
 _cfg2 = tempfile.mkdtemp(prefix="bg_ui_cfg2_")
 QSettings.setPath(QSettings.Format.NativeFormat, QSettings.Scope.UserScope, _cfg2)

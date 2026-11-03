@@ -32,15 +32,13 @@ def format_printed_at(value) -> str:
     return dt.strftime("%d.%m.%Y %H:%M")
 
 
-FIO_PARTS = ("last_name", "first_name", "middle_name")
-# Предпочтительный порядок колонок (только порядок; колонки появляются, лишь если такие поля есть в list_fields)
-PREFERRED = ("position", "department", "employee_id", "barcode")
+form_hook = None   # тесты: form_hook(RecordForm) -> bool вместо exec()
 THUMB = 36
 
 
 class PersonsModel(QAbstractTableModel):
     queue_toggle_requested = pyqtSignal(int)
-    """Колонки: Печать | [Логотип] | [Фото] | [ФИО] | поля в предпочтительном порядке, затем прочие | Напечатано."""
+    """Колонки: Печать | [Логотип] | [Фото] | поля list_fields() в его порядке | Напечатано."""
 
     def __init__(self, api: BackendAPI, parent=None):
         super().__init__(parent)
@@ -65,14 +63,8 @@ class PersonsModel(QAbstractTableModel):
             cols.append(("logo", "Логотип", None))
         if any(p.get("photo_path") for p in self.rows):
             cols.append(("photo", "Фото", None))
-        used = set()
-        fio = [n for n in FIO_PARTS if n in names]
-        if fio:
-            cols.append(("fio", "ФИО", fio)); used.update(fio)
-        for n in PREFERRED:
-            if n in names: cols.append(("field", label[n], n)); used.add(n)
-        for n in names:
-            if n not in used and n != "logo": cols.append(("field", label[n], n))
+        for n in names:                                   # D19: ровно list_fields(), в его порядке
+            if n != "logo": cols.append(("field", label[n] or n, n))
         cols.append(("printed", PRINTED_LABEL, None))
         return cols
 
@@ -107,7 +99,6 @@ class PersonsModel(QAbstractTableModel):
 
     def text(self, row, c):
         p = self.rows[row]; kind, _l, n = self.cols[c]
-        if kind == "fio": return " ".join(str(p["fields"].get(x, "") or "") for x in n).strip()
         if kind == "field": return str(p["fields"].get(n, "") or "")
         if kind == "printed": return format_printed_at(p.get("printed_at"))
         if kind == "photo": return os.path.basename(p.get("photo_path") or "")
@@ -317,8 +308,22 @@ class RecordsWidget(QWidget):
             self._open_form(ids[0])
 
     def _open_form(self, pid):
-        if RecordForm(self.api, pid, self).exec():
-            self.model.reload()
+        """После сохранения: перечитать модель, выделить новую/изменённую строку (→ превью и таблица значений)."""
+        f = RecordForm(self.api, pid, self)
+        ok = form_hook(f) if form_hook is not None else f.exec()
+        if ok:
+            self.model.reload(); self.select_id(f.person_id)
+            return f.person_id
+        return None
+
+    def select_id(self, pid):
+        r = self.model.row_of(pid)
+        if r < 0: return False
+        pr = self.proxy.mapFromSource(self.model.index(r, 0)).row()
+        if pr < 0:                                         # скрыта фильтром — показать все
+            self.proxy.set_ids(None); pr = self.proxy.mapFromSource(self.model.index(r, 0)).row()
+        self.view.clearSelection(); self.view.selectRow(pr); self.view.scrollTo(self.proxy.index(pr, 0))
+        return True
 
     def delete(self):
         """Удаление карт — только после подтверждения. Возвращает число удалённых."""
