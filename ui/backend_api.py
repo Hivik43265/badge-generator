@@ -352,10 +352,12 @@ def _bapi_set_photo_edit_defaults(self, params):
     return fn(self.con, {**params, "crop": None})
 
 
-def _bapi_apply_and_save_photo(self, source_path, params, *, person_id=None, field_name=None):
+def _bapi_apply_and_save_photo(self, source_path, params, *, person_id=None, field_name=None, size=None, target_field=None):
+    """D44/D45: target_field (имя image-поля) и size=(w, h) передаются Backend — размер результата считает Backend."""
+    kw = {k: v for k, v in (("size", size), ("target_field", target_field)) if v is not None}
     fn = getattr(_api, "apply_and_save_photo", None)
     if fn is None: raise ValueError("применение недоступно: в Backend нет apply_and_save_photo")
-    return fn(self.con, source_path, dict(params), person_id=person_id, field_name=field_name, base_dir=self.base_dir)
+    return fn(self.con, source_path, dict(params), person_id=person_id, field_name=field_name, base_dir=self.base_dir, **kw)
 
 
 def _backend_fn(name):
