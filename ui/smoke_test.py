@@ -783,22 +783,39 @@ dd.reject(); assert dd.sheets == [] and (wp is None or not Path(wp).exists()); a
 ok(f"этап 13: импорт xlsx (лист, заголовок, auto_match, «Отметка печати», привязка save/load/битая), .db → подтверждение → import_fields=True; sheet.close() при закрытии")
 # ===== этап 14: редактор фото (двойной клик / контекстное меню, ползунки, рамка, Портрет, умолчания, Применить) =====
 from PyQt6.QtTest import QTest
-from PyQt6.QtCore import QPointF
+from PyQt6.QtCore import QPointF, QRectF
 from ui import photo_editor as pe
 from ui import backend_api as _ba14
 import shutil
 api14 = BackendAPI(str(tmp / "s14.db"), base_dir=str(tmp)); api14.upsert_field("foto", "Фото", 0, data_type="image")
 _pe = api14.create_element(type="photo", x=0, y=0, w=300, h=400); api14.link_field(_pe, "foto")
+# пропорции — только Backend photo_edit_target; пока функции нет в Backend — тестовая подмена НА ЭКЗЕМПЛЯРЕ api14
+_REAL_TARGET = _ba14._backend_fn("photo_edit_target") is not None
+if not _REAL_TARGET:
+    api14.photo_edit_target = lambda fn: {"aspect": 0.75, "size": (300, 400), "element_id": _pe} if fn == "foto" else None
+_REAL_SESSION = _ba14._backend_fn("PhotoSession") is not None
 _face = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "face_astronaut.jpg"
 if _face.is_file(): shutil.copy(_face, tmp / "p14.jpg")
 else: demo.make_photo(tmp / "p14.jpg")
 rf14 = RecordForm(api14, None, w); ie14 = rf14.edits["foto"]; rf14.show(); spin(30)
-assert abs(ie14.aspect - 0.75) < 1e-6 and not ie14.act_edit.isEnabled()
+assert not ie14.act_edit.isEnabled() and not hasattr(ie14, "aspect")
 got14 = []; pe.editor_hook = lambda d: got14.append(d) or 0
 ie14.from_file(str(tmp / "p14.jpg")); spin(30); assert not got14 and ie14.editor is None       # после файла сам не открывается
 assert ie14.act_edit in ie14.still.actions() and ie14.act_edit.isEnabled()                   # тот же QAction в контекстном меню
 QTest.mouseDClick(ie14.still, Qt.MouseButton.LeftButton); spin(30); ed14 = got14[-1]
-assert ed14.windowTitle() == "Редактировать изображение"
+assert ed14.windowTitle() == "Редактировать изображение" and ed14.field_name == "foto"
+assert abs(ed14.aspect - api14.photo_edit_target("foto")["aspect"]) < 1e-9 and abs(ed14.aspect - 0.75) < 1e-3   # из Backend
+# пропорции: нет функции Backend / нет фото-элемента → статус, рамки нет, своих пропорций не выдумываем
+_api_nt = BackendAPI(str(tmp / "s14nt.db"), base_dir=str(tmp))
+if not _REAL_TARGET:
+    _ednt = pe.PhotoEditor(str(tmp / "p14.jpg"), _api_nt, None, field_name="foto")
+    assert _ednt.aspect is None and _ednt.frame.aspect is None and "Нет функции Backend для пропорций" in _ednt.status.text(); _ednt.reject()
+_api_nt.photo_edit_target = lambda fn: None
+_ednt = pe.PhotoEditor(str(tmp / "p14.jpg"), _api_nt, None, field_name="foto")
+assert _ednt.aspect is None and not _ednt.portrait.isEnabled() and "К полю не привязан фото-элемент шаблона" in _ednt.status.text()
+_r = _ednt.frame.rect(); _ednt.frame.resize_corner("br", QPointF(_r.left() + 50, _r.top() + 120), _r)      # свободная рамка
+assert (round(_ednt.frame.rect().width()), round(_ednt.frame.rect().height())) == (50, 120), _ednt.frame.rect()
+_ednt.reject(); _api_nt.close()
 assert [b.text() for b in (ed14.b_apply, ed14.b_cancel)] == ["Применить", "Отмена"] and "УгЧ" not in " ".join(b.text() for b in ed14.findChildren(QPushButton))
 assert [(ed14.sp[k].minimum(), ed14.sp[k].maximum()) for k in ("brightness", "contrast", "scale", "rotate")] == [(-50, 50), (-50, 50), (10, 400), (-180, 180)]
 r0 = ed14.frame.rect(); assert abs(r0.width() / r0.height() - 0.75) < 1e-3 and ed14.frame.pen().style() == Qt.PenStyle.DashLine
@@ -814,7 +831,7 @@ if _ba14.photo_edit_available():
     # умолчания проекта — Backend get/set_photo_edit_defaults
     assert ed14.save_defaults()["brightness"] == 20 and api14.get_photo_edit_defaults()["brightness"] == 20
     ed14.sp["brightness"].setValue(-5); ed14.load_defaults(); assert ed14.sp["brightness"].value() == 20
-    ed14b = pe.PhotoEditor(str(tmp / "p14.jpg"), api14, 0.75); assert ed14b.sp["brightness"].value() == 20; ed14b.reject()
+    ed14b = pe.PhotoEditor(str(tmp / "p14.jpg"), api14, None, field_name="foto"); assert ed14b.sp["brightness"].value() == 20; ed14b.reject()
     api14.set_photo_edit_defaults(dict(_ba14.PHOTO_EDIT_DEFAULTS)); ed14.load_defaults(); assert ed14.params(crop=False)["brightness"] == 0
     # ValueError → статус по-русски
     ed14.frame.setRect(ed14.frame.rect().translated(100000, 100000)); assert ed14.apply() is False and "Фото не сохранено" in ed14.status.text()
@@ -824,7 +841,34 @@ if _ba14.photo_edit_available():
     face = ed14.portrait.isChecked(); assert face or "Лицо не найдено" in ed14.status.text()
     if _face.is_file(): assert face, ed14.status.text()
     fr = ed14.frame.rect(); assert abs(fr.width() / fr.height() - 0.75) < 0.02
-    ed14.autoeffect.setChecked(True); spin(100); assert ed14.params()["autoeffect"]
+    ed14.autoeffect.setChecked(True); spin(100); assert ed14.params()["autoeffect"] and ed14.params()["portrait"] is True
+    # D42: рамка с пером целиком в видимой области вида (в т.ч. у края изображения)
+    ed14.show(); ed14.resize(520, 680); spin(50)
+    for pos in ("face", "tl"):
+        if pos == "tl": ed14.frame.move_by(QPointF(-10000, -10000)); spin(20)
+        vr = ed14.frame.visible_device_rect(); vp = QRectF(ed14.view.viewport().rect())
+        assert vp.contains(vr) and ed14.frame.boundingRect().contains(ed14.frame.rect()), (pos, vr, vp)
+    ed14.portrait.setChecked(False); ed14.portrait.setChecked(True); spin(10)
+    # D41: «Портрет» уходит в set_photo_edit_defaults (ключ portrait); восстановлен как вкл → рамка по лицу при открытии
+    sent = []; _set0 = api14.set_photo_edit_defaults
+    api14.set_photo_edit_defaults = lambda p: sent.append(dict(p)) or _set0(p)
+    ed14.save_defaults(); del api14.set_photo_edit_defaults; assert sent and sent[-1]["portrait"] is True
+    if "portrait" in _ba14.PHOTO_EDIT_DEFAULTS:                                        # Backend хранит ключ
+        assert api14.get_photo_edit_defaults()["portrait"] is True
+    _get0 = api14.get_photo_edit_defaults; api14.get_photo_edit_defaults = lambda: {**_get0(), "portrait": True}
+    try:
+        edp = pe.PhotoEditor(str(tmp / "p14.jpg"), api14, None, field_name="foto")
+        assert edp.portrait.isChecked() and edp.crop() == tuple(_ba14.detect_face_crop(edp.img, 0.75)), edp.crop()
+        edp.portrait.setChecked(False); edp.load_defaults(); assert edp.portrait.isChecked(); edp.reject()
+    finally: del api14.get_photo_edit_defaults
+    api14.set_photo_edit_defaults(dict(_ba14.PHOTO_EDIT_DEFAULTS))
+    ed14.autoeffect.setChecked(True); spin(100)
+    # нет load_photo_for_edit / битый файл → статус по-русски, без глобального диалога
+    _lp = _ba14._api.load_photo_for_edit; del _ba14._api.load_photo_for_edit
+    try: edx = pe.PhotoEditor(str(tmp / "p14.jpg"), api14, None, field_name="foto"); assert edx.status.text() == "Редактор недоступен: нет load_photo_for_edit" and not edx.b_apply.isEnabled(); edx.reject()
+    finally: _ba14._api.load_photo_for_edit = _lp
+    (tmp / "bad14.jpg").write_bytes(b"not an image"); edx = pe.PhotoEditor(str(tmp / "bad14.jpg"), api14, None, field_name="foto")
+    assert edx.status.text().startswith("Не удалось открыть фото") and edx.apply() is False; edx.reject()
     # Применить (новая запись → apply_and_save_photo без field_name; путь в поле формы → «Сохранить»)
     assert ed14.apply() is True and ed14.result_path.startswith("photos/") and (tmp / ed14.result_path).is_file()
     assert ie14.text() == ed14.result_path and (tmp / "p14.jpg").is_file(), (ie14.text(), ed14.result_path)
@@ -834,13 +878,19 @@ if _ba14.photo_edit_available():
     QTest.mouseDClick(ie14b.still, Qt.MouseButton.LeftButton); spin(30); ed14c = got14[-1]
     assert ed14c.apply() is True and ed14c.result_path != old and ie14b.text() == ed14c.result_path
     assert api14.get_person(pid14)["fields"]["foto"] == old                                  # до «Сохранить» БД не тронута
-    rf14b.reject(); assert api14.get_person(pid14)["fields"]["foto"] == old and (tmp / ed14c.result_path).is_file()
+    rf14b.reject(); assert api14.get_person(pid14)["fields"]["foto"] == old and (tmp / old).is_file()
+    # D43: «Отмена» формы → discard_photo для каждого файла редактора этой сессии (UI сам не удаляет)
+    if _REAL_SESSION: assert rf14b.discarded == [ed14c.result_path] and not (tmp / ed14c.result_path).is_file(), rf14b.discarded
+    # «Сохранить» → PhotoSession.commit(): файл, на который ссылается запись, остаётся
+    rf14c = RecordForm(api14, pid14, w); ie14c = rf14c.edits["foto"]; QTest.mouseDClick(ie14c.still, Qt.MouseButton.LeftButton); spin(30)
+    ed14d = got14[-1]; assert ed14d.session is rf14c.photo_session and ed14d.apply() is True; rf14c.save()
+    assert api14.get_person(pid14)["fields"]["foto"] == ed14d.result_path and (tmp / ed14d.result_path).is_file()
 else:
     assert "apply_photo_edit" in ed14.status.text() and ed14.apply() is False
     assert ed14.find_face() is False and "Лицо не найдено" in ed14.status.text()
 pe.editor_hook = None
 api14.close()
-ok("этап 14: редактор фото — двойной клик/контекстное меню (один QAction), без автооткрытия, ползунки с полями, превью Backend, рамка с пропорциями (углы/перенос), Портрет (лицо), Автоэффект, умолчания проекта (Backend), ValueError в статусе, Применить → apply_and_save_photo → поле формы → «Сохранить»; «Отмена» формы не меняет БД")
+ok("этап 14: редактор фото — двойной клик/контекстное меню (один QAction), без автооткрытия, ползунки с полями, превью Backend, рамка с пропорциями (углы/перенос), Портрет (лицо), Автоэффект, умолчания проекта (Backend), ValueError в статусе, Применить → apply_and_save_photo → поле формы → «Сохранить»; «Отмена» формы не меняет БД, discard_photo (D43); D41 портрет в умолчаниях; D42 рамка видна; пропорции photo_edit_target")
 # расположение окна сохраняется автоматически в closeEvent
 _cfg2 = tempfile.mkdtemp(prefix="bg_ui_cfg2_")
 QSettings.setPath(QSettings.Format.NativeFormat, QSettings.Scope.UserScope, _cfg2)

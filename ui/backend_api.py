@@ -316,12 +316,11 @@ def load_photo_available(): return callable(getattr(_api, "load_photo_for_edit",
 
 
 def open_image(path, base_dir=None):
-    """Исходник редактора: Backend load_photo_for_edit (EXIF-поворот как в apply_and_save_photo, рамка совпадает);
-    нет функции → простое чтение файла без обработки."""
+    """Исходник редактора — только Backend load_photo_for_edit (EXIF-поворот как в apply_and_save_photo, рамка совпадает).
+    Нет функции → LookupError(«Редактор недоступен: нет load_photo_for_edit»); битый/нет файла → ValueError Backend."""
     fn = getattr(_api, "load_photo_for_edit", None)
-    if fn is not None: return fn(path, base_dir=base_dir)
-    from PIL import Image
-    with Image.open(path) as im: return im.copy()
+    if fn is None: raise LookupError("Редактор недоступен: нет load_photo_for_edit")
+    return fn(path, base_dir=base_dir)
 
 
 def apply_photo_edit(img, params):
@@ -359,6 +358,46 @@ def _bapi_apply_and_save_photo(self, source_path, params, *, person_id=None, fie
     return fn(self.con, source_path, dict(params), person_id=person_id, field_name=field_name, base_dir=self.base_dir)
 
 
+def _backend_fn(name):
+    """Функция Backend этапа 14: сначала badge_backend.api, затем badge_backend.services.photo_edit; нет → None."""
+    fn = getattr(_api, name, None)
+    if fn is None:
+        try:
+            from badge_backend.services import photo_edit as _pe
+            fn = getattr(_pe, name, None)
+        except ImportError:
+            fn = None
+    return fn if callable(fn) else None
+
+
+NO_TARGET_FN = "Нет функции Backend для пропорций"
+NO_TARGET = "К полю не привязан фото-элемент шаблона"
+
+
+def _bapi_photo_edit_target(self, field_name):
+    """Backend photo_edit_target(con, field_name) → {"aspect", "size", "width_mm", "height_mm", "element_id"} | None.
+    Пропорции рамки и размер результата — только отсюда (UI ничего не вычисляет). Нет функции → LookupError."""
+    fn = _backend_fn("photo_edit_target")
+    if fn is None: raise LookupError(NO_TARGET_FN)
+    return fn(self.con, field_name)
+
+
+def _bapi_discard_photo(self, rel_path):
+    """Backend discard_photo(con, rel_path | [paths], base_dir) → bool | список удалённых (только photos/ без ссылок). Нет → None."""
+    fn = _backend_fn("discard_photo")
+    return fn(self.con, rel_path, base_dir=self.base_dir) if fn else None
+
+
+def _bapi_photo_session(self):
+    """D43: Backend PhotoSession(con, base_dir) — учёт фото, созданных в форме записи (.save_photo / .apply_and_save_photo /
+    .track; «Отмена» → .discard(), «Сохранить» → .commit()). Нет класса в Backend → None (форма работает без учёта)."""
+    cls = _backend_fn("PhotoSession")
+    return cls(self.con, self.base_dir) if cls else None
+
+
+BackendAPI.photo_session = _bapi_photo_session
+BackendAPI.photo_edit_target = _bapi_photo_edit_target
+BackendAPI.discard_photo = _bapi_discard_photo
 BackendAPI.get_photo_edit_defaults = _bapi_get_photo_edit_defaults
 BackendAPI.set_photo_edit_defaults = _bapi_set_photo_edit_defaults
 BackendAPI.apply_and_save_photo = _bapi_apply_and_save_photo
