@@ -51,13 +51,13 @@ def test_save_validation_warning_safe():
     api.upsert_field(con, "photo", "Фото", data_type="image")
     pid = api.create_person(con, {"bd": "05.03.1990", "n": "7,5", "photo": "a.jpg", "free": 1})
     p = api.get_person(con, pid)
-    assert p["fields"] == {"bd": "1990-03-05", "n": "7.5", "free": 1} and p["photo_path"] == "a.jpg"
+    assert p["fields"] == {"bd": "1990-03-05", "n": "7.5", "photo": "a.jpg", "free": 1} and p["photo_path"] is None
     with pytest.warns(FieldValueWarning):
         api.update_person(con, pid, {"bd": "31.02.2020"})
     assert api.get_person(con, pid)["fields"]["bd"] == "31.02.2020"          # сохранено как есть
     assert api.validate_fields(con, {"bd": "xx", "n": "1"}) == [{"field": "bd", "code": "FIELD_TYPE", "details": pytest.approx(
         api.validate_fields(con, {"bd": "xx"})[0]["details"])}]
-    api.update_person(con, pid, {"photo": "b.jpg"}); assert api.get_person(con, pid)["photo_path"] == "b.jpg"
+    api.update_person(con, pid, {"photo": "b.jpg"}); assert api.get_person(con, pid)["fields"]["photo"] == "b.jpg"
 
 def test_render_uses_format_value():
     con = api.connect(); api.upsert_field(con, "bd", "ДР", data_type="date")
@@ -104,13 +104,14 @@ def test_project_import_fields_flag(tmp_path):
     assert api.list_persons(con)[0]["fields"] == {"last_name": "Иванов", "bd": "1990-03-05"}
     assert [c["key"] for c in rep.skipped_columns] == ["first_name"]
 
-def test_image_field_maps_to_photo_path(tmp_path):
+def test_image_field_value_kept_in_fields(tmp_path):
     from badge_backend import demo
     ph = tmp_path / "ph"; ph.mkdir(); demo.make_photo(ph / "a.jpg")
     p = _csv(tmp_path / "a.csv", "Фамилия;Снимок\nИванов;a.jpg\n")
     con = api.connect(); api.upsert_field(con, "last_name", "Фамилия"); api.upsert_field(con, "snap", "Снимок", data_type="image")
     rep = api.import_rows(con, api.open_source(p)[0], photo_dir=ph)
-    assert rep.added == 1 and api.list_persons(con)[0]["photo_path"] == "a.jpg" and "snap" not in api.list_persons(con)[0]["fields"]
+    p0 = api.list_persons(con)[0]
+    assert rep.added == 1 and p0["photo_path"] is None and p0["fields"]["snap"] == "a.jpg" and rep.warnings == []
 
 # ---------- фото: пустые/битые ----------
 def _photos(tmp_path):

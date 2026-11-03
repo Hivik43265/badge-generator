@@ -44,3 +44,46 @@ def save_photo(con, image_bytes, *, person_id=None, ext: str = "jpg", base_dir=N
         if not n:
             (d / name).unlink(missing_ok=True); raise ValueError(f"нет записи id={person_id}")
     return rel
+
+
+def _person_fields(person) -> dict:
+    import json
+    if not person: return {}
+    f = person.get("fields")
+    if isinstance(f, dict) and person.get("fields_json") is None: return f
+    fj = person.get("fields_json")
+    if isinstance(fj, dict): return fj
+    try: return json.loads(fj) if fj else {}
+    except (TypeError, ValueError): return {}
+
+def abs_path(rel, base_dir=None) -> Path | None:
+    """Относительный путь проекта → абсолютный Path (база base_dir, иначе cwd); пусто → None."""
+    if rel in (None, ""): return None
+    p = Path(str(rel))
+    if not p.is_absolute(): p = Path(base_dir or Path.cwd()) / p
+    return p.absolute()
+
+def resolve_photo_path(person, element=None, base_dir=None) -> Path | None:
+    """Единое правило фото записи (вариант (a)).
+    person   dict/Row записи: fields_json (str|dict) или {'fields': {...}}, photo_path.
+    element  элемент photo (dict с 'field_name') или имя image-поля (str); None — только photo_path.
+    Значение привязанного image-поля, если непусто, иначе persons.photo_path → абсолютный Path; нет обоих → None.
+    Существование файла не проверяется (вызывающий решает: placeholder / warning)."""
+    if person is not None and not isinstance(person, dict): person = dict(person)
+    fname = element if isinstance(element, str) else (element or {}).get("field_name")
+    if fname:
+        v = _person_fields(person).get(fname)
+        if v not in (None, ""): return abs_path(v, base_dir)
+    return abs_path((person or {}).get("photo_path"), base_dir)
+
+def photo_file_issue(path) -> str | None:
+    """None — файл есть и читается; иначе 'PHOTO_NOT_FOUND' | 'PHOTO_EMPTY' | 'PHOTO_BROKEN'."""
+    p = Path(path)
+    if not p.is_file(): return "PHOTO_NOT_FOUND"
+    if p.stat().st_size == 0: return "PHOTO_EMPTY"
+    try:
+        from PIL import Image
+        with Image.open(p) as im: im.verify()
+    except Exception:
+        return "PHOTO_BROKEN"
+    return None

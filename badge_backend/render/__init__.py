@@ -28,6 +28,8 @@ def _color(v, default=None):
     try: return ImageColor.getcolor(v, "RGBA") if isinstance(v, str) else tuple(v)
     except ValueError: return default
 
+from ..services.photos import resolve_photo_path  # noqa: E402
+
 def _resolve(path, base_dir):
     if not path: return None
     return path if os.path.isabs(path) or not base_dir else os.path.join(base_dir, path)
@@ -295,7 +297,8 @@ def render_card(person, elements, side: str = "front", background=None, base_dir
                 if t == "field" and el.get("data_type"): val = format_value(el["data_type"], val) if val is not None else val
                 _draw_text(img, el, val, st)
             elif t == "photo":
-                src = _open(_resolve(person.get("photo_path"), base_dir)) if person.get("photo_path") else None
+                pp = resolve_photo_path(person, el, base_dir)
+                src = _open(pp) if pp else None
                 tile = transform_photo(src, el["w"], el["h"], person.get("photo_config")) if src \
                     else _placeholder(el["w"], el["h"])
                 _paste_clipped(img, el, tile, st); _box(img, el, {**st, "fill": None})

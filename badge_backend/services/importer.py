@@ -204,6 +204,8 @@ def import_file(con, path, mapping=None, photo_dir=None, validate=True, *, label
     return import_records(con, recs, labs, photo_dir, validate, labels=labels, require_photo=require_photo,
                           progress=progress)
 
+from .photos import resolve_photo_path, photo_file_issue  # noqa: E402
+
 def import_records(con, recs, labs, photo_dir=None, validate=True, *, labels=None, require_photo=False,
                    progress=None, cancel=None, extra=None) -> ImportReport:
     """Общее ядро импорта (одна транзакция): валидация, person_fields, вставка persons.
@@ -242,14 +244,37 @@ def import_records(con, recs, labs, photo_dir=None, validate=True, *, labels=Non
             if k not in keep and k != "_row" and k not in seen: seen.append(k)
     rep.skipped_columns = [{"key": k, "label": (labs or {}).get(k, k)} for k in seen]
     recs = [{k: v for k, v in r.items() if k in keep or k == "_row"} for r in recs]
-    for r in recs:   # поле типа image = фото записи
-        for k in image_f:
-            v = r.pop(k, "")
-            if v and not r.get("photo_path"): r["photo_path"] = v
+    # Вариант (a): значение image-поля — относительный путь, остаётся в fields_json. Файл проверяется
+    # тем же правилом resolve_photo_path (база photo_dir): нет файла → warning PHOTO_MISSING (путь сохраняется),
+    # пустой/битый → warning PHOTO_EMPTY/PHOTO_BROKEN + photo_issues, значение поля очищается.
+    img_issue = {}
+    if photo_dir and image_f:
+        for i, r in enumerate(recs):
+            for k in image_f:
+                if r.get(k) in (None, ""): continue
+                code = photo_file_issue(resolve_photo_path({"fields": r}, k, photo_dir))
+                if code: img_issue.setdefault(i, []).append((k, code))
     if validate: verrs, norm, rep.validator = _validate(recs, photo_dir)
     else: verrs, norm, rep.validator = {}, (lambda r: r), "off"
+    for i, r in enumerate(recs):   # «фото не указано» не относится к строке, где фото задано image-полем
+        if i in verrs and any(r.get(k) not in (None, "") for k in image_f):
+            verrs[i] = [e for e in verrs[i] if not (e["code"] == "PHOTO_MISSING" and e.get("field") == "photo_path")]
+            if not verrs[i]: del verrs[i]
+    clear_img = {}
+    for i, lst in img_issue.items():
+        r = recs[i]
+        for k, code in lst:
+            if code == "PHOTO_NOT_FOUND":
+                rep.warnings.append({"row": r["_row"], "field": k, "code": "PHOTO_MISSING",
+                                     "details": f"файл фото не найден: {r[k]} (PHOTO_NOT_FOUND)"})
+            else:
+                rep.warnings.append({"row": r["_row"], "field": k, "code": code,
+                                     "details": f"{r[k]}: файл фото {'пустой' if code == 'PHOTO_EMPTY' else 'повреждён'}, фото не назначено"})
+                rep.photo_issues.append({"row": r["_row"], "code": code, "file": r[k]})
+                clear_img.setdefault(i, set()).add(k)
     for i, r in enumerate(recs):
-        if require_photo and not r.get("photo_path") and not any(e["code"] == "PHOTO_MISSING" for e in verrs.get(i, [])):
+        if require_photo and not r.get("photo_path") and not any(r.get(k) not in (None, "") and k not in clear_img.get(i, ())
+                                                                   for k in image_f) and not any(e["code"] == "PHOTO_MISSING" for e in verrs.get(i, [])):
             verrs.setdefault(i, []).append({"field": "photo_path", "code": "PHOTO_MISSING", "details": "фото не указано"})
         if not require_photo and i in verrs:
             # Решения Архитектора, этап 13: проблемы с фото не причина пропускать строку при require_photo=False.
@@ -299,6 +324,7 @@ def import_records(con, recs, labs, photo_dir=None, validate=True, *, labels=Non
                 else:
                     n = norm({k: v for k, v in r.items() if k != "_row"})
                     if idx in clear_photo: n["photo_path"] = None
+                    for k in clear_img.get(idx, ()): n[k] = ""
                     fields = {}
                     for k, v in n.items():
                         if k in ("photo_path", "photo_config") or k not in ftypes or v in ("", None): continue

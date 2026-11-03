@@ -56,10 +56,11 @@ def _fmt(path, format):
     if f not in FORMATS: raise ValueError(f"формат: {FORMATS}, получено {f!r}")
     return f
 
-def _copy_file(src_rel, base_dir, dst_dir, used, warn):
+from .photos import abs_path, resolve_photo_path  # noqa: E402
+
+def _copy_file(src_rel, base_dir, dst_dir, used, warn, src=None):
     if not src_rel: return src_rel, False
-    s = Path(src_rel)
-    if not s.is_absolute() and base_dir: s = Path(base_dir) / s
+    s = src or abs_path(src_rel, base_dir)
     if not s.is_file(): warn.append(f"файл не найден: {src_rel}"); return src_rel, False
     name = s.name; i = 1
     while name in used and used[name] != s.resolve(): name = f"{s.stem}_{i}{s.suffix}"; i += 1
@@ -80,10 +81,20 @@ def _export_db(con, path, ids, photo_dir):
             for f in _fields(con):
                 new.execute("INSERT INTO person_fields(name,label,sort_order,default_value,data_type) VALUES (?,?,?,?,?)",
                             (f["name"], f["label"], f["sort_order"], f.get("default_value"), f.get("data_type") or "text"))
+            img_f = [f["name"] for f in _fields(con) if f.get("data_type") == "image"]
             for r in ps:
-                pp, ok = _copy_file(r["photo_path"], photo_dir, pdir, used, warn); copied += ok
+                r = dict(r)
+                pp, ok = _copy_file(r["photo_path"], photo_dir, pdir, used, warn,
+                                    resolve_photo_path(r, None, photo_dir)); copied += ok
+                fj = r["fields_json"]
+                if img_f:   # фото из image-полей копируются тем же правилом, значение → имя в *_photos
+                    d = json.loads(fj or "{}")
+                    for k in img_f:
+                        if d.get(k) in (None, ""): continue
+                        d[k], ok = _copy_file(d[k], photo_dir, pdir, used, warn, resolve_photo_path(r, k, photo_dir)); copied += ok
+                    fj = json.dumps(d, ensure_ascii=False)
                 new.execute("INSERT INTO persons(fields_json,photo_path,photo_config,print_mark,printed_at,created_at,updated_at) "
-                            "VALUES (?,?,?,?,?,?,?)", (r["fields_json"], pp, r["photo_config"], r["print_mark"],
+                            "VALUES (?,?,?,?,?,?,?)", (fj, pp, r["photo_config"], r["print_mark"],
                                                        r["printed_at"], r["created_at"], r["updated_at"]))
             cols = "id,type,x,y,w,h,field_name,static_value,style_json,side,z_order"
             for e in _q(con, f"SELECT {cols} FROM template_elements ORDER BY id"):

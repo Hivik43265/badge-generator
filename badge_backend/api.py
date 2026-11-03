@@ -35,16 +35,15 @@ def get_person(con, person_id: int) -> dict | None:
 def _typed(con, fields, photo_path):
     """D24: значения по data_type (дата → ISO, число, bool → '1'/'0'). Неверное значение сохраняется как есть
     + warnings.warn(FieldValueWarning) — API не бросает (warning-safe); UI проверяет заранее через validate_fields.
-    Поле типа image = фото записи: его значение уходит в photo_path. → (fields, photo_path)."""
+    Поле типа image: значение — относительный путь (как вернул save_photo), хранится в fields_json как есть.
+    → (fields, photo_path)."""
     if not fields: return fields, photo_path
     import warnings as _w
     types = _field_types(con); out = {}
     for k, v in fields.items():
         t = types.get(k)
         if t in (None, "text"): out[k] = v; continue   # неизвестные/текстовые — без изменений
-        if t == "image":
-            if v not in (None, ""): photo_path = str(v)
-            continue
+        if t == "image": out[k] = "" if v is None else str(v); continue
         sv, err = normalize_value(t, v)
         if err: _w.warn(f"{k}: {err}", FieldValueWarning, stacklevel=3); sv = v
         out[k] = sv
@@ -208,18 +207,24 @@ def list_field_links(con) -> dict[str, list[dict]]:
         out.setdefault(r[3], []).append({"element_id": r[0], "id": r[0], "type": r[1], "side": r[2], "label": r[4] or ""})
     return out
 
-_LINKABLE = ("text", "field", "barcode", "qr")
+_LINKABLE = ("text", "field", "barcode", "qr", "photo")
 
 def link_field(con, element_id: int, field_name: str) -> bool:
-    """Привязать элемент типа text|field|barcode|qr к полю (поле должно существовать, иначе ValueError;
-    другой тип → ValueError). text → field (static_value очищается, style и геометрия сохраняются).
-    Нет элемента → False."""
+    """Привязать элемент к полю (поле должно существовать, иначе ValueError).
+    photo ↔ только поле data_type='image'; text|field|barcode|qr ↔ только не-image поля; прочее → ValueError.
+    text → field (static_value очищается, style и геометрия сохраняются). Нет элемента → False."""
     _need_field(con, field_name)
     r = con.execute("SELECT type FROM template_elements WHERE id=?", (element_id,)).fetchone()
     if r is None: return False
-    if r[0] not in _LINKABLE: raise ValueError(f"тип {r[0]!r} нельзя привязать к полю (только {_LINKABLE})")
+    t = r[0]
+    if t not in _LINKABLE: raise ValueError(f"элемент типа «{t}» нельзя привязать к полю")
+    ft = con.execute("SELECT data_type FROM person_fields WHERE name=?", (field_name,)).fetchone()[0] or "text"
+    if t == "photo" and ft != "image":
+        raise ValueError(f"элемент «фото» можно привязать только к полю типа «изображение»; поле «{field_name}» имеет тип «{ft}»")
+    if t != "photo" and ft == "image":
+        raise ValueError(f"поле «{field_name}» типа «изображение» можно привязать только к элементу «фото», а не к «{t}»")
     with con:
-        if r[0] == "text":
+        if t == "text":
             con.execute("UPDATE template_elements SET type='field', field_name=?, static_value=NULL WHERE id=?",
                         (field_name, element_id))
         else:
@@ -233,8 +238,8 @@ def _unlink(con, element_id, static_value):
                        (static_value, element_id)).rowcount > 0
 
 def unlink_field(con, element_id: int, static_value: str | None = None) -> bool:
-    """Отвязать: field → text, barcode/qr остаются; static_value (если задан) записывается, иначе прежний сохраняется.
-    Нет элемента → False."""
+    """Отвязать: field → text, barcode/qr/photo остаются своим типом (photo снова берёт persons.photo_path);
+    static_value (если задан) записывается, иначе прежний сохраняется. Нет элемента → False."""
     with con: return _unlink(con, element_id, static_value)
 
 # --- карты ---
@@ -374,4 +379,4 @@ def restore_db(target_path, backup_path) -> None:
 from .services.sources import (Sheet, open_source, read_rows, auto_match, label_mapping, import_rows,  # noqa: F401
                                save_mapping, load_mapping)
 from .services.table_export import export_persons, XLS_MAX_ROWS  # noqa: F401
-from .services.photos import save_photo, project_base_dir  # noqa: F401,E402
+from .services.photos import save_photo, project_base_dir, resolve_photo_path  # noqa: F401,E402
