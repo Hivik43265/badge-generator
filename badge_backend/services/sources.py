@@ -11,7 +11,8 @@ save_mapping(path, mapping) / load_mapping(path)
 Произвольная SQLite — каждая таблица отдельный лист, чтение только через URI mode=ro.
 """
 from __future__ import annotations
-import json, sqlite3, tempfile, warnings
+import json, logging, os, sqlite3, tempfile, warnings
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 from .headers import map_headers
@@ -31,10 +32,12 @@ class Sheet:
     schema_version: int | None = None      # для 'project' — версия ИСХОДНОЙ БД
     meta: dict = field(default_factory=dict)
     def close(self):
-        """Удалить временную мигрированную копию ('project'); повторный вызов безопасен."""
+        """Удалить временную мигрированную копию ('project'); повторный вызов безопасен.
+        Не удалось удалить (файл занят) → OSError пробрасывается (с записью в лог), work_path сохраняется."""
         if self.work_path is not None:
             try: Path(self.work_path).unlink(missing_ok=True)
-            except OSError: pass
+            except OSError:
+                logging.getLogger(__name__).exception("не удалось удалить временную копию %s", self.work_path); raise
             self.work_path = None
     def as_dict(self):
         return {"path": str(self.path), "name": self.name, "kind": self.kind, "index": self.index,
@@ -53,7 +56,9 @@ def open_source(path) -> list[Sheet]:
     if not p.is_file(): raise FileNotFoundError(p)
     if suf in XLSX:
         from openpyxl import load_workbook
-        wb = load_workbook(p, read_only=True); names = wb.sheetnames; wb.close()
+        wb = load_workbook(p, read_only=True)
+        try: names = wb.sheetnames
+        finally: wb.close()
         return [Sheet(p, n, "xlsx", i) for i, n in enumerate(names)]
     if suf == ".xls":
         import xlrd
@@ -62,27 +67,26 @@ def open_source(path) -> list[Sheet]:
     if suf in CSV:
         return [Sheet(p, p.stem, "csv")]
     if suf in (".db", ".sqlite", ".sqlite3"):
-        src = _ro(p)
-        try:
+        with closing(_ro(p)) as src:
             try: tabs = _tables(src)
             except sqlite3.DatabaseError as e: raise ValueError(f"не БД SQLite: {e}") from e
             if {"persons", "person_fields"} <= set(tabs):
                 from .. import db
                 ver = db.get_schema_version(src)
-                fd, tmp = tempfile.mkstemp(prefix="bg_import_", suffix=".db"); import os; os.close(fd)
-                dst = sqlite3.connect(tmp)
-                try: src.backup(dst); db.migrate(dst)
-                finally: dst.close()
+                fd, tmp = tempfile.mkstemp(prefix="bg_import_", suffix=".db"); os.close(fd)
+                try:
+                    with closing(sqlite3.connect(tmp)) as dst:
+                        src.backup(dst); db.migrate(dst)
+                except BaseException:
+                    Path(tmp).unlink(missing_ok=True); raise
                 return [Sheet(p, "persons", "project", 0, Path(tmp), ver)]
             return [Sheet(p, t, "sqlite", i) for i, t in enumerate(tabs)]
-        finally:
-            src.close()
     raise ValueError(f"неподдерживаемый формат: {suf}")
 
 def _project_rows(sheet):
     if sheet.work_path is None: raise ValueError("лист закрыт (Sheet.close)")
-    con = sqlite3.connect(str(sheet.work_path)); con.row_factory = sqlite3.Row
-    try:
+    with closing(sqlite3.connect(str(sheet.work_path))) as con:
+        con.row_factory = sqlite3.Row
         fields = [dict(r) for r in con.execute("SELECT * FROM person_fields ORDER BY sort_order, name")]
         names = [f["name"] for f in fields]
         rows = []
@@ -96,8 +100,6 @@ def _project_rows(sheet):
                for fj, r in rows]
         sheet.meta["fields"] = {f["name"]: f for f in fields}
         return cols, out
-    finally:
-        con.close()
 
 def _raw(sheet):
     """Все строки листа без разбора заголовка."""
@@ -114,11 +116,9 @@ def _raw(sheet):
     if sheet.kind == "csv":
         h, rows = read_table(sheet.path); return [h, *rows]
     if sheet.kind == "sqlite":
-        con = _ro(sheet.path)
-        try:
+        with closing(_ro(sheet.path)) as con:
             cur = con.execute('SELECT * FROM "' + sheet.name.replace('"', '""') + '"')   # имя — из sqlite_master
             return [[d[0] for d in cur.description], *[list(r) for r in cur]]
-        finally: con.close()
     raise ValueError(f"неизвестный kind: {sheet.kind}")
 
 def read_rows(sheet: Sheet, header: bool = True, limit: int | None = None, strip: bool = True) -> tuple[list[str], list[list[str]]]:
@@ -264,7 +264,9 @@ def import_rows(con, sheet: Sheet, mapping: dict | None = None, *, header: bool 
     if sheet.kind == "xlsx" and extract_images and header:
         if photo_dir is None:
             from openpyxl import load_workbook
-            wb = load_workbook(sheet.path); n = len(getattr(wb.worksheets[sheet.index], "_images", [])); wb.close()
+            wb = load_workbook(sheet.path)
+            try: n = len(getattr(wb.worksheets[sheet.index], "_images", []))
+            finally: wb.close()
             if n: warnings.warn(f"в листе {n} встроенных картинок; без photo_dir они не извлекаются", RuntimeWarning)
         else:
             imgs, _ = _xlsx_images(sheet, photo_dir, 1)
