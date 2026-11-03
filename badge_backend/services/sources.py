@@ -51,23 +51,31 @@ _STALE_AGE_S = 6 * 3600       # моложе — не трогаем (может
 def _work_dir() -> Path:
     d = Path(tempfile.gettempdir()) / _WORK_DIR_NAME; d.mkdir(parents=True, exist_ok=True); return d
 
+_LEGACY_RE = __import__("re").compile(r"^bg_import_.+\.db(-journal|-wal|-shm)?$")
+
 def _cleanup_stale_work_copies(min_age_s: float = _STALE_AGE_S) -> list[str]:
-    """Удалить оставшиеся рабочие копии (Sheet.close не смог удалить). Только <tmp>/BadgeGenerator-import/,
-    только файлы bg_import_*.db (и их -journal/-wal/-shm), старше min_age_s. Занятые/ошибки — в лог, пропуск;
-    никогда не бросает исключений. → список удалённых имён."""
+    """Удалить оставшиеся рабочие копии (Sheet.close не смог удалить), старше min_age_s:
+    - <tmp>/BadgeGenerator-import/: файлы bg_import_* (копии и их -journal/-wal/-shm);
+    - корень <tmp> (копии до D48): только файлы bg_import_*.db и bg_import_*.db-journal|-wal|-shm.
+    Не рекурсивно. Занятые/ошибки — в лог, пропуск; никогда не бросает исключений. → список удалённых имён."""
     import time
     log = logging.getLogger(__name__); out = []
     try:
-        d = Path(tempfile.gettempdir()) / _WORK_DIR_NAME
-        if not d.is_dir(): return out
-        now = time.time()
-        for f in d.iterdir():
+        root = Path(tempfile.gettempdir()); now = time.time()
+        for d, match in ((root / _WORK_DIR_NAME, lambda n: n.startswith(_WORK_PREFIX)),
+                         (root, lambda n: bool(_LEGACY_RE.match(n)))):
             try:
-                if not (f.name.startswith(_WORK_PREFIX) and f.is_file()): continue
-                if now - f.stat().st_mtime < min_age_s: continue
-                f.unlink(); out.append(f.name)
+                if not d.is_dir(): continue
+                files = list(d.iterdir())
             except OSError as e:
-                log.warning("не удалось удалить старую рабочую копию %s: %s", f, e)
+                log.warning("не удалось прочитать %s: %s", d, e); continue
+            for f in files:
+                try:
+                    if not (match(f.name) and f.is_file()): continue
+                    if now - f.stat().st_mtime < min_age_s: continue
+                    f.unlink(); out.append(f.name)
+                except OSError as e:
+                    log.warning("не удалось удалить старую рабочую копию %s: %s", f, e)
     except Exception:   # noqa: BLE001 — очистка не должна ломать старт
         log.exception("ошибка очистки рабочих копий импорта")
     return out
