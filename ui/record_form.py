@@ -125,7 +125,8 @@ class RecordForm(QDialog):
                 next((e for e in els if e["type"] == "photo"), None)
             return (e["w"] / e["h"]) if e and e.get("w") and e.get("h") else 3 / 4
         for blk, fn in [(self.photo_block, None), *[(e, n) for n, e in self.image_edits.items()]]:
-            blk.save_photo, blk.aspect = api.save_photo, _aspect(fn)
+            blk.save_photo, blk.aspect, blk.api = api.save_photo, _aspect(fn), api
+            blk.field_name, blk.person_id = fn, (person_id if p else None)
         self.photo_box = box; box.setVisible(not self.image_edits or unlinked)
         left = QVBoxLayout(); left.addLayout(form); left.addWidget(box); left.addStretch()
         main = QHBoxLayout(); main.addLayout(left); main.addLayout(pv)

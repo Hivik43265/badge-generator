@@ -57,6 +57,7 @@ class PhotoBlock(QWidget):
         # этап 14: один QAction «Редактировать изображение…» — двойной клик по фото и контекстное меню
         from .photo_editor import make_edit_action
         self.save_photo, self.aspect, self.editor = None, 3 / 4, None
+        self.api, self.field_name, self.person_id = None, None, None     # задаёт RecordForm
         self.act_edit = make_edit_action(self, self.edit_photo)
         self.still.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu); self.still.addAction(self.act_edit)
         self.still.installEventFilter(self); self.still.setToolTip("Двойной клик — редактировать изображение")
@@ -144,8 +145,8 @@ class PhotoBlock(QWidget):
         """Редактор фото (только по действию пользователя; после снимка/файла сам не открывается)."""
         from . import photo_editor as pe
         full = self._abs(self.path)
-        if not self.path or not os.path.isfile(full) or self.save_photo is None: return None
-        d = self.editor = pe.PhotoEditor(full, self.save_photo, self.aspect, self)
+        if not self.path or not os.path.isfile(full) or self.api is None: return None
+        d = self.editor = pe.PhotoEditor(full, self.api, self.aspect, self, field_name=self.field_name, person_id=self.person_id)
         d.accepted.connect(lambda: self._edited(d))
         return pe.editor_hook(d) if pe.editor_hook is not None else d.exec()
 

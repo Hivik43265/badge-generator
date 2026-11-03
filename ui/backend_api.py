@@ -298,16 +298,18 @@ BackendAPI.import_rows = _bapi_import_rows
 BackendAPI.export_persons = _bapi_export_persons
 
 
-# ---------------- Этап 14: редактор фото (адаптер; функций пока нет в Backend) ----------------
-# Ожидается: apply_photo_edit(img: PIL.Image, params: dict) -> PIL.Image
-#            params = {"brightness": int -50..50, "contrast": int -50..50, "scale": int 10..400 (%),
-#                      "rotate": float -180..180 (°, по часовой), "crop": (x, y, w, h) | None (px исходника), "autoeffect": bool}
-#            detect_face_crop(img: PIL.Image, aspect: float) -> (x, y, w, h) | None   (aspect = w / h фото-элемента)
-PHOTO_EDIT_DEFAULTS = {"brightness": 0, "contrast": 0, "scale": 100, "rotate": 0.0, "crop": None, "autoeffect": False}
+# ---------------- Этап 14: редактор фото — Backend ee79d16 (badge_backend.api) ----------------
+# apply_photo_edit(img, params) -> Image; порядок autoeffect → яркость → контраст → масштаб → поворот по часовой
+#   (белая заливка) → crop (x,y,w,h) в пикселях уже преобразованного изображения; ValueError.
+# detect_face_crop(img, aspect) -> (x,y,w,h)|None; get/set_photo_edit_defaults(con[, params]) — без crop (project_settings, v6);
+# apply_and_save_photo(con, source_path, params, *, person_id, field_name, base_dir) -> "photos/…" (новый файл).
+PHOTO_EDIT_DEFAULTS = dict(getattr(_api, "DEFAULT_PHOTO_EDIT", None) or
+                           {"brightness": 0, "contrast": 0, "scale": 100, "rotate": 0.0, "crop": None, "autoeffect": False})
 
 
 def photo_edit_available(): return callable(getattr(_api, "apply_photo_edit", None))
 def face_detect_available(): return callable(getattr(_api, "detect_face_crop", None))
+def apply_and_save_available(): return callable(getattr(_api, "apply_and_save_photo", None))
 
 
 def open_image(path):
@@ -330,3 +332,27 @@ def detect_face_crop(img, aspect):
 def image_png_bytes(img):
     import io
     b = io.BytesIO(); img.save(b, "PNG"); return b.getvalue()
+
+
+def _bapi_get_photo_edit_defaults(self):
+    """Умолчания редактора фото проекта (Backend); нет функции/ошибка → DEFAULT_PHOTO_EDIT."""
+    fn = getattr(_api, "get_photo_edit_defaults", None)
+    try: return {**PHOTO_EDIT_DEFAULTS, **(fn(self.con) if fn else {}), "crop": None}
+    except Exception: return dict(PHOTO_EDIT_DEFAULTS)  # noqa: BLE001
+
+
+def _bapi_set_photo_edit_defaults(self, params):
+    fn = getattr(_api, "set_photo_edit_defaults", None)
+    if fn is None: raise ValueError("сохранение умолчаний недоступно: в Backend нет set_photo_edit_defaults")
+    return fn(self.con, {**params, "crop": None})
+
+
+def _bapi_apply_and_save_photo(self, source_path, params, *, person_id=None, field_name=None):
+    fn = getattr(_api, "apply_and_save_photo", None)
+    if fn is None: raise ValueError("применение недоступно: в Backend нет apply_and_save_photo")
+    return fn(self.con, source_path, dict(params), person_id=person_id, field_name=field_name, base_dir=self.base_dir)
+
+
+BackendAPI.get_photo_edit_defaults = _bapi_get_photo_edit_defaults
+BackendAPI.set_photo_edit_defaults = _bapi_set_photo_edit_defaults
+BackendAPI.apply_and_save_photo = _bapi_apply_and_save_photo

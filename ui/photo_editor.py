@@ -6,12 +6,13 @@ backend_api; нет функции → оригинал и статус «нед
 «Применить» → save_photo → относительный путь (в значение поля типа image). Внизу только «Применить» / «Отмена».
 """
 import json
-from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, QSettings
+from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF
 from PyQt6.QtGui import QPen, QColor, QPixmap, QAction
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QSlider, QSpinBox, QCheckBox,
                              QPushButton, QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsPixmapItem, QFrame)
 from .backend_api import (pil_to_qimage, PHOTO_EDIT_DEFAULTS, photo_edit_available, face_detect_available,
-                          open_image, apply_photo_edit, detect_face_crop, image_png_bytes)
+                          open_image, apply_photo_edit, detect_face_crop, image_png_bytes,
+                          apply_and_save_available)
 
 editor_hook = None   # тесты: editor_hook(dialog) вместо exec(); возвращает результат exec
 
@@ -66,10 +67,11 @@ class PhotoEditor(QDialog):
     SLIDERS = (("brightness", "Яркость", -50, 50, ""), ("contrast", "Контраст", -50, 50, ""),
                ("scale", "Масштаб", 10, 400, " %"), ("rotate", "Вращать", -180, 180, "°"))
 
-    def __init__(self, path, save_photo, aspect=3 / 4, parent=None, settings=None):
+    def __init__(self, path, api=None, aspect=3 / 4, parent=None, *, field_name=None, person_id=None):
+        """api — BackendAPI (умолчания проекта, apply_and_save_photo, save_photo); field_name/person_id — поле image записи."""
         super().__init__(parent); self.setWindowTitle("Редактировать изображение"); self.resize(520, 640)
-        self.path, self.save_photo, self.aspect, self.result_path = path, save_photo, aspect or 3 / 4, None
-        self.settings = settings or QSettings("BadgeGenerator", "Frontend")
+        self.path, self.api, self.aspect, self.result_path = path, api, aspect or 3 / 4, None
+        self.field_name, self.person_id = field_name, person_id
         self.src = open_image(path); self.img = self.src
         grid = QGridLayout(); self.sl, self.sp = {}, {}
         for i, (k, lab, lo, hi, suf) in enumerate(self.SLIDERS):
@@ -112,17 +114,26 @@ class PhotoEditor(QDialog):
         self.autoeffect.setChecked(bool(p.get("autoeffect")))
 
     def save_defaults(self):
-        p = self.params(crop=False); p.pop("crop"); self.settings.setValue("photo_editor/defaults", json.dumps(p)); return p
+        """«Установить по умолчанию» → Backend set_photo_edit_defaults (умолчания проекта, без crop)."""
+        try:
+            if self.api is None: raise ValueError("нет открытого проекта")
+            p = self.api.set_photo_edit_defaults(self.params(crop=False))
+        except ValueError as e:
+            self.status.setText(f"Умолчания не сохранены: {e}"); return None
+        self.status.setText("Текущие настройки сохранены как умолчания проекта"); return p
 
     def load_defaults(self, preview=True):
-        try: p = json.loads(self.settings.value("photo_editor/defaults") or "{}")
-        except Exception: p = {}  # noqa: BLE001
+        """«По умолчанию» → Backend get_photo_edit_defaults; нет проекта/функции → DEFAULT_PHOTO_EDIT."""
+        p = self.api.get_photo_edit_defaults() if self.api is not None else dict(PHOTO_EDIT_DEFAULTS)
         self.set_params({**PHOTO_EDIT_DEFAULTS, **p})
         if preview: self.update_preview()
 
     # ---- превью: только Backend ----
     def update_preview(self):
-        self.img = apply_photo_edit(self.src, self.params(crop=False))
+        try: self.img = apply_photo_edit(self.src, self.params(crop=False))
+        except ValueError as e:
+            self.status.setText(f"Ошибка правки: {e}"); return False
+        if self.status.text().startswith("Ошибка правки"): self.status.setText(self.base_status)
         self.pix.setPixmap(QPixmap.fromImage(pil_to_qimage(self.img)))
         b = QRectF(0, 0, self.img.width, self.img.height); self.scene.setSceneRect(b)
         if self.frame is not None:
@@ -151,7 +162,8 @@ class PhotoEditor(QDialog):
         self.frame.setRect(QRectF(x, y, w, w / self.aspect if w and h and abs(w / h - self.aspect) > 1e-3 else h))
 
     def find_face(self):
-        box = detect_face_crop(self.img, self.aspect)
+        try: box = detect_face_crop(self.img, self.aspect)
+        except ValueError as e: box = None; self.status.setText(f"Поиск лица: {e}")
         if not box:
             self.portrait.blockSignals(True); self.portrait.setChecked(False); self.portrait.blockSignals(False)
             self.status.setText("Лицо не найдено" + (f" ({self.base_status})" if not face_detect_available() else "")); return False
@@ -159,11 +171,22 @@ class PhotoEditor(QDialog):
 
     # ---- применить ----
     def apply(self):
+        """«Применить». Исходный файл есть всегда (файл или снимок во временном файле) → Backend apply_and_save_photo
+        (новый файл, исходник не трогается). Поле image СУЩЕСТВУЮЩЕЙ записи → field_name + person_id (Backend сам пишет
+        значение поля); новая запись / photo_path → без них: путь идёт в форму и сохраняется её кнопкой «Сохранить».
+        Нет apply_and_save_photo или исходного файла → apply_photo_edit + save_photo (байты)."""
         if not photo_edit_available():
             self.status.setText("Применить нельзя: в Backend нет apply_photo_edit"); return False
+        if self.api is None:
+            self.status.setText("Применить нельзя: нет открытого проекта"); return False
+        p = self.params()
         try:
-            out = apply_photo_edit(self.src, self.params())
-            self.result_path = self.save_photo(image_png_bytes(out), person_id=None, ext="png")
+            if apply_and_save_available() and self.path:
+                link = self.field_name is not None and self.person_id is not None
+                self.result_path = self.api.apply_and_save_photo(self.path, p, person_id=self.person_id if link else None,
+                                                                 field_name=self.field_name if link else None)
+            else:
+                self.result_path = self.api.save_photo(image_png_bytes(apply_photo_edit(self.src, p)), person_id=None, ext="png")
         except ValueError as e:
             self.status.setText(f"Фото не сохранено: {e}"); return False
         self.accept(); return True

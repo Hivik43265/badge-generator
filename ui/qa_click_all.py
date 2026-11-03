@@ -155,19 +155,47 @@ def scenario(tmp, chk, out, EXC):
             got = dd.report.added if dd.report else None; nf = len(api3.list_fields()); dd.reject(); api3.close()
             chk("DLG Импорт .db: подтверждение → import_fields=True, поля созданы", bool(asked) and nf > 0 and got and len(EXC) == n,
                 f"новые поля={asked[:1]}; создано полей={nf}; добавлено={got}")
-            # этап 14: редактор фото — двойной клик по фото в форме записи (тот же QAction, что в контекстном меню)
+            # этап 14: редактор фото — поле image, двойной клик по фото формы записи (тот же QAction, что в контекстном меню)
             from . import photo_editor as pe
+            from . import backend_api as ba
             from PyQt6.QtTest import QTest
-            n = len(EXC); f = RecordForm(w2.api, None, w2); f.show(); spin(50); pb = f.photo_block
-            ph = tmp / "qa14.png"; QImage(240, 320, QImage.Format.Format_RGB32).save(str(ph)); pb.from_file(str(ph)); spin(30)
-            auto = pb.editor is not None; seen = []
-            pe.editor_hook = lambda d: (d.show(), spin(50), seen.append((d.windowTitle(), d.isVisible(), d.b_apply.text(), d.b_cancel.text())), d.reject())
+            import shutil
+            from pathlib import Path
+            n = len(EXC); a14 = BackendAPI(str(tmp / "qa14.db"), base_dir=str(tmp)); a14.upsert_field("foto", "Фото", 0, data_type="image")
+            el = a14.create_element(type="photo", x=0, y=0, w=300, h=400); a14.link_field(el, "foto")
+            face = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "face_astronaut.jpg"
+            ph = tmp / "qa14.png"
+            if face.is_file(): ph = tmp / "qa14.jpg"; shutil.copy(face, ph)
+            else: img = QImage(240, 320, QImage.Format.Format_RGB32); img.fill(QColor("#7A8F9C")); img.save(str(ph))
+            f = RecordForm(a14, None, w2); f.show(); spin(50); pb = f.edits["foto"]; pb.from_file(str(ph)); spin(30)
+            auto = pb.editor is not None; seen = []; res = {}
+            def _drive(d):
+                d.show(); spin(50); seen.append((d.windowTitle(), d.isVisible(), d.b_apply.text(), d.b_cancel.text()))
+                px0 = d.img.tobytes(); d.sl["brightness"].setValue(25); d.sl["contrast"].setValue(10); d.update_preview(); spin(20)
+                res["preview"] = d.img.tobytes() != px0
+                d.portrait.setChecked(True); spin(20)
+                fr = d.frame.rect(); res["portrait"] = (d.portrait.isChecked() and abs(fr.width() / fr.height() - pb.aspect) < 0.02) \
+                    or "Лицо не найдено" in d.status.text()
+                d.autoeffect.setChecked(True); spin(100); res["auto"] = d.params()["autoeffect"] is True
+                saved = d.save_defaults(); d.sl["brightness"].setValue(-30); d.autoeffect.setChecked(False); d.load_defaults()
+                res["defaults"] = bool(saved) and d.sp["brightness"].value() == 25 and d.autoeffect.isChecked() \
+                    and a14.get_photo_edit_defaults()["brightness"] == 25
+                res["apply"] = d.apply(); res["path"] = d.result_path; res["status"] = d.status.text()
+                if d.isVisible(): d.reject()
+            pe.editor_hook = _drive
             try: QTest.mouseDClick(pb.still, Qt.MouseButton.LeftButton); spin(50)
             finally: pe.editor_hook = None
-            pb.stop(); f.reject(); spin(30)
+            val = pb.text(); pb.stop(); f.reject(); spin(30); a14.close()
             chk("DLG «Редактировать изображение» по двойному клику на фото формы записи (не открывается сам после файла)",
                 not auto and seen and seen[0][:2] == ("Редактировать изображение", True) and pb.act_edit in pb.still.actions() and len(EXC) == n,
                 seen or "не открылся")
+            if ba.photo_edit_available():
+                chk("DLG Редактор фото: ползунки меняют превью (Backend apply_photo_edit)", res.get("preview"), res)
+                chk("DLG Редактор фото: «Портрет» ставит рамку по лицу или статус «Лицо не найдено»", res.get("portrait"), res.get("status"))
+                chk("DLG Редактор фото: «Автоэффект» в параметрах", res.get("auto"), res)
+                chk("DLG Редактор фото: умолчания проекта сохраняются и восстанавливаются (Backend)", res.get("defaults"), res)
+                chk("DLG Редактор фото: «Применить» → новый photos/… в поле image", res.get("apply") is True and str(res.get("path", "")).startswith("photos/")
+                    and val == res["path"] and (tmp / val).is_file() and ph.is_file(), res)
         except Exception:  # noqa: BLE001
             chk("DLG Импорт/экспорт этапа 13 без исключений", False, traceback.format_exc()[-800:])
         finally:
