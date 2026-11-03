@@ -215,7 +215,6 @@ def scenario(tmp, chk, out, EXC):
             # существующая запись: «Применить», затем «Отмена» формы → значение поля в БД не меняется
             pid = a14.list_persons()[-1]["id"]; db0 = a14.get_person(pid)["fields"].get("foto"); r2 = {}
             f2 = RecordForm(a14, pid, w2); f2.show(); spin(30); pb2 = f2.edits["foto"]
-            from PyQt6.QtGui import QImage
             def _sz(rel):
                 q = QImage(str(tmp / rel)) if rel else QImage(); return [q.width(), q.height()]
             pe.editor_hook = lambda d: (r2.update(ok=d.apply(), path=d.result_path), r2.update(sz=_sz(d.result_path)), d.isVisible() and d.reject())
