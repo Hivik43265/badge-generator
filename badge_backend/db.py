@@ -123,8 +123,20 @@ def get_schema_version(con) -> int:
     """Текущая версия схемы БД (PRAGMA user_version); после migrate() == LATEST."""
     return int(con.execute("PRAGMA user_version").fetchone()[0])
 
+_cleaned = False
+
 def connect(path=":memory:") -> sqlite3.Connection:
-    """Открыть БД (Row factory, foreign_keys=ON) и довести схему до LATEST."""
+    """Открыть БД (Row factory, foreign_keys=ON) и довести схему до LATEST.
+    D48: при первом вызове в процессе (старт приложения — BackendAPI → connect) удаляются старые
+    рабочие копии .db-импорта (sources._cleanup_stale_work_copies; ошибки только в лог)."""
+    global _cleaned
+    if not _cleaned:
+        _cleaned = True
+        try:
+            from .services.sources import _cleanup_stale_work_copies
+            _cleanup_stale_work_copies()
+        except Exception:   # noqa: BLE001
+            import logging; logging.getLogger(__name__).exception("очистка рабочих копий")
     con = sqlite3.connect(str(path))
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys=ON")
