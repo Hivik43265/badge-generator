@@ -16,10 +16,13 @@ datas += collect_data_files("qrcode")
 try:
     import cv2 as _cv2
     _casc = os.path.join(_cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
-    if os.path.isfile(_casc): datas.append((_casc, os.path.join("cv2", "data")))
-    else: print("WARNING: haarcascade_frontalface_default.xml not found (opencv>=5 wheels ship no cascades)", file=__import__("sys").stderr)
-except ImportError:
-    print("WARNING: opencv-python-headless not installed: face detection will be unavailable", file=__import__("sys").stderr)
+except ImportError as _e:
+    raise SystemExit(f"ERROR: opencv-python-headless not installed ({_e}): face detection is required (D47)")
+if not os.path.isfile(_casc):
+    raise SystemExit(f"ERROR: {_casc} not found (opencv>=5 wheels ship no cascades; need opencv-python-headless>=4.8,<5)")
+datas.append((_casc, os.path.join("cv2", "data")))
+# D47: встроенное фото для --self-test → <_MEIPASS>/badge_backend/assets/selftest_face.jpg
+datas.append((os.path.join(ROOT, "badge_backend", "assets", "selftest_face.jpg"), os.path.join("badge_backend", "assets")))
 hidden = collect_submodules("badge_backend") + collect_submodules("barcode") + ["qrcode.image.pil"]
 # Этап 13 / D22: аудит hiddenimports. Модули ui/ импортируются статически из main_window (PyInstaller
 # находит их сам), но ленивые импорты внутри функций (QtMultimedia в main_view.camera_available /
@@ -90,3 +93,8 @@ with open(os.path.join(_dist, "BadgeGenerator.bundle.txt"), "w", encoding="utf-8
         f.write(f"{'FOUND' if inb else 'MISSING'}\t{pat}\t{','.join(inb)}\n")
     _casc_in = any(str(t[0]).replace("\\", "/").endswith("cv2/data/haarcascade_frontalface_default.xml") for t in a_app.datas)
     f.write(f"{'FOUND' if _casc_in else 'MISSING'}\tcv2/data/haarcascade_frontalface_default.xml\t\n")
+    _cv2_in = [os.path.basename(str(t[0])) for t in a_app.binaries
+               if str(t[0]).replace("\\", "/").lower().startswith("cv2/") and str(t[0]).lower().endswith((".pyd", ".so"))]
+    f.write(f"{'FOUND' if _cv2_in else 'MISSING'}\tcv2\t{','.join(_cv2_in)}\n")
+    _st_in = any(str(t[0]).replace("\\", "/").endswith("badge_backend/assets/selftest_face.jpg") for t in a_app.datas)
+    f.write(f"{'FOUND' if _st_in else 'MISSING'}\tbadge_backend/assets/selftest_face.jpg\t\n")
