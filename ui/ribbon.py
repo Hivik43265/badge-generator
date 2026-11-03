@@ -137,7 +137,9 @@ class Ribbon(QTabWidget):
         if it.menu() is not None: b.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         if small:
             b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon); b.setIconSize(QSize(16, 16))
-            b.setFixedHeight(self.SMALL_H); b.setText(it.iconText().replace("\n", " "))
+            one = lambda b=b, it=it: b.setText(it.iconText().replace("\n", " "))
+            one(); it.changed.connect(one)          # QToolButton сбрасывает текст из iconText при changed
+            b.setFixedHeight(max(self.SMALL_H, b.sizeHint().height()))
         else:
             b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon); b.setIconSize(QSize(26, 26))
             lines = it.iconText().split("\n")

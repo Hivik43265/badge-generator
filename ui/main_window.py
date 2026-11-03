@@ -190,7 +190,7 @@ class MainWindow(QMainWindow):
         self.act_queue_toggle = A("act_queue_toggle", "В очередь / из очереди", self.queue_toggle, "mark", "Space",
                                   icon_text="В очередь")
         self.act_mark_printed = A("act_mark_printed", "Напечатано", self.mark_printed, "printed")
-        self.act_mark_unprinted = A("act_mark_unprinted", "Не напечатано", self.mark_unprinted, "unprinted", icon_text="Не\nнапечатано")
+        self.act_mark_unprinted = A("act_mark_unprinted", "Не напечатано", self.mark_unprinted, "unprinted", icon_text="Не напечат.")
         self.display_group = QActionGroup(self); self.display_actions = {}
         for v, t in PRINTED_FILTERS:
             key = {None: "all", True: "printed", False: "unprinted"}[v]

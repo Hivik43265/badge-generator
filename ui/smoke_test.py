@@ -476,6 +476,7 @@ def ribbon_visible(tab):
         if not g.collapsed:
             for b in g.full.findChildren(QToolButton):
                 if b.isVisible(): assert b.sizeHint().width() <= b.width() + 1, (tab, b.text(), b.sizeHint().width(), b.width())
+                if b.isVisible(): assert b.sizeHint().height() <= b.height() + 1, (tab, b.text(), b.sizeHint().height(), b.height())  # D18
     return [g.title for g in w.ribbon.groups[tab] if g.collapsed]
 collapsed = {t: ribbon_visible(t) for t in TABS}
 assert all(c == [] for c in collapsed.values()), collapsed           # при 1024 px всё помещается без сворачивания
