@@ -70,7 +70,10 @@ def run(argv=None, *, app=None, log_file=None, exit_process=False):
             from . import main_window as _mw, dialogs as _dlg
             pdf.parent.mkdir(parents=True, exist_ok=True)
             a49 = BackendAPI(pdf.parent / "print.db", pdf.parent); a49.upsert_field("fio", "ФИО", 0)
-            a49.create_person({"fio": "Самотест Печать"}, print_mark=1)
+            pid49 = a49.create_person({"fio": "Самотест Печать"}, print_mark=1)
+            # D49 ч.3: шаблон только во временном проекте самопроверки — текст и Code128 (в продукте шаблона по умолчанию нет)
+            a49.create_element(type="text", x=60, y=60, w=600, h=90, static_value="Тест Кириллица")
+            a49.create_element(type="barcode", x=60, y=300, w=500, h=150, static_value="SELFTEST49", style={"format": "code128"})
             w49 = _mw.MainWindow(a49); old_cm, _mw.clear_marks_hook = _mw.clear_marks_hook, (lambda parent, n: False)
             old_cf, _dlg.confirm_hook = _dlg.confirm_hook, (lambda parent, miss, names: True)   # «нет фото» → печатать с плейсхолдером
             warn49 = []; old_wh, _dlg.warning_hook = _dlg.warning_hook, (lambda kind, text: warn49.append(text))  # без модальных окон
@@ -79,7 +82,13 @@ def run(argv=None, *, app=None, log_file=None, exit_process=False):
                 res, err = w49.do_print(printer=pr)
             finally: _mw.clear_marks_hook, _dlg.confirm_hook, _dlg.warning_hook = old_cm, old_cf, old_wh
             size = pdf.stat().st_size if pdf.is_file() else -1
-            chk(_n49, err is None and size > 0, f"{pdf}; размер={size} байт; результат={res!r}; ошибка={err!r}; предупреждения={warn49}")
+            empty49 = [t for t in warn49 if "Шаблон пуст" in str(t)]
+            chk(_n49, err is None and size > 0 and not empty49, f"{pdf}; размер={size} байт; результат={res!r}; ошибка={err!r}; предупреждения={warn49}")
+            # рендер карточки Backend (PIL): есть небелые пиксели (координаты не сравниваем)
+            from badge_backend import api as _bapi
+            img49 = _bapi.render_card_db(a49.con, pid49, "front", a49.base_dir).convert("L")
+            mn49 = img49.getextrema()[0]
+            chk("D49 рендер карточки (текст + Code128): есть небелые пиксели", mn49 < 255, f"min яркость={mn49}; размер={img49.size}")
         except Exception as e:  # noqa: BLE001
             chk(_n49, False, f"{type(e).__name__}: {e}")
         finally:
