@@ -145,33 +145,42 @@ def label_mapping(con, columns, mapping=None) -> dict:
     from .headers import split_mapping, header_key
     _, explicit = split_mapping(mapping)
     base = map_headers(columns, mapping); smart = auto_match(columns, mapping, fields=con)
+    from .headers import PHOTO_ALIASES
     return {c: s for c, b, s in zip(columns, base, smart)
-            if s and s != b and c is not None and header_key(c) not in explicit}
+            if s and s != b and c is not None and (header_key(c) not in explicit or b in PHOTO_ALIASES)}
 
 def auto_match(columns, mapping: dict | None = None, fields=None) -> list:
     """Ключ поля для каждой колонки (None — пропустить). Синонимы — headers.map_headers.
     fields (D24/D26) — существующие поля проекта: sqlite-соединение, list_fields()-список или имена.
     Тогда порядок: ручной mapping → имя поля → label поля (без учёта регистра/пробелов) → синоним,
     если он указывает на существующее поле; иначе None. Служебные колонки (фото, печать) и '__fio__'
-    (если в проекте есть last_name/first_name/middle_name) сохраняются. Поля не создаются никогда."""
+    (если в проекте есть last_name/first_name/middle_name) сохраняются. Поля не создаются никогда.
+    D36: колонка фото (синонимы photo_path/«Фото»/«путь к фото»…, или ручная цель из headers.PHOTO_ALIASES)
+    → первое image-поле проекта (по sort_order), если оно есть, иначе headers.PHOTO_TARGET ('photo_path')."""
     keys = map_headers(columns, mapping)
     if fields is None: return keys
     if hasattr(fields, "execute"):
-        fl = [dict(zip(("name", "label"), r)) for r in fields.execute("SELECT name, label FROM person_fields")]
+        fl = [dict(zip(("name", "label", "data_type"), r)) for r in
+              fields.execute("SELECT name, label, data_type FROM person_fields ORDER BY sort_order, name")]
     else:
         fl = [f if isinstance(f, dict) else {"name": f, "label": f} for f in fields]
-    from .headers import header_key, split_mapping, SERVICE_KEYS
+    from .headers import header_key, split_mapping, SERVICE_KEYS, PHOTO_TARGET, PHOTO_ALIASES
     _, explicit = split_mapping(mapping)
     names = {f["name"] for f in fl}
+    img = next((f["name"] for f in fl if f.get("data_type") == "image"), None)
+    photo = img or PHOTO_TARGET
     by_name = {header_key(f["name"]): f["name"] for f in fl}
     by_label = {header_key(f.get("label") or f["name"]): f["name"] for f in fl}
     out, used = [], set()
     for c, k in zip(columns, keys):
         hk = header_key(c) if c is not None else ""
         if not hk: k = None
-        elif hk in explicit: k = k if (k in names or k in SERVICE_KEYS) else None
+        elif hk in explicit:
+            if k in PHOTO_ALIASES and k not in names: k = photo
+            k = k if (k in names or k in SERVICE_KEYS) else None
         elif hk in by_name: k = by_name[hk]
         elif hk in by_label: k = by_label[hk]
+        elif k == PHOTO_TARGET: k = photo
         elif k in SERVICE_KEYS: pass
         elif k == "__fio__": k = k if names & {"last_name", "first_name", "middle_name"} else None
         elif k not in names: k = None
@@ -250,7 +259,7 @@ def import_rows(con, sheet: Sheet, mapping: dict | None = None, *, header: bool 
         if rep.cancelled and created:
             with con: con.executemany("DELETE FROM person_fields WHERE name=?", [(k,) for k in created])
         return rep
-    mapping = {**label_mapping(con, cols, mapping), **(mapping or {})} or mapping
+    mapping = {**(mapping or {}), **label_mapping(con, cols, mapping)} or mapping   # lm не трогает ручные, кроме цели фото (D36)
     recs, labs = parse_rows(cols, rows, mapping, labels, strip=validate)
     if sheet.kind == "xlsx" and extract_images and header:
         if photo_dir is None:
