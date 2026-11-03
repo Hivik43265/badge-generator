@@ -213,6 +213,14 @@ def scenario(tmp, chk, out, EXC):
             try: QTest.mouseDClick(pb2.still, Qt.MouseButton.LeftButton); spin(50)
             finally: pe.editor_hook = None
             mid = a14.get_person(pid)["fields"].get("foto"); form2 = pb2.text(); pb2.stop(); f2.reject(); spin(30)
+            # «Из файла…» + «Отмена»: копия сессии удаляется, исходник пользователя цел (в т.ч. уже лежащий в photos/)
+            ff = []
+            if real_d:
+                (tmp / "photos").mkdir(exist_ok=True); inph = tmp / "photos" / "qa14_user.jpg"; shutil.copy(ph, inph)
+                for srcf in (ph, inph):
+                    f3 = RecordForm(a14, pid, w2); b3 = f3.edits["foto"]; ok3 = b3.from_file(str(srcf)); cp = b3.text()
+                    tracked = list(f3.photo_session.created); f3.reject(); spin(10)
+                    ff.append((srcf.name, ok3 and cp != str(srcf) and tracked == [cp] and srcf.is_file() and not (tmp / cp).is_file(), cp))
             db1 = a14.get_person(pid)["fields"].get("foto"); p2 = r2.get("path")
             gone = p2 is not None and not (tmp / p2).is_file(); disc = getattr(f2, "discarded", None); a14.close()
             chk("DLG «Редактировать изображение» по двойному клику на фото формы записи (не открывается сам после файла)",
@@ -228,6 +236,7 @@ def scenario(tmp, chk, out, EXC):
                         res.get("sent_portrait") and res.get("portrait_restored") and res.get("portrait_reopen"), res)
                 chk("DLG Редактор фото: пропорции рамки = Backend photo_edit_target (поле image)", res.get("aspect") and res["aspect"][0] == res["aspect"][1], res.get("aspect"))
                 if real_d:
+                    chk("DLG «Из файла…» + «Отмена»: копия сессии удалена, исходник цел (вне и внутри photos/)", len(ff) == 2 and all(x[1] for x in ff), ff)
                     chk("DLG Редактор фото D43: «Отмена» формы → PhotoSession.discard() удаляет файл редактора без ссылок",
                         disc == [p2] and gone and db1 == db0 and (tmp / db0).is_file(), (disc, p2, gone))
                 chk("DLG Редактор фото: умолчания проекта сохраняются и восстанавливаются (Backend)", res.get("defaults"), res)

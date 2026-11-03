@@ -118,6 +118,16 @@ class PhotoBlock(QWidget):
                 QFileDialog.getOpenFileName(self, "Фото записи", self.base_dir, "Изображения (*.png *.jpg *.jpeg *.bmp)")[0]
         if not path: return False
         self.captured = None
+        if self.session is not None:
+            # «Из файла…» через Backend PhotoSession.save_photo: новая копия в photos/ (её учитывает сессия),
+            # выбранный исходник никогда не трогается и не учитывается. UI сам ничего не решает и .track не зовёт.
+            try:
+                with open(path, "rb") as f: data = f.read()
+                ext = os.path.splitext(path)[1].lstrip(".") or "jpg"
+                path = self.session.save_photo(data, ext=ext)
+            except (OSError, ValueError) as e:
+                self.status.setText(f"Фото не загружено: {e}"); return False
+            self.path = path; self._show_still(); self._update_buttons(); self.changed.emit(path); return True
         try:
             rel = os.path.relpath(path, self.base_dir); path = path if rel.startswith("..") else rel
         except ValueError:
