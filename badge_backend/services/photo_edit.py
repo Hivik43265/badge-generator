@@ -87,8 +87,9 @@ def apply_photo_edit(img: Image.Image, params: dict | None) -> Image.Image:
 
 # ---------- лицо ----------
 CASCADE = "haarcascade_frontalface_default.xml"
-FACE_HEIGHT = 0.65      # доля высоты кадра, занимаемая лицом (60–70%)
-HEADROOM = 0.12         # отступ над верхом прямоугольника лица, доля высоты кадра
+FACE_HEIGHT = 0.65      # доля высоты кадра, занимаемая головой (макушка..низ Haar), 60–70%
+HEAD_TOP = 0.30         # макушка выше верха прямоугольника Haar на HEAD_TOP·fh (Haar начинается ото лба)
+TOP_SHARE = 0.40        # доля свободного места кадра над макушкой (остальное — под подбородком)
 
 def cascade_path() -> str:
     """Путь к Haar-каскаду: в exe (PyInstaller) — <_MEIPASS>/cv2/data/, иначе cv2.data.haarcascades."""
@@ -111,7 +112,8 @@ def _classifier():
 def detect_face_crop(img: Image.Image, aspect: float):
     """Кадр (x, y, w, h) в пикселях переданного img по самому крупному лицу; нет лица → None.
     Кадр: высота H = лицо / FACE_HEIGHT, ширина W = H·aspect (aspect = w/h элемента photo), лицо по центру
-    по горизонтали, верх кадра на HEADROOM·H выше верха лица. Без «полей»: если кадр больше изображения,
+    по горизонтали, голова = Haar + HEAD_TOP·fh над ним (макушка) занимает FACE_HEIGHT кадра,
+    над макушкой TOP_SHARE свободного места. Без «полей»: если кадр больше изображения,
     он уменьшается (с сохранением aspect) до вписывания, затем сдвигается внутрь границ."""
     import numpy as np
     import cv2
@@ -122,10 +124,12 @@ def detect_face_crop(img: Image.Image, aspect: float):
     faces = _classifier().detectMultiScale(g, scaleFactor=1.1, minNeighbors=5, minSize=(m, m))
     if len(faces) == 0: return None
     fx, fy, fw, fh = max(faces, key=lambda f: int(f[2]) * int(f[3]))
-    H = fh / FACE_HEIGHT; W = H * aspect
+    head_top = fy - HEAD_TOP * fh; head_h = fh + HEAD_TOP * fh
+    H = head_h / FACE_HEIGHT; W = H * aspect
     k = min(1.0, img.width / W, img.height / H); W *= k; H *= k
     cx = fx + fw / 2
-    x = _clamp(cx - W / 2, 0, img.width - W); y = _clamp(fy - HEADROOM * H, 0, img.height - H)
+    x = _clamp(cx - W / 2, 0, img.width - W)
+    y = _clamp(head_top - TOP_SHARE * max(0.0, H - head_h), 0, img.height - H)
     h = max(1, int(round(H))); w = max(1, min(img.width, int(round(h * aspect))))
     if w > img.width: w = img.width; h = max(1, int(round(w / aspect)))
     x = int(_clamp(round(x), 0, img.width - w)); y = int(_clamp(round(y), 0, img.height - h))
