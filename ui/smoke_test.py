@@ -781,6 +781,25 @@ dialogs.confirm_fields_hook = lambda new: seen.append(new) or True; dd.run(); di
 assert seen and dd.report.added == len(api.list_persons()) - 1 and {f["name"] for f in api2.list_fields()} >= {f0["name"]}, (dd.log.toPlainText(), api2.list_fields())
 dd.reject(); assert dd.sheets == [] and (wp is None or not Path(wp).exists()); api2.close()
 ok(f"этап 13: импорт xlsx (лист, заголовок, auto_match, «Отметка печати», привязка save/load/битая), .db → подтверждение → import_fields=True; sheet.close() при закрытии")
+# ===== D48: ImportDialog.close_sheets — OSError в журнал, повтор при закрытии, прочие исключения не глотаются =====
+from pathlib import Path as _P48
+class _Sh48:
+    def __init__(self, name, fails, exc=OSError): self.work_path, self.name, self.fails, self.exc, self.calls = _P48(f"/tmp/{name}"), name, fails, exc, 0
+    def close(self):
+        self.calls += 1
+        if self.calls <= self.fails: raise self.exc(f"занят {self.name}")
+d48 = ImportDialog(api, w); a48, b48, c48 = _Sh48("a48.db", 1), _Sh48("b48.db", 0), _Sh48("c48.db", 5)
+d48.sheets = [a48, b48, c48]; d48.close_sheets()                      # смена файла: ошибка в журнал, остальные закрыты
+lg = d48.log.toPlainText()
+assert "Не удалось закрыть источник «a48.db»" in lg and "занят a48.db" in lg and "«c48.db»" in lg and b48.calls == 1 and d48.sheets == [], lg
+d48.reject(); app.processEvents()                                     # закрытие: одна повторная попытка для неудачных
+assert a48.calls == 2 and c48.calls == 2 and b48.calls == 1 and d48._close_failed == [], (a48.calls, c48.calls)
+d48b = ImportDialog(api, w); u48, v48 = _Sh48("u48.db", 1, KeyError), _Sh48("v48.db", 0); d48b.sheets = [u48, v48]
+try: d48b.close_sheets(); raise AssertionError("KeyError проглочен")
+except KeyError: pass
+assert v48.calls == 1 and "u48" not in d48b.log.toPlainText(); d48b.deleteLater()
+ok("D48: OSError Sheet.close() → журнал диалога (имя файла, по-русски), остальные листы закрыты, повтор один раз при закрытии; прочие исключения пробрасываются")
+
 # ===== этап 14: редактор фото (двойной клик / контекстное меню, ползунки, рамка, Портрет, умолчания, Применить) =====
 from PyQt6.QtTest import QTest
 from PyQt6.QtCore import QPointF, QRectF
