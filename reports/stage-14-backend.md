@@ -63,3 +63,22 @@ tests/test_photo_edit.py (14), tests/test_d36_photo_column.py (10); номера
   читается `get_photo_edit_defaults(con)["portrait"]`; старые записи без ключа → False. На пиксели в apply_photo_edit
   не влияет (флаг UI: кадрировать через detect_face_crop). Тест: tests/test_d41_portrait.py.
 - pytest 402 passed; e2e_stage13 67/67, e2e_stage13b 29/29 (e2e_stage14 в reports/qa не найден).
+
+## D42 (заменяет правило D40 «60–70 %»): рамка из шаблона + новое кадрирование
+Слова Ивана: «Рамка в редакторе не должна полностью брать лицо. Учитывается размер рамки в шаблоне обязательно».
+- `get_photo_frame_spec(con, field=None) -> dict | None` (`badge_backend.services.photo_edit`, `api`):
+  field — имя или rowid image-поля; None — фото записи (photo-элементы без field_name). Первый photo-элемент
+  с этим полем: лицевая сторона, затем z_order, id. → `{aspect, width_mm, height_mm, width_px, height_px, element_id, side}`
+  (мм = px·25.4/300, выход при 300 DPI). Нет элемента / поле не image → None (редактор без фикс. пропорций).
+- `detect_face_crop(img, aspect)`: макушка = верх Haar − 0.25·fh, подбородок = низ Haar; голова 50 % высоты
+  рамки, над макушкой 10 %, ниже подбородка ~40 % (шея, плечи), лицо по центру. За краем — сдвиг, если рамка
+  больше фото — уменьшение с сохранением aspect.
+- Фото для тестов: `tests/fixtures/portrait_biden.jpg` 640×800, public domain (см. .SOURCE.txt).
+  aspect 0.778 (35×45): рамка (114,52,411,528), голова 50.2 %, запас 9.8 %; aspect 1.111: (26,52,587,528), то же.
+- e2e_stage14 (Контролёра): проверка «лицо 60–70 %» теперь FAIL (0.402 по её мере) — правило отменено, нужна новая проверка 45–55 % голова / ~10 % запас.
+
+## D43: отмена формы записи
+- `discard_photo(con, paths, base_dir=None) -> list[str]` удаляет только файлы прямо в `<base>/photos/`,
+  без ссылок (persons.photo_path, image-поля). Исходники и файлы со ссылками не трогаются.
+- `PhotoSession(con, base_dir=None)`: `.save_photo(bytes, **kw)`, `.apply_and_save_photo(src, params, **kw)`,
+  `.track(rel)`, `.discard()` (Отмена), `.commit(discard_unreferenced=False)` (Сохранить).
