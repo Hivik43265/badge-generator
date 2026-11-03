@@ -161,7 +161,13 @@ class RecordForm(QDialog):
             msg = "\n".join(f"• {b.get('field')}: {b.get('details') or b.get('code')}" for b in bad)
             if validate_hook is not None: validate_hook(msg); return False
             QMessageBox.warning(self, "Проверка полей", f"Значения не соответствуют типу поля:\n{msg}"); return False
-        photo = self.photo_block.commit() if self.photo_block.captured else (self.photo_path.text() or None)
+        try:
+            photo = self.photo_block.commit(self.api.save_photo, self.person_id or None) if self.photo_block.captured \
+                else (self.photo_path.text() or None)
+        except ValueError as e:
+            msg = f"Снимок не сохранён: изображение пустое или повреждено ({e}). Переснимите или выберите файл."
+            if validate_hook is not None: validate_hook(msg); return False
+            QMessageBox.warning(self, "Фото", msg); return False
         try:
             for f in self._new_fields:
                 self.api.upsert_field(f["name"], f["label"], f["sort_order"])   # D19: поле шаблона → person_fields

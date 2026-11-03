@@ -102,6 +102,10 @@ class BackendAPI:
 
     # --- записи ---
     def list_fields(self): return _api.list_fields(self.con)
+    def save_photo(self, image_bytes, *, person_id=None, ext="jpg"):
+        """Backend fa29d7d: файл в папку фото проекта → "photos/<name>"; с person_id сам пишет photo_path. ValueError — пусто/битые."""
+        return _api.save_photo(self.con, image_bytes, person_id=person_id, ext=ext, base_dir=self.base_dir)
+
     def auto_match(self, columns, mapping=None):
         return _api.auto_match(columns, mapping, fields=self.con)
 

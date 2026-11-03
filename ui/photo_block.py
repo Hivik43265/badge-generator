@@ -1,9 +1,8 @@
 """Блок фото формы записи (D22): живая камера (QtMultimedia) с выбором устройства, «Сфотографировать»,
 «Переснять», «Из файла…». Без камеры/QtMultimedia — понятная надпись, работает «Из файла…».
 
-Снимок сразу попадает в превью (временный файл). При сохранении записи commit() кладёт его в папку фото проекта
-(<base_dir>/photos/), в запись — относительный photo_path. Сервиса Backend для этого пока нет (см. отчёт D22:
-save_photo(con|base_dir, image_bytes, *, person_id=None, ext="jpg") -> str).
+Снимок сразу попадает в превью (временный файл). При сохранении записи commit() передаёт байты в Backend
+save_photo (fa29d7d) → относительный photo_path «photos/<name>».
 """
 import os, tempfile, uuid
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -131,13 +130,13 @@ class PhotoBlock(QWidget):
     def _update_buttons(self):
         self.b_shot.setEnabled(self.has_camera and self.captured is None); self.b_retake.setEnabled(self.has_camera and self.captured is not None)
 
-    def commit(self):
-        """Перенести снимок в <base_dir>/photos/ и вернуть относительный photo_path (или текущий путь/None)."""
+    def commit(self, save_photo, person_id=None):
+        """Снимок → Backend save_photo(image_bytes, person_id=…, ext=…) → «photos/<name>» (ValueError — пусто/битые данные).
+        Без снимка — текущий путь (из файла) или None."""
         if self.captured:
-            d = os.path.join(self.base_dir, "photos"); os.makedirs(d, exist_ok=True)
-            name = f"capture_{uuid.uuid4().hex[:12]}.jpg"
-            QImage(self.captured).save(os.path.join(d, name), "JPG", 92)
+            with open(self.captured, "rb") as f: data = f.read()
+            rel = save_photo(data, person_id=person_id, ext="png")
             try: os.remove(self.captured)
             except OSError: pass
-            self.captured = None; self.path = os.path.join("photos", name).replace("\\", "/")
+            self.captured = None; self.path = rel
         return self.path or None

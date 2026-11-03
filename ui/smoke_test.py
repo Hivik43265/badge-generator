@@ -629,25 +629,26 @@ fm = w.field_manager(exec_=False)
 fm.set_default("position", "Сотрудник")
 assert next(f for f in api.list_fields() if f["name"] == "position")["default_value"] == "Сотрудник"
 links = api.list_field_links(); fld = next(k for k, v in links.items() if v)
-it = fm.tree.topLevelItem(next(i for i in range(fm.tree.topLevelItemCount())
-                               if fm.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole) == ("field", fld)))
-assert it.childCount() == len(links[fld]); fm.tree.setCurrentItem(it); assert not fm.b_link.isEnabled() and not fm.b_unlink.isEnabled()
-ch = it.child(0); fm.tree.setCurrentItem(ch); eid_l = ch.data(0, Qt.ItemDataRole.UserRole)[1]
+top = [fm.tree.topLevelItem(i) for i in range(fm.tree.topLevelItemCount())]
+assert all(t.childCount() == 0 for t in top) and not any(t.text(0) == "Не связаны" for t in top)      # плоский список
+assert [t.data(0, Qt.ItemDataRole.UserRole) for t in top if t.text(1) == "Изображение"], "строка фото обязательна"
+assert not any(t.text(0).startswith("~") for t in top)
+it = next(t for t in top if t.data(0, Qt.ItemDataRole.UserRole) == ("field", fld)); assert not it.icon(0).isNull()
+fm.tree.setCurrentItem(it); fm.set_element(None); assert not fm.b_link.isEnabled() and not fm.b_unlink.isEnabled()
+eid_l = links[fld][0]["element_id"]; fm.set_element(eid_l)
 assert fm.b_unlink.isEnabled(); fm.unlink(); e_ = next(e for e in api.list_elements() if e["id"] == eid_l)
 assert not e_.get("field_name") and e_["type"] == "text"          # Backend: field → text
-free = next(fm.tree.topLevelItem(i) for i in range(fm.tree.topLevelItemCount()) if fm.tree.topLevelItem(i).text(0) == "Не связаны")
-fm.tree.setCurrentItem(next(free.child(j) for j in range(free.childCount()) if free.child(j).data(0, Qt.ItemDataRole.UserRole)[1] == eid_l))
-assert fm.b_link.isEnabled(); fm.link(fld)                          # Backend 01a1768: text → field
+fm._select_field(fld); fm.set_element(eid_l)
+assert fm.b_link.isEnabled() and not fm.b_unlink.isEnabled(); fm.link()             # Backend 01a1768: text → field
 e_ = next(e for e in api.list_elements() if e["id"] == eid_l); assert e_["type"] == "field" and e_["field_name"] == fld, e_
 assert fm.b_print.text() == "Печать" and fm.b_print.toolTip() == "Печать списка полей"
 assert ImportDialog(api, w).b_fields.defaultAction() is w.act_field_manager   # тот же QAction, без нового действия
 bc = api.create_element(type="barcode", x=10, y=10, w=300, h=80, side="back", static_value="123"); fm.reload()
-free = next(fm.tree.topLevelItem(i) for i in range(fm.tree.topLevelItemCount()) if fm.tree.topLevelItem(i).text(0) == "Не связаны")
-fm.tree.setCurrentItem(next(free.child(j) for j in range(free.childCount()) if free.child(j).data(0, Qt.ItemDataRole.UserRole)[1] == bc))
+fm._select_field("employee_id"); fm.set_element(bc)
 assert fm.b_link.isEnabled() and not fm.b_unlink.isEnabled(); fm.link("employee_id")
 assert next(e for e in api.list_elements() if e["id"] == bc)["field_name"] == "employee_id"
 assert any(x["element_id"] == bc for x in api.list_field_links()["employee_id"])
-api.delete_element(bc); fm.reload()
+api.delete_element(bc); fm.set_element(None); fm.reload()
 assert "Сотрудник" in fm.field_list_text()
 prn = QPrinter(); prn.setOutputFormat(QPrinter.OutputFormat.PdfFormat); prn.setOutputFileName(str(tmp / "fields.pdf"))
 assert fm.print_list(prn) and (tmp / "fields.pdf").stat().st_size > 0
