@@ -66,3 +66,8 @@ D43 + b1aa100 «Из файла…»:
   - ui/backend_api.py:355 — `_bapi_apply_and_save_photo(self, source_path, params, *, person_id=None, field_name=None)` не принимает и не передаёт target_field/size.
   - Исправление: передавать target_field=<имя image-поля> (то же поле, что для photo_edit_target).
 - Скриншоты обновлены (не в коммите): reports/qa/stage14_raw.png, stage14_portrait.png, stage14_autoeffect.png, stage14_card.png.
+
+## Перепроверка D45 (Frontend 663bfdc → cherry-pick 0d278c2)
+- pytest 408 passed; --self-test/click_all 102/102; e2e_stage14 58/58 (импортирует ui/ из этого worktree).
+- D44 PASS, D45 PASS: «Применить» через UI сохраняет фото ровно 330×413 (photo_edit_target.size).
+- Визуально (скриншоты пересозданы с --shots): голова не обрезана, сверху есть запас, видны шея и плечи; на карточке «Байден» и портрет с головой и плечами, без искажений.
