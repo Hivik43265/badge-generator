@@ -95,3 +95,18 @@ def test_import_image_field_bad_file(prj, payload, code):
     assert rep.photo_issues == [{"row": 3, "code": code, "file": "bad.png"}]
     assert sorted((w["row"], w["code"]) for w in rep.warnings) == [(3, code), (4, "PHOTO_MISSING")]
     assert [x["fields"].get("pic") for x in api.list_persons(con)] == ["ok.png", None, "none.png"]
+
+def test_missing_photos_uses_linked_image_field(prj):
+    con, d = prj
+    _img(d / "old.png", "blue"); (d / "bad.png").write_bytes(b"junk")
+    a = api.create_person(con, {"name": "A"}, photo_path="old.png")                 # только photo_path
+    b = api.create_person(con, {"name": "B", "pic": "old.png"})                     # фото только в поле
+    c = api.create_person(con, {"name": "C", "pic": "bad.png"}, photo_path="old.png")  # поле битое
+    for i in (a, b, c): api.set_print_mark(con, [i], True) if hasattr(api, "set_print_mark") else None
+    ids = [a, b, c]
+    ph = api.create_element(con, "photo", 0, 0, 50, 50)
+    assert api.missing_photos(con, ids, d) == [b]            # не привязан → только photo_path
+    api.link_field(con, ph, "pic")
+    assert api.missing_photos(con, ids, d) == [c]            # привязан: поле, иначе photo_path
+    api.update_person(con, c, {"pic": ""})
+    assert api.missing_photos(con, ids, d) == []

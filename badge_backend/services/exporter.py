@@ -52,31 +52,31 @@ def template_warnings(snap) -> tuple[bool, list[str]]:
         logging.getLogger(__name__).warning(m); _w.warn(m, RuntimeWarning, stacklevel=3)
     return set(empty) == sides, msgs
 
-def _photo_ok(photo_path, base_dir) -> bool:
-    if not photo_path: return False
-    p = Path(photo_path)
-    if not p.is_absolute() and base_dir: p = Path(base_dir) / p
-    if not p.is_file() or p.stat().st_size == 0: return False
-    try:
-        from PIL import Image
-        with Image.open(p) as im: im.verify()
-        return True
-    except Exception:
-        return False
+def _photo_ok(person, element=None, base_dir=None) -> bool:
+    """Фото записи для элемента доступно и читается (правило resolve_photo_path)."""
+    from .photos import resolve_photo_path, photo_file_issue
+    p = resolve_photo_path(person, element, base_dir)
+    return p is not None and photo_file_issue(p) is None
+
+def _linked_photo_elements(elements):
+    return [e for e in elements or () if e.get("type") == "photo" and e.get("field_name")]
 
 def missing_photos_in_snapshot(snap, base_dir=None) -> list[int]:
-    """id записей snapshot, у которых photo_path пуст или файл недоступен/битый (порядок сохранён, без повторов)."""
-    seen, out = set(), []
+    """id записей snapshot без доступного фото (порядок сохранён, без повторов).
+    Есть photo-элементы, привязанные к image-полю (на любой стороне в snapshot) → проверяется каждый
+    (значение поля, иначе persons.photo_path); нет → только persons.photo_path."""
+    els, order, persons = {}, [], {}
     for job in snap:
-        p = job["person"]
-        if p["id"] in seen: continue
-        seen.add(p["id"])
-        if not _photo_ok(p.get("photo_path"), base_dir): out.append(p["id"])
-    return out
+        pid = job["person"]["id"]
+        if pid not in persons: order.append(pid); persons[pid] = job["person"]; els[pid] = []
+        for e in _linked_photo_elements(job.get("elements")):
+            if e not in els[pid]: els[pid].append(e)
+    return [pid for pid in order
+            if not all(_photo_ok(persons[pid], e, base_dir) for e in (els[pid] or [None]))]
 
 def missing_photos(con, ids=None, base_dir=None) -> list[int]:
     """Предпроверка для UI: id записей без фото/с недоступным файлом. ids=None → все print_mark=1."""
-    return missing_photos_in_snapshot(snapshot(con, ids, "front"), base_dir)
+    return missing_photos_in_snapshot(snapshot(con, ids), base_dir)
 
 def check_photos(snap, base_dir, allow_missing_photo):
     """→ missing ids; при allow_missing_photo=False и непустом списке — MissingPhotosError."""
