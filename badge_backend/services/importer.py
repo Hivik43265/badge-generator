@@ -113,6 +113,8 @@ def _validate(records, photo_dir):
             errs.setdefault(i, []).append({"field": "photo_path", "code": "PHOTO_MISSING", "details": "фото не указано"})
     return errs, (lambda r: r), FALLBACK_VALIDATOR
 
+_PHOTO_SOFT = ("PHOTO_MISSING", "PHOTO_NOT_FOUND", "PHOTO_EMPTY", "PHOTO_BROKEN")
+
 class _Cancel(Exception):
     pass
 
@@ -159,7 +161,8 @@ def import_file(con, path, mapping=None, photo_dir=None, validate=True, *, label
     mapping        см. headers.map_headers; None/'' у заголовка исключает колонку.
     labels         {key: label} для person_fields (перезаписывает существующий label).
     require_photo  False (по умолчанию): записи без фото или с ненайденным файлом фото импортируются,
-                   PHOTO_MISSING → report.warnings (photo_path сохраняется как указан),
+                   PHOTO_MISSING → report.warnings (photo_path сохраняется как указан); пустой/битый файл —
+                   импорт с warning PHOTO_EMPTY/PHOTO_BROKEN и пустым photo_path,
                    рендер рисует плейсхолдер. True: PHOTO_MISSING — ошибка, строка пропускается
                    (проверяется и без photo_dir).
     progress       callable(done, total) по вставкам; вернул False → отмена: откат всей транзакции,
@@ -174,21 +177,26 @@ def import_records(con, recs, labs, photo_dir=None, validate=True, *, labels=Non
     """Общее ядро импорта (одна транзакция): валидация, person_fields, вставка persons.
     cancel — callable() → True (или объект с is_set(), напр. threading.Event) — отмена с откатом.
     extra  {idx: {'print_mark':…, 'printed_at':…}} — доп. колонки persons (импорт из проектной БД)."""
-    rep = ImportReport()
+    rep = ImportReport(); clear_photo = set()
     if validate: verrs, norm, rep.validator = _validate(recs, photo_dir)
     else: verrs, norm, rep.validator = {}, (lambda r: r), "off"
     for i, r in enumerate(recs):
         if require_photo and not r.get("photo_path") and not any(e["code"] == "PHOTO_MISSING" for e in verrs.get(i, [])):
             verrs.setdefault(i, []).append({"field": "photo_path", "code": "PHOTO_MISSING", "details": "фото не указано"})
         if not require_photo and i in verrs:
-            # фото не указано (PHOTO_MISSING) или файл не найден (PHOTO_NOT_FOUND от валидатора) — не причина
-            # пропускать строку: запись импортируется, в warnings — PHOTO_MISSING (решение Архитектора, этап 13).
-            # PHOTO_EMPTY / PHOTO_BROKEN (файл есть, но испорчен) остаются ошибками.
-            pm = [e if e["code"] == "PHOTO_MISSING" else
-                  {**e, "code": "PHOTO_MISSING", "details": f"файл фото не найден: {e.get('details')} (PHOTO_NOT_FOUND)"}
-                  for e in verrs[i] if e["code"] in ("PHOTO_MISSING", "PHOTO_NOT_FOUND")]
+            # Решения Архитектора, этап 13: проблемы с фото не причина пропускать строку при require_photo=False.
+            #  PHOTO_MISSING (не указано) / PHOTO_NOT_FOUND (файла нет) → warning PHOTO_MISSING, photo_path как указан;
+            #  PHOTO_EMPTY / PHOTO_BROKEN (файл пустой/битый) → warning с тем же кодом, photo_path очищается.
+            pm = []
+            for e in verrs[i]:
+                if e["code"] == "PHOTO_MISSING": pm.append(e)
+                elif e["code"] == "PHOTO_NOT_FOUND":
+                    pm.append({**e, "code": "PHOTO_MISSING", "details": f"файл фото не найден: {e.get('details')} (PHOTO_NOT_FOUND)"})
+                elif e["code"] in ("PHOTO_EMPTY", "PHOTO_BROKEN"):
+                    pm.append({**e, "details": f"{e.get('details')}: файл фото {'пустой' if e['code'] == 'PHOTO_EMPTY' else 'повреждён'}, фото не назначено"})
+                    clear_photo.add(i)
             rep.warnings += [{"row": r["_row"], **e} for e in pm]
-            verrs[i] = [e for e in verrs[i] if e["code"] not in ("PHOTO_MISSING", "PHOTO_NOT_FOUND")]
+            verrs[i] = [e for e in verrs[i] if e["code"] not in _PHOTO_SOFT]
             if not verrs[i]: del verrs[i]
     total = len(recs)
     try:
@@ -205,6 +213,7 @@ def import_records(con, recs, labs, photo_dir=None, validate=True, *, labels=Non
                     rep.errors += [{"row": r["_row"], **e} for e in verrs[idx]]
                 else:
                     n = norm({k: v for k, v in r.items() if k != "_row"})
+                    if idx in clear_photo: n["photo_path"] = None
                     fields = {k: v for k, v in n.items() if k not in ("photo_path", "photo_config") and v != ""}
                     pc = normalize(n.get("photo_config")) if n.get("photo_config") else DEFAULT
                     ex = (extra or {}).get(idx) or {}

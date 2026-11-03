@@ -13,6 +13,17 @@ datas = [(os.path.join(ROOT, "badge_backend", "schema.sql"), "badge_backend")]
 datas += collect_data_files("barcode")   # шрифты python-barcode (ImageWriter)
 datas += collect_data_files("qrcode")
 hidden = collect_submodules("badge_backend") + collect_submodules("barcode") + ["qrcode.image.pil"]
+# Этап 13 / D22: аудит hiddenimports. Модули ui/ импортируются статически из main_window (PyInstaller
+# находит их сам), но ленивые импорты внутри функций (QtMultimedia в main_view.camera_available /
+# CameraDialog, QtPrintSupport) перечислены явно, чтобы сборка не зависела от анализа байткода.
+# Плагины multimedia (бэкенд ffmpeg/windowsmediafoundation) собирает штатный хук PyInstaller
+# hook-PyQt6.QtMultimedia, когда модуль попадает в граф — поэтому он здесь обязателен.
+hidden += [m for m in collect_submodules("ui") if m != "ui.smoke_test"]
+hidden += ["PyQt6.QtMultimedia", "PyQt6.QtMultimediaWidgets", "PyQt6.QtPrintSupport", "PyQt6.sip"]
+# Сценарий self-test (Контролёр) кладётся в exe, если он есть: sys._MEIPASS/qa/e2e_click_all.py
+_E2E = os.path.join(ROOT, "reports", "qa", "e2e_click_all.py")
+if os.path.exists(_E2E):
+    datas.append((_E2E, "qa"))
 excludes = ["data_tools", "pytest", "tkinter"]   # data_tools — опционален (fallback-валидатор)
 
 

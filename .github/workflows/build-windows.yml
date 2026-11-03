@@ -89,6 +89,33 @@ jobs:
           Stop-Process -Id $p.Id -Force
           if (-not (Test-Path "$env:APPDATA\BadgeGenerator\project.db")) { throw "project.db not created in %APPDATA%\BadgeGenerator" }
 
+      - name: Self-test (GUI exe --self-test)
+        # Контракт (Frontend): BadgeGenerator.exe --self-test --log <path>
+        #   прогоняет сценарий sys._MEIPASS/qa/e2e_click_all.py (Контролёр), пишет лог в <path>,
+        #   сам завершается с кодом 0 (успех) / !=0 (провал). Таймаут 180 c -> провал job.
+        # Шаг включается, когда сценарий есть в репозитории.
+        if: hashFiles('reports/qa/e2e_click_all.py') != ''
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $env:APPDATA = "$env:RUNNER_TEMP\appdata-selftest"
+          $log = "$env:RUNNER_TEMP\selftest\selftest.log"
+          New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null
+          if (-not (Select-String -Path main.py -Pattern '--self-test' -SimpleMatch -Quiet)) { throw "main.py has no --self-test hook (Frontend)" }
+          $p = Start-Process -FilePath .\dist\BadgeGenerator.exe -ArgumentList '--self-test','--log',"`"$log`"" -PassThru
+          $null = $p.Handle
+          if (-not $p.WaitForExit(180000)) { Stop-Process -Id $p.Id -Force; throw "self-test timeout (180 s)" }
+          if (Test-Path $log) { Get-Content $log -Tail 200 }
+          if ($p.ExitCode -ne 0) { throw "self-test failed, exit code $($p.ExitCode)" }
+
+      - name: Upload self-test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selftest-log
+          path: ${{ runner.temp }}/selftest/
+          if-no-files-found: ignore
+
       - uses: actions/upload-artifact@v4
         with:
           name: BadgeGenerator
