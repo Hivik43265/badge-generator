@@ -812,7 +812,9 @@ if not _REAL_TARGET:
     assert _ednt.aspect is None and _ednt.frame.aspect is None and "Нет функции Backend для пропорций" in _ednt.status.text(); _ednt.reject()
 _api_nt.photo_edit_target = lambda fn: None
 _ednt = pe.PhotoEditor(str(tmp / "p14.jpg"), _api_nt, None, field_name="foto")
-assert _ednt.aspect is None and not _ednt.portrait.isEnabled() and "К полю не привязан фото-элемент шаблона" in _ednt.status.text()
+_D46 = "В шаблоне нет фото-элемента, пропорции свободные"
+assert _ednt.aspect is None and not _ednt.portrait.isEnabled() and _ednt.status.text() == _D46, _ednt.status.text()
+_ednt.sl["brightness"].setValue(20); _ednt.update_preview(); assert _ednt.status.text() == _D46, _ednt.status.text()   # D46: после превью
 _r = _ednt.frame.rect(); _ednt.frame.resize_corner("br", QPointF(_r.left() + 50, _r.top() + 120), _r)      # свободная рамка
 assert (round(_ednt.frame.rect().width()), round(_ednt.frame.rect().height())) == (50, 120), _ednt.frame.rect()
 _ednt.reject(); _api_nt.close()

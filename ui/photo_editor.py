@@ -90,6 +90,9 @@ class CropFrame(QGraphicsRectItem):
         self.setRect(QRectF(x, y, w, h))
 
 
+_FREE_FRAME = "В шаблоне нет фото-элемента, пропорции свободные"   # D46: постоянная часть статуса при target None
+
+
 class PhotoEditor(QDialog):
     SLIDERS = (("brightness", "Яркость", -50, 50, ""), ("contrast", "Контраст", -50, 50, ""),
                ("scale", "Масштаб", 10, 400, " %"), ("rotate", "Вращать", -180, 180, "°"))
@@ -103,7 +106,7 @@ class PhotoEditor(QDialog):
         self.target, self.aspect, self.target_error = None, None, None
         try:
             self.target = api.photo_edit_target(field_name) if api is not None else None
-            if not self.target or not self.target.get("aspect"): self.target, self.target_error = None, NO_TARGET + " — рамка свободная"
+            if not self.target or not self.target.get("aspect"): self.target, self.target_error = None, _FREE_FRAME   # D46
             else: self.aspect = float(self.target["aspect"])
         except LookupError: self.target_error = NO_TARGET_FN + " — рамка свободная"
         except ValueError as e: self.target_error = f"{NO_TARGET}: {e}"
@@ -184,7 +187,8 @@ class PhotoEditor(QDialog):
         try: self.img = apply_photo_edit(self.src, self.params(crop=False))
         except ValueError as e:
             self.status.setText(f"Ошибка правки: {e}"); return False
-        if self.status.text().startswith("Ошибка правки"): self.status.setText(self.base_status)
+        if self.status.text().startswith("Ошибка правки") or self.target_error == _FREE_FRAME:
+            self.status.setText(self.base_status)          # D46: текст о свободной рамке не затирается после превью
         self.pix.setPixmap(QPixmap.fromImage(pil_to_qimage(self.img)))
         b = QRectF(0, 0, self.img.width, self.img.height); self.scene.setSceneRect(b)
         if self.frame is not None:
