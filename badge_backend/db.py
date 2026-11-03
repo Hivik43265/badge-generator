@@ -85,7 +85,15 @@ def _v4_ellipse_defaults(con):
     if "default_value" not in _cols(con, "person_fields"):
         con.execute("ALTER TABLE person_fields ADD COLUMN default_value TEXT NULL")
 
-MIGRATIONS = [SCHEMA, _v2_printed_at, _v3_line, _v4_ellipse_defaults]   # индекс + 1 = user_version; str — SQL-скрипт, callable — шаг на Python
+def _v5_field_types(con):
+    """v5 (D24): person_fields.data_type TEXT NOT NULL DEFAULT 'text' CHECK (text|number|date|image|bool).
+    Существующие поля получают 'text'. Автоматических/демо полей схема не создаёт (и никогда не создавала).
+    Идемпотентно."""
+    if "data_type" not in _cols(con, "person_fields"):
+        con.execute("ALTER TABLE person_fields ADD COLUMN data_type TEXT NOT NULL DEFAULT 'text' "
+                    "CHECK (data_type IN ('text','number','date','image','bool'))")
+
+MIGRATIONS = [SCHEMA, _v2_printed_at, _v3_line, _v4_ellipse_defaults, _v5_field_types]   # индекс + 1 = user_version; str — SQL-скрипт, callable — шаг на Python
 LATEST = len(MIGRATIONS)
 
 def now_iso() -> str:

@@ -1,4 +1,5 @@
 """Ядро badge_backend не зависит от data_tools: фолбэк-валидатор, warning, все строки импортируются."""
+from badge_backend.testing import import_with_fields as _imp
 import ast, csv, os, shutil, subprocess, sys, textwrap
 from pathlib import Path
 import pytest
@@ -35,14 +36,14 @@ def test_fallback_when_data_tools_blocked(monkeypatch, tmp_path, caplog):
     monkeypatch.setitem(sys.modules, "data_tools", None)   # import data_tools → ImportError
     con = api.connect()
     with pytest.warns(RuntimeWarning, match="data_tools"):
-        rep = api.import_file(con, _write_csv(tmp_path / "p.csv"))
+        rep = _imp(api.import_file, con, _write_csv(tmp_path / "p.csv"))
     assert rep.validator == importer.FALLBACK_VALIDATOR == "builtin-fallback"
     assert (rep.added, rep.skipped) == (50, 0) and len(api.list_persons(con)) == 50
     assert "fallback" in caplog.text
     # фолбэк всё же ловит обязательные поля
     p = tmp_path / "bad.csv"; p.write_text("Фамилия;Имя\nИванов;\n;Пётр\nА;Б\n", encoding="utf-8")
     with pytest.warns(RuntimeWarning):
-        r = api.import_file(api.connect(), p)
+        r = _imp(api.import_file, api.connect(), p)
     assert (r.added, r.skipped) == (1, 2) and {e["code"] for e in r.errors} == {"REQUIRED_MISSING"}
 
 def test_fallback_subprocess_clean_sys_path(tmp_path):

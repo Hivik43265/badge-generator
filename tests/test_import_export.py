@@ -1,3 +1,4 @@
+from badge_backend.testing import import_with_fields as _imp
 import csv, json
 from pathlib import Path
 import pytest
@@ -18,7 +19,7 @@ def test_map_headers_synonyms():
 
 @pytest.mark.skipif(not (DT / "messy_headers" / "persons_raw.xlsx").exists(), reason="нет набора Data")
 def test_messy_headers_xlsx(con):
-    r = api.import_file(con, DT / "messy_headers" / "persons_raw.xlsx")
+    r = _imp(api.import_file, con, DT / "messy_headers" / "persons_raw.xlsx")
     assert r.validator == "data_tools.validate_import.validate_records" and r.added >= 1
     p = api.list_persons(con)[0]["fields"]
     assert p["last_name"] == "Ёлкин" and p["first_name"] == "Пётр" and p["middle_name"] == "Сергеевич"
@@ -34,7 +35,7 @@ def _csv(path, rows, enc="utf-8-sig", delim=";"):
 def test_csv_encodings_delims(con, tmp_path, enc, delim):
     p = _csv(tmp_path / "a.csv", [["Фамилия", "Имя", "Отдел кадров"], ["Иванов", "Иван", "ОК"], ["", "", ""],
                                   ["Петров", "Пётр", ""]], enc, delim)
-    r = api.import_file(con, p)
+    r = _imp(api.import_file, con, p)
     assert (r.added, r.skipped) == (2, 0)
     assert api.list_persons(con)[0]["fields"] == {"last_name": "Иванов", "first_name": "Иван", "otdel_kadrov": "ОК"}
     assert {f["name"]: f["label"] for f in api.list_fields(con)}["otdel_kadrov"] == "Отдел кадров"
@@ -48,7 +49,7 @@ def test_xlsx_photo_and_errors(con, tmp_path):
                 ["Петров", None, "a.jpg", None, 2],
                 ["Сидоров", "Олег", "none.jpg", None, 3]]: ws.append(row)
     wb.save(tmp_path / "p.xlsx")
-    r = api.import_file(con, tmp_path / "p.xlsx", photo_dir=tmp_path / "ph")
+    r = _imp(api.import_file, con, tmp_path / "p.xlsx", photo_dir=tmp_path / "ph")
     assert (r.added, r.skipped) == (2, 1)        # этап 13: ненайденное фото — предупреждение, не пропуск
     codes = {(e["row"], e["code"]) for e in r.errors}
     assert (4, "REQUIRED_MISSING") in codes and not any(c == "PHOTO_NOT_FOUND" for _, c in codes)
@@ -59,10 +60,10 @@ def test_xlsx_photo_and_errors(con, tmp_path):
 
 def test_unsupported_format(con, tmp_path):
     (tmp_path / "x.doc").write_text("x")
-    with pytest.raises(ValueError): api.import_file(con, tmp_path / "x.doc")
+    with pytest.raises(ValueError): _imp(api.import_file, con, tmp_path / "x.doc")
 
 def test_default_photo_config_on_import(con, tmp_path):
-    api.import_file(con, _csv(tmp_path / "a.csv", [["Фамилия", "Имя"], ["А", "Б"]]))
+    _imp(api.import_file, con, _csv(tmp_path / "a.csv", [["Фамилия", "Имя"], ["А", "Б"]]))
     assert api.list_persons(con)[0]["photo_config"] == "0;0;1.0;0;0;0"
 
 # --- экспорт ---

@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 import json, logging, os, warnings
+from ..fields import format_value
 from PIL import Image, ImageDraw, ImageColor, ImageOps
 from .. import CARD_W_PX, CARD_H_PX, DPI
 from ..photo_config import PhotoConfig
@@ -291,6 +292,7 @@ def render_card(person, elements, side: str = "front", background=None, base_dir
             elif t in ("text", "field"):
                 _box(img, el, st)
                 val = el.get("static_value") if t == "text" else _field_value(person, el.get("field_name"), el.get("default_value"))
+                if t == "field" and el.get("data_type"): val = format_value(el["data_type"], val) if val is not None else val
                 _draw_text(img, el, val, st)
             elif t == "photo":
                 src = _open(_resolve(person.get("photo_path"), base_dir)) if person.get("photo_path") else None
@@ -335,7 +337,7 @@ def render_card(person, elements, side: str = "front", background=None, base_dir
 
 def load_elements(con, side=None):
     """Элементы стороны + default_value привязанного поля (person_fields.default_value) для подстановки в рендер."""
-    q = ("SELECT e.*, f.default_value AS default_value FROM template_elements e "
+    q = ("SELECT e.*, f.default_value AS default_value, f.data_type AS data_type FROM template_elements e "
          "LEFT JOIN person_fields f ON f.name = e.field_name" + (" WHERE e.side=?" if side else "") + " ORDER BY e.z_order, e.id")
     return [dict(r) for r in con.execute(q, (side,) if side else ())]
 

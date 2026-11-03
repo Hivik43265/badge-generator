@@ -1,4 +1,5 @@
 """Stage-4 API fixes (расхождения из reports/stage-4-frontend.md) + missing photos."""
+from badge_backend.testing import import_with_fields as _imp
 import csv, json, re, sqlite3, threading
 from pathlib import Path
 import pytest
@@ -24,18 +25,18 @@ def test_mapping_exclude_column(con, tmp_path):
     assert map_headers(h, {"Комментарий": "department", "Отдел": None})[2:] == ["department", None]
     assert map_headers(h, {"last_name": ["Фамилия"], "Комментарий": None}) == ["last_name", "first_name", None, "department"]
     p = _csv(tmp_path / "a.csv", [h, ["Иванов", "Иван", "секрет", "ОК"]])
-    r = api.import_file(con, p, mapping={"Комментарий": None})
+    r = _imp(api.import_file, con, p, mapping={"Комментарий": None})
     assert r.added == 1 and api.list_persons(con)[0]["fields"] == {"last_name": "Иванов", "first_name": "Иван", "department": "ОК"}
     assert "kommentariy" not in {f["name"] for f in api.list_fields(con)}
 
 # 3
 def test_manual_canonical_label_and_labels_param(con, tmp_path):
     p = _csv(tmp_path / "a.csv", [["Фамилия", "Имя", "Комментарий", "Цех"], ["Иванов", "Иван", "ОК", "5"]])
-    api.import_file(con, p, mapping={"Комментарий": "department", "Цех": "workshop"})
+    _imp(api.import_file, con, p, mapping={"Комментарий": "department", "Цех": "workshop"})
     lab = {f["name"]: f["label"] for f in api.list_fields(con)}
     assert lab["department"] == "Отдел" and lab["workshop"] == "Цех"
     assert api.list_persons(con)[0]["fields"]["department"] == "ОК"
-    api.import_file(con, p, mapping={"Комментарий": "department"}, labels={"department": "Подразделение"})
+    _imp(api.import_file, con, p, mapping={"Комментарий": "department"}, labels={"department": "Подразделение"})
     assert {f["name"]: f["label"] for f in api.list_fields(con)}["department"] == "Подразделение"
 
 # 4
@@ -44,30 +45,30 @@ def _photo_csv(tmp_path):
     return _csv(tmp_path / "p.csv", [["Фамилия", "Имя", "Фото"], ["Иванов", "Иван", "a.jpg"], ["Петров", "Пётр", ""]])
 
 def test_import_photo_missing_default_is_warning(con, tmp_path):
-    r = api.import_file(con, _photo_csv(tmp_path), photo_dir=tmp_path / "ph")
+    r = _imp(api.import_file, con, _photo_csv(tmp_path), photo_dir=tmp_path / "ph")
     assert (r.added, r.skipped, r.errors) == (2, 0, [])
     assert [(w["row"], w["code"]) for w in r.warnings] == [(3, "PHOTO_MISSING")]
     p = api.get_person(con, r.ids[1]); assert p["photo_path"] is None and p["photo_config"] == "0;0;1.0;0;0;0"
     img = api.render_card_db(con, r.ids[1], "front"); assert img.size == (1011, 638)
 
 def test_import_require_photo_strict(con, tmp_path):
-    r = api.import_file(con, _photo_csv(tmp_path), photo_dir=tmp_path / "ph", require_photo=True)
+    r = _imp(api.import_file, con, _photo_csv(tmp_path), photo_dir=tmp_path / "ph", require_photo=True)
     assert (r.added, r.skipped) == (1, 1) and [e["code"] for e in r.errors] == ["PHOTO_MISSING"] and r.warnings == []
-    r = api.import_file(api.connect(), _photo_csv(tmp_path), require_photo=True)   # и без photo_dir
+    r = _imp(api.import_file, api.connect(), _photo_csv(tmp_path), require_photo=True)   # и без photo_dir
     assert (3, "PHOTO_MISSING") in {(e["row"], e["code"]) for e in r.errors}
 
 def test_import_fallback_photo_missing(con, tmp_path, monkeypatch):
     monkeypatch.setitem(__import__("sys").modules, "data_tools", None)
     with pytest.warns(RuntimeWarning):
-        r = api.import_file(con, _photo_csv(tmp_path), photo_dir=tmp_path / "ph")
+        r = _imp(api.import_file, con, _photo_csv(tmp_path), photo_dir=tmp_path / "ph")
     assert r.added == 2 and [w["code"] for w in r.warnings] == ["PHOTO_MISSING"]
 
 # 5
 def test_import_progress_and_cancel(con, tmp_path):
     p = _csv(tmp_path / "a.csv", [["Фамилия", "Имя"]] + [[f"Ф{i}", "И"] for i in range(20)])
-    calls = []; r = api.import_file(con, p, progress=lambda d, t: calls.append((d, t)))
+    calls = []; r = _imp(api.import_file, con, p, progress=lambda d, t: calls.append((d, t)))
     assert calls[0] == (0, 20) and calls[-1] == (20, 20) and r.added == 20
-    c2 = api.connect(); r = api.import_file(c2, p, progress=lambda d, t: d < 10)
+    c2 = api.connect(); r = _imp(api.import_file, c2, p, progress=lambda d, t: d < 10)
     assert r.cancelled and r.added == 0 and c2.execute("SELECT COUNT(*) FROM persons").fetchone()[0] == 0
 
 def test_export_progress_and_cancel(demo_db, tmp_path):

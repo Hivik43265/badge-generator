@@ -8,7 +8,7 @@ def test_card_px(): assert (CARD_W_PX, CARD_H_PX) == (1011, 638)
 
 def test_migration_from_scratch(tmp_path):
     con = connect(tmp_path / "b.db")
-    assert con.execute("PRAGMA user_version").fetchone()[0] == LATEST == 4
+    assert con.execute("PRAGMA user_version").fetchone()[0] == LATEST == 5
     names = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"persons", "template_elements", "person_fields", "template_backgrounds"} <= names
     assert migrate(con) == LATEST  # идемпотентно

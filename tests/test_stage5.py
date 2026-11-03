@@ -1,4 +1,5 @@
 """Этап 5: импорт 600 строк (CSV разных кодировок/разделителей, xlsx) без потерь, PDF на 50+ карточек."""
+from badge_backend.testing import import_with_fields as _imp
 import csv, json, re, sqlite3, time
 from pathlib import Path
 import pytest
@@ -42,7 +43,7 @@ TIMINGS = {}
 def test_csv_600_lossless(tmp_path, enc, delim):
     rows = make_rows(); p = write_csv(tmp_path / "p.csv", rows, enc, delim)
     con = api.connect(tmp_path / "db.sqlite")
-    t = time.perf_counter(); rep = api.import_file(con, p); dt = time.perf_counter() - t
+    t = time.perf_counter(); rep = _imp(api.import_file, con, p); dt = time.perf_counter() - t
     check_lossless(con, rows, rep); TIMINGS[f"csv {enc} '{delim}'"] = (N, rep.added, dt)
     assert dt < 3.0
 
@@ -51,14 +52,15 @@ def test_xlsx_600_lossless(tmp_path):
     for r in rows: ws.append(r)
     wb.save(tmp_path / "p.xlsx")
     con = api.connect(tmp_path / "db.sqlite")
-    t = time.perf_counter(); rep = api.import_file(con, tmp_path / "p.xlsx"); dt = time.perf_counter() - t
+    t = time.perf_counter(); rep = _imp(api.import_file, con, tmp_path / "p.xlsx"); dt = time.perf_counter() - t
     check_lossless(con, rows, rep); TIMINGS["xlsx"] = (N, rep.added, dt)
     assert dt < 5.0
 
 def test_import_single_transaction(tmp_path):
     """Импорт = одна транзакция: один COMMIT; при сбое посередине — откат всего."""
     rows = make_rows(); p = write_csv(tmp_path / "p.csv", rows, "utf-8", ";")
-    con = api.connect(tmp_path / "db.sqlite"); stmts = []
+    from badge_backend.testing import prepare_fields
+    con = api.connect(tmp_path / "db.sqlite"); stmts = []; prepare_fields(con, p)
     con.set_trace_callback(stmts.append)
     api.import_file(con, p)
     con.set_trace_callback(None)
@@ -67,15 +69,16 @@ def test_import_single_transaction(tmp_path):
     con2 = api.connect(tmp_path / "db2.sqlite")
     con2.execute("CREATE TRIGGER boom BEFORE INSERT ON persons WHEN (SELECT COUNT(*) FROM persons) >= 300 "
                  "BEGIN SELECT RAISE(ABORT, 'boom'); END")
+    nf = len(prepare_fields(con2, p))
     with pytest.raises(sqlite3.DatabaseError): api.import_file(con2, p)
     assert con2.execute("SELECT COUNT(*) FROM persons").fetchone()[0] == 0
-    assert con2.execute("SELECT COUNT(*) FROM person_fields").fetchone()[0] == 0
+    assert con2.execute("SELECT COUNT(*) FROM person_fields").fetchone()[0] == nf   # D24: импорт полей не трогает
 
 def test_header_only_quotes_sniff(tmp_path):
     """Разделитель внутри кавычек первой строки данных не сбивает автоопределение."""
     p = tmp_path / "q.csv"
     p.write_text('Фамилия,Имя\n"Иванов; мл.","Иван, ""Ваня"""\n', encoding="utf-8")
-    con = api.connect(); rep = api.import_file(con, p)
+    con = api.connect(); rep = _imp(api.import_file, con, p)
     assert rep.added == 1 and api.list_persons(con)[0]["fields"] == {"last_name": "Иванов; мл.", "first_name": 'Иван, "Ваня"'}
 
 def test_export_pdf_60_cards(tmp_path):
@@ -102,10 +105,10 @@ def test_cells_preserved_extra_fields(tmp_path):
     import datetime
     p = tmp_path / "nl.csv"
     p.write_bytes('Фамилия;Имя;Примечание\r\nИванов;Иван;"строка 1\r\nстрока  2"\r\n'.encode("utf-8"))
-    con = api.connect(); api.import_file(con, p)
+    con = api.connect(); _imp(api.import_file, con, p)
     assert api.list_persons(con)[0]["fields"]["primechanie"] == "строка 1\nстрока  2"
     wb = Workbook(); ws = wb.active; ws.append(["Фамилия", "Имя", "Дата выдачи", "Код"])
     ws.append(["Ёлкин", "Пётр", datetime.datetime(2026, 11, 3), 7.0]); wb.save(tmp_path / "d.xlsx")
-    con = api.connect(); api.import_file(con, tmp_path / "d.xlsx")
+    con = api.connect(); _imp(api.import_file, con, tmp_path / "d.xlsx")
     f = api.list_persons(con)[0]["fields"]
     assert f["data_vydachi"] == "2026-11-03" and f["kod"] == "7"

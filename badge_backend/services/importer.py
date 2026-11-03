@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from .headers import map_headers, split_fio, column_labels
 from ..photo_config import normalize, DEFAULT
+from ..fields import normalize_value
 log = logging.getLogger(__name__)
 FALLBACK_VALIDATOR = "builtin-fallback"  # report.validator, если data_tools недоступен
 
@@ -28,9 +29,12 @@ class ImportReport:
     validator: str = ""
     warnings: list = field(default_factory=list)  # [{'row','field','code','details'}], напр. PHOTO_MISSING
     cancelled: bool = False
+    photo_issues: list = field(default_factory=list)     # [{'row','code','file'}] пустые/битые фото (не назначены, не копируются)
+    skipped_columns: list = field(default_factory=list)  # [{'key','label'}] колонки без поля в person_fields (D24)
     def as_dict(self): return {"added": self.added, "skipped": self.skipped, "errors": self.errors,
                                "warnings": self.warnings, "ids": self.ids, "validator": self.validator,
-                               "cancelled": self.cancelled}
+                               "cancelled": self.cancelled, "photo_issues": self.photo_issues,
+                               "skipped_columns": self.skipped_columns}
 
 def _cell(v):
     """Значение ячейки → строка без потерь: только strip и \r\n→\n (внутренние пробелы/переносы сохраняются).
@@ -168,6 +172,8 @@ def import_file(con, path, mapping=None, photo_dir=None, validate=True, *, label
     progress       callable(done, total) по вставкам; вернул False → отмена: откат всей транзакции,
                    report.cancelled=True, added=0.
     """
+    from .sources import label_mapping
+    mapping = {**label_mapping(con, read_table(path)[0], mapping), **(mapping or {})} or mapping
     recs, labs = parse_file(path, mapping, labels)
     return import_records(con, recs, labs, photo_dir, validate, labels=labels, require_photo=require_photo,
                           progress=progress)
@@ -178,6 +184,20 @@ def import_records(con, recs, labs, photo_dir=None, validate=True, *, labels=Non
     cancel — callable() → True (или объект с is_set(), напр. threading.Event) — отмена с откатом.
     extra  {idx: {'print_mark':…, 'printed_at':…}} — доп. колонки persons (импорт из проектной БД)."""
     rep = ImportReport(); clear_photo = set()
+    # D24: поля не создаются — только существующие person_fields; прочие колонки пропускаются.
+    ftypes = {r[0]: r[1] for r in con.execute("SELECT name, data_type FROM person_fields")}
+    image_f = [k for k, t in ftypes.items() if t == "image"]
+    keep = set(ftypes) | {"photo_path", "photo_config"}
+    seen = []
+    for r in recs:
+        for k in r:
+            if k not in keep and k != "_row" and k not in seen: seen.append(k)
+    rep.skipped_columns = [{"key": k, "label": (labs or {}).get(k, k)} for k in seen]
+    recs = [{k: v for k, v in r.items() if k in keep or k == "_row"} for r in recs]
+    for r in recs:   # поле типа image = фото записи
+        for k in image_f:
+            v = r.pop(k, "")
+            if v and not r.get("photo_path"): r["photo_path"] = v
     if validate: verrs, norm, rep.validator = _validate(recs, photo_dir)
     else: verrs, norm, rep.validator = {}, (lambda r: r), "off"
     for i, r in enumerate(recs):
@@ -195,17 +215,18 @@ def import_records(con, recs, labs, photo_dir=None, validate=True, *, labels=Non
                 elif e["code"] in ("PHOTO_EMPTY", "PHOTO_BROKEN"):
                     pm.append({**e, "details": f"{e.get('details')}: файл фото {'пустой' if e['code'] == 'PHOTO_EMPTY' else 'повреждён'}, фото не назначено"})
                     clear_photo.add(i)
+                    rep.photo_issues.append({"row": r["_row"], "code": e["code"], "file": r.get("photo_path") or ""})
             rep.warnings += [{"row": r["_row"], **e} for e in pm]
             verrs[i] = [e for e in verrs[i] if e["code"] not in _PHOTO_SOFT]
             if not verrs[i]: del verrs[i]
+    for i in list(verrs):   # обязательность — только для полей, которые есть в проекте
+        verrs[i] = [e for e in verrs[i] if not (e["code"] == "REQUIRED_MISSING" and e.get("field") not in ftypes)]
+        if not verrs[i]: del verrs[i]
     total = len(recs)
     try:
         with con:
-            n0 = con.execute("SELECT COALESCE(MAX(sort_order),-1) FROM person_fields").fetchone()[0]
-            explicit = set(labels or {})
-            for i, (k, lab) in enumerate(labs.items()):
-                con.execute("INSERT INTO person_fields(name,label,sort_order) VALUES (?,?,?) ON CONFLICT(name) DO "
-                            + ("UPDATE SET label=excluded.label" if k in explicit else "NOTHING"), (k, lab, n0 + 1 + i))
+            for k, lab in (labels or {}).items():   # явные label — только для существующих полей
+                if k in ftypes: con.execute("UPDATE person_fields SET label=? WHERE name=?", (lab, k))
             _tick(progress, 0, total, cancel)
             for idx, r in enumerate(recs):
                 if idx in verrs:
@@ -214,7 +235,13 @@ def import_records(con, recs, labs, photo_dir=None, validate=True, *, labels=Non
                 else:
                     n = norm({k: v for k, v in r.items() if k != "_row"})
                     if idx in clear_photo: n["photo_path"] = None
-                    fields = {k: v for k, v in n.items() if k not in ("photo_path", "photo_config") and v != ""}
+                    fields = {}
+                    for k, v in n.items():
+                        if k in ("photo_path", "photo_config") or k not in ftypes or v in ("", None): continue
+                        sv, err = normalize_value(ftypes[k], v)
+                        if err:   # D24: неверное значение — warning, строка импортируется, значение пустое
+                            rep.warnings.append({"row": r["_row"], "field": k, "code": "FIELD_TYPE", "details": err}); continue
+                        if sv != "": fields[k] = sv
                     pc = normalize(n.get("photo_config")) if n.get("photo_config") else DEFAULT
                     ex = (extra or {}).get(idx) or {}
                     cur = con.execute("INSERT INTO persons(fields_json, photo_path, photo_config, print_mark, printed_at) "

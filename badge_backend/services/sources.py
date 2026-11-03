@@ -139,9 +139,39 @@ def read_rows(sheet: Sheet, header: bool = True, limit: int | None = None) -> tu
     rows = [[_cell(c) for c in r] for r in (rows if limit is None else rows[:max(0, int(limit))])]
     return cols, rows
 
-def auto_match(columns, mapping: dict | None = None) -> list:
-    """Ключ поля для каждой колонки (None — пропустить). Единый источник правил — headers.map_headers."""
-    return map_headers(columns, mapping)
+def label_mapping(con, columns, mapping=None) -> dict:
+    """D24: {заголовок: поле} для колонок, которые синонимы не сопоставили с существующим полем,
+    но заголовок совпал с label/именем поля проекта. Ручной mapping имеет приоритет."""
+    from .headers import split_mapping, header_key
+    _, explicit = split_mapping(mapping)
+    base = map_headers(columns, mapping); smart = auto_match(columns, mapping, fields=con)
+    return {c: s for c, b, s in zip(columns, base, smart)
+            if s and s != b and c is not None and header_key(c) not in explicit}
+
+def auto_match(columns, mapping: dict | None = None, fields=None) -> list:
+    """Ключ поля для каждой колонки (None — пропустить). Правила синонимов — headers.map_headers.
+    fields (D24) — существующие поля проекта: sqlite-соединение, list_fields()-список или имена.
+    Тогда колонка сопоставляется только с ними (по синонимам, имени или label поля), остальные → None;
+    photo_path/photo_config и '__fio__' (если в проекте есть last_name/first_name/middle_name) сохраняются."""
+    keys = map_headers(columns, mapping)
+    if fields is None: return keys
+    if hasattr(fields, "execute"):
+        fl = [dict(r) for r in fields.execute("SELECT name, label FROM person_fields")]
+    else:
+        fl = [f if isinstance(f, dict) else {"name": f, "label": f} for f in fields]
+    from .headers import header_key
+    names = {f["name"] for f in fl}
+    by_label = {header_key(f.get("label") or f["name"]): f["name"] for f in fl}
+    by_label.update({header_key(f["name"]): f["name"] for f in fl})
+    out, used = [], set()
+    for c, k in zip(columns, keys):
+        if k in ("photo_path", "photo_config"): pass
+        elif k == "__fio__": k = k if names & {"last_name", "first_name", "middle_name"} else None
+        elif k not in names: k = by_label.get(header_key(c)) if c is not None and str(c).strip() else None
+        if k in used and k not in (None,): k = None
+        if k: used.add(k)
+        out.append(k)
+    return out
 
 def _xlsx_images(sheet, photo_dir, header_offset):
     """Встроенные картинки xlsx → {номер_строки_Excel: имя_файла в photo_dir}.
@@ -167,7 +197,7 @@ def _xlsx_images(sheet, photo_dir, header_offset):
 
 def import_rows(con, sheet: Sheet, mapping: dict | None = None, *, header: bool = True, photo_dir=None,
                 validate: bool = True, labels: dict | None = None, require_photo: bool = False,
-                progress=None, cancel=None, extract_images: bool = True) -> ImportReport:
+                progress=None, cancel=None, extract_images: bool = True, import_fields: bool = False) -> ImportReport:
     """Импортировать лист в persons (одна транзакция; ядро — importer.import_records, как у import_file).
 
     mapping        формат headers.map_headers ({заголовок: 'field'|None}, {field: [синонимы]}).
@@ -176,8 +206,13 @@ def import_rows(con, sheet: Sheet, mapping: dict | None = None, *, header: bool 
                    photo_path строки якоря (если у строки нет пути). Нет photo_dir → картинки пропускаются + warning.
     progress       callable(done, total); вернул False → отмена.
     cancel         callable() → True или threading.Event — отмена; транзакция откатывается, report.cancelled=True.
-    project (.db)  поля, photo_path/photo_config, print_mark/printed_at; label и default_value полей
-                   переносятся, если у текущего проекта их нет. Исходный файл не меняется."""
+    project (.db)  photo_path/photo_config, print_mark/printed_at и значения полей. D24: поля проекта-источника
+                   создаются (label, data_type, default_value, sort_order) ТОЛЬКО при import_fields=True
+                   (UI спрашивает подтверждение); иначе значения ложатся только в существующие поля,
+                   остальные колонки — report.skipped_columns. Исходный файл не меняется.
+    D24            поля не создаются: колонки без поля в person_fields пропускаются (report.skipped_columns).
+    photo_issues   пустые/битые фото (PHOTO_EMPTY/PHOTO_BROKEN) не назначаются; извлечённые из xlsx такие
+                   файлы удаляются из photo_dir."""
     cols, rows = read_rows(sheet, header=header)
     extra = None
     if sheet.kind == "project":
@@ -190,16 +225,25 @@ def import_rows(con, sheet: Sheet, mapping: dict | None = None, *, header: bool 
         nonempty = [r for r in rows if any(v != "" for v in r)]
         extra = {i: {"print_mark": r[pm] == "1", "printed_at": r[pa] or None} for i, r in enumerate(nonempty)}
         exist = {r[0] for r in con.execute("SELECT name FROM person_fields")}
-        lab_new = {k: v for k, v in labels.items() if k not in exist}
-        rep = import_records(con, recs, labs, photo_dir, validate, labels=lab_new, require_photo=require_photo,
-                             progress=progress, cancel=cancel, extra=extra)
-        if not rep.cancelled:
+        created = []
+        if import_fields:
+            n0 = con.execute("SELECT COALESCE(MAX(sort_order),-1) FROM person_fields").fetchone()[0]
             with con:
+                for i, (k, f) in enumerate(flds.items()):
+                    if k in exist: continue
+                    con.execute("INSERT INTO person_fields(name,label,sort_order,default_value,data_type) VALUES (?,?,?,?,?)",
+                                (k, f.get("label") or k, n0 + 1 + i, f.get("default_value"), f.get("data_type") or "text"))
+                    created.append(k)
                 for k, f in flds.items():
-                    if f.get("default_value") not in (None, ""):
+                    if k in exist and f.get("default_value") not in (None, ""):
                         con.execute("UPDATE person_fields SET default_value=? WHERE name=? AND default_value IS NULL",
                                     (f["default_value"], k))
+        rep = import_records(con, recs, labs, photo_dir, validate, labels=None, require_photo=require_photo,
+                             progress=progress, cancel=cancel, extra=extra)
+        if rep.cancelled and created:
+            with con: con.executemany("DELETE FROM person_fields WHERE name=?", [(k,) for k in created])
         return rep
+    mapping = {**label_mapping(con, cols, mapping), **(mapping or {})} or mapping
     recs, labs = parse_rows(cols, rows, mapping, labels)
     if sheet.kind == "xlsx" and extract_images and header:
         if photo_dir is None:
@@ -213,6 +257,13 @@ def import_rows(con, sheet: Sheet, mapping: dict | None = None, *, header: bool 
             for r in recs:
                 xl_row = r["_row"] + raw_first
                 if not r.get("photo_path") and xl_row in imgs: r["photo_path"] = imgs[xl_row]
+            extracted = set(imgs.values())
+            rep = import_records(con, recs, labs, photo_dir, validate, labels=labels, require_photo=require_photo,
+                                 progress=progress, cancel=cancel)
+            bad = {i["file"] for i in rep.photo_issues}
+            for name in extracted:   # пустые/битые не остаются в photo_dir; при отмене — все извлечённые
+                if rep.cancelled or name in bad: (Path(photo_dir) / name).unlink(missing_ok=True)
+            return rep
     return import_records(con, recs, labs, photo_dir, validate, labels=labels, require_photo=require_photo,
                           progress=progress, cancel=cancel)
 

@@ -17,7 +17,7 @@ def test_migrate_old_v1_db(tmp_path):
     before = [tuple(r) for r in old.execute("SELECT * FROM persons ORDER BY id")]; old.close()
     assert "printed_at" not in db._cols(sqlite3.connect(str(p)), "persons")
     con = api.connect(p)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 4 == db.LATEST
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 5 == db.LATEST
     assert "printed_at" in db._cols(con, "persons")
     after = [tuple(r) for r in con.execute("SELECT * FROM persons ORDER BY id")]
     assert [a[:-1] for a in after] == before and all(a[-1] is None for a in after)
@@ -25,9 +25,9 @@ def test_migrate_old_v1_db(tmp_path):
 
 def test_migrate_repeat_idempotent(tmp_path):
     p = tmp_path / "x.db"; c = api.connect(p); c.close()
-    c = api.connect(p); assert db.migrate(c) == 4 and db.migrate(c) == 4
+    c = api.connect(p); assert db.migrate(c) == 5 and db.migrate(c) == 5
     # столбец уже есть, а version откатили — шаг всё равно не падает
-    c.execute("PRAGMA user_version=1"); assert db.migrate(c) == 4
+    c.execute("PRAGMA user_version=1"); assert db.migrate(c) == 5
     assert sum(1 for col in db._cols(c, "persons") if col == "printed_at") == 1
 
 def test_new_db_has_printed_at():

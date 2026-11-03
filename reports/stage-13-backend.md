@@ -95,3 +95,40 @@ Backend проверен: `create_person`/`update_person` сохраняют к�
 в форме не показывались; таблица/очередь брали захардкоженные ключи ФИО/position. Значения писались под ключи,
 которых нет в шаблоне → пустое превью. Исправлено Frontend (record_form/records_table/main_view: набор полей только из
 `list_fields()` + поля шаблона без person_fields регистрируются `upsert_field`). Изменений backend не требуется.
+
+## Фото: пустые/битые файлы (доп. решение Архитектора)
+- `require_photo=False`: строки с `PHOTO_EMPTY`/`PHOTO_BROKEN` импортируются, `photo_path` пустой, warning с тем же кодом.
+- `ImportReport.photo_issues = [{"row", "code", "file"}]` (есть и в `as_dict()`). Файл не назначается и не копируется;
+  картинки, извлечённые из xlsx и оказавшиеся пустыми/битыми, удаляются из `photo_dir` (при отмене удаляются все извлечённые).
+- `require_photo=True`: такие строки по-прежнему пропускаются (ошибка).
+
+## D24: person_fields — единственный источник полей
+- Миграция **v5** `_v5_field_types` (LATEST=5): `person_fields.data_type TEXT NOT NULL DEFAULT 'text'
+  CHECK (data_type IN ('text','number','date','image','bool'))`; существующие поля → `text`. Идемпотентна.
+- Полей по умолчанию нет: ни schema.sql, ни миграции, ни connect их не создают (проверено тестом).
+  `demo.build_demo` полей не создаёт. Поле создаётся только через `upsert_field`.
+- `upsert_field(con, name, label, sort_order=0, default_value=..., data_type=None)`: None → у нового поля 'text', у существующего не меняется;
+  неизвестный тип → ValueError. Новое: `set_field_type(con, name, data_type)`, `validate_fields(con, fields) -> [{field, code:'FIELD_TYPE', details}]`.
+  `list_fields` возвращает `data_type`.
+- Модуль `badge_backend/fields.py`: `FIELD_TYPES`, `normalize_value(type, value) -> (stored, err)`, `format_value(field|type, value)`,
+  `FieldValueWarning`. Дата хранится ISO `YYYY-MM-DD`, принимается `DD.MM.YYYY`; показ/рендер — `DD.MM.YYYY`; bool хранится '1'/'0', показ «Да»/«Нет»;
+  number: `1 234,5` → `1234.5`.
+- Сохранение (`create_person`/`update_person`) — **warning-safe**: значения нормализуются; неверное значение сохраняется как есть
+  + `warnings.warn(FieldValueWarning)`; исключений нет. UI проверяет до сохранения через `validate_fields`.
+- Поле типа `image` = фото записи: его значение пишется в `persons.photo_path` (в `fields_json` не хранится) — и при сохранении, и при импорте.
+- Рендер: `load_elements` отдаёт `data_type`; элемент `field` показывает `format_value`.
+- Импорт (`import_file`/`import_rows`) **не создаёт поля**: значения ложатся только в существующие `person_fields`
+  (по синонимам или совпадению заголовка с label/именем поля). Остальные колонки → `ImportReport.skipped_columns=[{"key","label"}]`.
+  `labels=` меняет label только существующих полей. `REQUIRED_MISSING` проверяется только для полей, которые есть в проекте.
+  Неверное значение типизированного поля → warning `FIELD_TYPE` с номером строки; строка импортируется, это значение остаётся пустым.
+- `auto_match(columns, mapping=None, fields=None)`: при `fields` (con, list_fields() или имена) — только существующие поля, иначе None.
+  `label_mapping(con, columns, mapping)` — сопоставление по label.
+- Импорт `.db`: `import_rows(..., import_fields=False)`. При `True` поля источника создаются (label, data_type, default_value, sort_order),
+  существующие не перезаписываются (кроме пустого default_value); при отмене созданные поля удаляются. При `False` — только существующие поля.
+- Тесты: `badge_backend.testing.prepare_fields` / `import_with_fields` создают поля явно (старые тесты импорта); новый `tests/test_d24_fields.py`.
+
+### Что нужно Frontend
+- Новая БД пуста: до импорта пользователь создаёт поля (или импорт .db с подтверждением → `import_rows(..., import_fields=True)`).
+- Диалог импорта: `auto_match(cols, fields=con)` для превью; показать `report.skipped_columns`, `report.photo_issues`, warnings `FIELD_TYPE`.
+- Редактор полей: выбор типа (`data_type`), показ значений через `format_value`, проверка через `validate_fields` (warning `FieldValueWarning` при сохранении).
+- Ввод даты: `DD.MM.YYYY`; хранится ISO.

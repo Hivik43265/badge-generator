@@ -67,8 +67,8 @@ def _export_db(con, path, ids, photo_dir):
     try:
         with new:
             for f in _fields(con):
-                new.execute("INSERT INTO person_fields(name,label,sort_order,default_value) VALUES (?,?,?,?)",
-                            (f["name"], f["label"], f["sort_order"], f.get("default_value")))
+                new.execute("INSERT INTO person_fields(name,label,sort_order,default_value,data_type) VALUES (?,?,?,?,?)",
+                            (f["name"], f["label"], f["sort_order"], f.get("default_value"), f.get("data_type") or "text"))
             for r in ps:
                 pp, ok = _copy_file(r["photo_path"], photo_dir, pdir, used, warn); copied += ok
                 new.execute("INSERT INTO persons(fields_json,photo_path,photo_config,print_mark,printed_at,created_at,updated_at) "

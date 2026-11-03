@@ -1,4 +1,5 @@
 """Этап 13: open_source/read_rows/auto_match/import_rows, mapping JSON, export_persons (xlsx/xls/csv/db)."""
+from badge_backend.testing import import_with_fields as _imp
 import json, os, sqlite3, threading, hashlib, pytest
 from PIL import Image
 from badge_backend import api, db
@@ -39,7 +40,7 @@ def test_roundtrip_all_formats(src, fmt):
     assert len(rows) == 3
     tgt = api.connect()
     base = (d / "out_photos") if fmt == "db" else d / "ph"
-    rep = api.import_rows(tgt, sheets[0], photo_dir=base)
+    rep = _imp(api.import_rows, tgt, sheets[0], photo_dir=base)
     assert rep.added == 3 and not rep.errors and not rep.cancelled
     assert _by_label(tgt) == _expected()
     ps = api.list_persons(tgt)
@@ -106,10 +107,10 @@ def test_xlsx_multiple_sheets_header_limit(tmp_path):
     assert api.read_rows(sh[0], limit=1) == (["Фамилия", "Имя"], [["Ёжиков", "Пётр"]])
     cols, rows = api.read_rows(sh[0], header=False)
     assert cols == ["Колонка 1", "Колонка 2"] and rows[0] == ["Фамилия", "Имя"] and len(rows) == 3
-    con = api.connect(); rep = api.import_rows(con, sh[1])
+    con = api.connect(); rep = _imp(api.import_rows, con, sh[1])
     assert rep.added == 1 and api.list_persons(con)[0]["fields"]["last_name"] == "Гость"
     con2 = api.connect()
-    rep = api.import_rows(con2, sh[0], header=False, mapping={"Колонка 1": "last_name", "Колонка 2": "first_name"},
+    rep = _imp(api.import_rows, con2, sh[0], header=False, mapping={"Колонка 1": "last_name", "Колонка 2": "first_name"},
                           validate=False)
     assert rep.added == 3
 
@@ -139,7 +140,7 @@ def _csv(tmp_path, n=10):
 
 def test_progress(tmp_path):
     calls = []; con = api.connect()
-    rep = api.import_rows(con, _csv(tmp_path), progress=lambda d, t: calls.append((d, t)))
+    rep = _imp(api.import_rows, con, _csv(tmp_path), progress=lambda d, t: calls.append((d, t)))
     assert rep.added == 10 and calls[0] == (0, 10) and calls[-1] == (10, 10) and len(calls) == 11
 
 @pytest.mark.parametrize("how", ["callable", "event", "progress_false"])
@@ -153,8 +154,10 @@ def test_cancel_rolls_back(tmp_path, how):
     kw = {"progress": prog}
     if how == "callable": kw["cancel"] = lambda: len(seen) >= 4
     if how == "event": kw["cancel"] = ev
-    rep = api.import_rows(con, _csv(tmp_path), **kw)
-    assert rep.cancelled and rep.added == 0 and api.list_persons(con) == [] and api.list_fields(con) == []
+    from badge_backend.testing import prepare_fields
+    sh = _csv(tmp_path); prepare_fields(con, sh); nf = api.list_fields(con)
+    rep = api.import_rows(con, sh, **kw)
+    assert rep.cancelled and rep.added == 0 and api.list_persons(con) == [] and api.list_fields(con) == nf
 
 # ---------- mapping ----------
 def test_mapping_save_load(tmp_path):
@@ -170,7 +173,7 @@ def test_mapping_save_load(tmp_path):
     with pytest.raises(ValueError): api.save_mapping(tmp_path / "x.json", {"a": 1})
     # загруженный mapping применяется к импорту
     c = tmp_path / "c.csv"; c.write_text("Ф.И.О. сотрудника;Лишнее\nЁжиков Пётр Ильич;zzz\n", encoding="utf-8")
-    con = api.connect(); api.import_rows(con, api.open_source(c)[0], api.load_mapping(p))
+    con = api.connect(); _imp(api.import_rows, con, api.open_source(c)[0], api.load_mapping(p))
     assert api.list_persons(con)[0]["fields"] == {"last_name": "Ёжиков", "first_name": "Пётр", "middle_name": "Ильич"}
 
 # ---------- .db: проектная любой версии и произвольная SQLite ----------
@@ -189,7 +192,7 @@ def test_legacy_project_db_import(tmp_path, ver):
     sh = api.open_source(p)
     assert [(s.kind, s.name, s.schema_version) for s in sh] == [("project", "persons", ver)]
     assert sh[0].work_path != p and api.get_schema_version(sqlite3.connect(sh[0].work_path)) == db.LATEST
-    con = api.connect(); rep = api.import_rows(con, sh[0], photo_dir=tmp_path)
+    con = api.connect(); rep = _imp(api.import_rows, con, sh[0], photo_dir=tmp_path)
     assert rep.added == 1, rep
     pr = api.list_persons(con)[0]
     assert pr["fields"] == {"last_name": "Ёжиков", "first_name": "Пётр"} and pr["photo_path"] == "f.jpg" and pr["print_mark"] == 1
@@ -209,7 +212,7 @@ def test_arbitrary_sqlite_readonly(tmp_path):
     cols, rows = api.read_rows(sh[1])
     assert cols == ["id", "Фамилия", "Имя", "salary"] and rows == [["1", "Ёжиков", "Пётр", "10"], ["2", "Щукина", "Юлия", "2.5"]]
     assert api.read_rows(sh[1], limit=1)[1] == [rows[0]]
-    con = api.connect(); rep = api.import_rows(con, sh[1], {"id": None})
+    con = api.connect(); rep = _imp(api.import_rows, con, sh[1], {"id": None})
     assert rep.added == 2 and api.list_persons(con)[1]["fields"]["salary"] == "2.5"
     ro = sqlite3.connect(f"file:{p.as_posix()}?mode=ro", uri=True)
     with pytest.raises(sqlite3.OperationalError): ro.execute("DELETE FROM other")
@@ -219,7 +222,7 @@ def test_arbitrary_sqlite_readonly(tmp_path):
 def test_photo_path_column(tmp_path):
     p = tmp_path / "f.csv"; p.write_text("Фамилия;Имя;Путь к фото\nЁжиков;Пётр;sub/ez.jpg\n", encoding="utf-8")
     (tmp_path / "sub").mkdir(); Image.new("RGB", (5, 5)).save(tmp_path / "sub" / "ez.jpg")
-    con = api.connect(); rep = api.import_rows(con, api.open_source(p)[0], photo_dir=tmp_path)
+    con = api.connect(); rep = _imp(api.import_rows, con, api.open_source(p)[0], photo_dir=tmp_path)
     assert rep.added == 1 and api.list_persons(con)[0]["photo_path"] == "sub/ez.jpg"
 
 def test_xlsx_embedded_images(tmp_path):
@@ -232,19 +235,19 @@ def test_xlsx_embedded_images(tmp_path):
     ws.add_image(XLImage(str(tmp_path / "g.png")), "C2"); ws.add_image(XLImage(str(tmp_path / "g.png")), "C3")
     wb.save(tmp_path / "img.xlsx"); (tmp_path / "out").mkdir(); Image.new("RGB", (5, 5)).save(tmp_path / "out" / "own.jpg")
     sh = api.open_source(tmp_path / "img.xlsx")[0]
-    con = api.connect(); rep = api.import_rows(con, sh, photo_dir=tmp_path / "out")
+    con = api.connect(); rep = _imp(api.import_rows, con, sh, photo_dir=tmp_path / "out")
     ps = api.list_persons(con)
     assert ps[0]["photo_path"] and (tmp_path / "out" / ps[0]["photo_path"]).exists()
     assert Image.open(tmp_path / "out" / ps[0]["photo_path"]).size == (20, 30)
     assert ps[1]["photo_path"] == "own.jpg"            # путь из колонки важнее картинки
     assert ps[2]["photo_path"] is None
     with pytest.warns(RuntimeWarning, match="встроенных картинок"):
-        api.import_rows(api.connect(), sh)
+        _imp(api.import_rows, api.connect(), sh)
 
 def test_import_file_still_works_and_xls(src):
     con, ids, d = src
     api.export_persons(con, d / "t.xls")
-    tgt = api.connect(); rep = api.import_file(tgt, d / "t.xls", photo_dir=d / "ph")
+    tgt = api.connect(); rep = _imp(api.import_file, tgt, d / "t.xls", photo_dir=d / "ph")
     assert rep.added == 3 and _by_label(tgt) == _expected()
 
 # ---------- решение Архитектора: ненайденное фото — предупреждение ----------
@@ -260,8 +263,8 @@ def test_missing_photo_file_imported_with_warning(tmp_path):
     p = _photo_csv(tmp_path)
     for run in ("import_rows", "import_file"):
         con = api.connect()
-        rep = (api.import_rows(con, api.open_source(p)[0], photo_dir=tmp_path / "ph") if run == "import_rows"
-               else api.import_file(con, p, photo_dir=tmp_path / "ph"))
+        rep = (_imp(api.import_rows, con, api.open_source(p)[0], photo_dir=tmp_path / "ph") if run == "import_rows"
+               else _imp(api.import_file, con, p, photo_dir=tmp_path / "ph"))
         assert (rep.added, rep.skipped) == (5, 0), run
         assert {(w["row"], w["code"]) for w in rep.warnings} == \
             {(3, "PHOTO_MISSING"), (4, "PHOTO_MISSING"), (5, "PHOTO_BROKEN"), (6, "PHOTO_EMPTY")}
@@ -273,6 +276,6 @@ def test_missing_photo_file_imported_with_warning(tmp_path):
 
 def test_missing_photo_file_require_photo_skips(tmp_path):
     p = _photo_csv(tmp_path); con = api.connect()
-    rep = api.import_rows(con, api.open_source(p)[0], photo_dir=tmp_path / "ph", require_photo=True)
+    rep = _imp(api.import_rows, con, api.open_source(p)[0], photo_dir=tmp_path / "ph", require_photo=True)
     assert rep.added == 1 and rep.skipped == 4 and rep.warnings == []
     assert {e["code"] for e in rep.errors} >= {"PHOTO_NOT_FOUND", "PHOTO_MISSING", "PHOTO_BROKEN", "PHOTO_EMPTY"}

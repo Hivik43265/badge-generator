@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 import json
+from .fields import FIELD_TYPES, FieldValueWarning, check_type, normalize_value, format_value  # noqa: F401
 from .db import connect, DEFAULT_DB_PATH, default_db_path, get_schema_version  # noqa: F401  (реэкспорт)
 from .photo_config import PhotoConfig, normalize, DEFAULT as PHOTO_CONFIG_DEFAULT  # noqa
 from .render import render_card, render_card_db, render_preview  # noqa
@@ -31,9 +32,40 @@ def list_persons(con, only_marked: bool = False) -> list[dict]:
 def get_person(con, person_id: int) -> dict | None:
     return _row(con.execute("SELECT * FROM persons WHERE id=?", (person_id,)).fetchone())
 
+def _typed(con, fields, photo_path):
+    """D24: значения по data_type (дата → ISO, число, bool → '1'/'0'). Неверное значение сохраняется как есть
+    + warnings.warn(FieldValueWarning) — API не бросает (warning-safe); UI проверяет заранее через validate_fields.
+    Поле типа image = фото записи: его значение уходит в photo_path. → (fields, photo_path)."""
+    if not fields: return fields, photo_path
+    import warnings as _w
+    types = _field_types(con); out = {}
+    for k, v in fields.items():
+        t = types.get(k)
+        if t in (None, "text"): out[k] = v; continue   # неизвестные/текстовые — без изменений
+        if t == "image":
+            if v not in (None, ""): photo_path = str(v)
+            continue
+        sv, err = normalize_value(t, v)
+        if err: _w.warn(f"{k}: {err}", FieldValueWarning, stacklevel=3); sv = v
+        out[k] = sv
+    return out, photo_path
+
+def _field_types(con) -> dict:
+    return {r[0]: r[1] for r in con.execute("SELECT name, data_type FROM person_fields")}
+
+def validate_fields(con, fields: dict) -> list[dict]:
+    """D24: проверить значения без сохранения → [{'field','code':'FIELD_TYPE','details'}] (пусто — всё верно)."""
+    types = _field_types(con); out = []
+    for k, v in (fields or {}).items():
+        _, err = normalize_value(types.get(k, "text"), v)
+        if err: out.append({"field": k, "code": "FIELD_TYPE", "details": err})
+    return out
+
 def create_person(con, fields: dict, photo_path: str | None = None, photo_config: str | None = None,
                   print_mark: int = 0) -> int:
-    """Создать запись, вернуть id. photo_config нормализуется (невалидный → default + warning)."""
+    """Создать запись, вернуть id. photo_config нормализуется (невалидный → default + warning).
+    Значения приводятся к data_type полей (см. _typed; неверные — FieldValueWarning, сохраняются как есть)."""
+    fields, photo_path = _typed(con, fields, photo_path)
     with con:
         return con.execute("INSERT INTO persons(fields_json, photo_path, photo_config, print_mark) VALUES (?,?,?,?)",
                            (json.dumps(fields or {}, ensure_ascii=False), photo_path,
@@ -44,6 +76,10 @@ def update_person(con, person_id: int, fields: dict | None = None, photo_path=..
     """Обновить запись. fields сливаются с текущими (merge=True) или заменяют их."""
     p = get_person(con, person_id)
     if not p: return False
+    if fields:
+        pp0 = photo_path if photo_path is not ... else None
+        fields, pp1 = _typed(con, fields, pp0)
+        if pp1 is not pp0: photo_path = pp1
     sets, args = [], []
     if fields is not None:
         sets.append("fields_json=?"); args.append(json.dumps({**p["fields"], **fields} if merge else fields, ensure_ascii=False))
@@ -63,19 +99,30 @@ def update_photo_config(con, person_id: int, config: str | PhotoConfig) -> str:
     return s
 
 def list_fields(con) -> list[dict]:
-    """Метаданные колонок (name, label, sort_order, default_value) для таблицы и редактора шаблона."""
+    """Метаданные колонок (name, label, sort_order, default_value, data_type) для таблицы и редактора шаблона.
+    D24: person_fields — единственный источник полей; новая БД полей не содержит."""
     return [dict(r) for r in con.execute("SELECT * FROM person_fields ORDER BY sort_order, name")]
 
-def upsert_field(con, name: str, label: str, sort_order: int = 0, default_value: str | None = ...) -> None:
-    """Создать/обновить поле. default_value не передан (...) — не менять; None/'' — сбросить."""
-    if default_value is ...:
-        with con: con.execute("INSERT INTO person_fields(name,label,sort_order) VALUES (?,?,?) ON CONFLICT(name) DO UPDATE SET "
-                              "label=excluded.label, sort_order=excluded.sort_order", (name, label, sort_order))
-    else:
-        dv = None if default_value in (None, "") else str(default_value)
-        with con: con.execute("INSERT INTO person_fields(name,label,sort_order,default_value) VALUES (?,?,?,?) ON CONFLICT(name) "
-                              "DO UPDATE SET label=excluded.label, sort_order=excluded.sort_order, default_value=excluded.default_value",
-                              (name, label, sort_order, dv))
+def upsert_field(con, name: str, label: str, sort_order: int = 0, default_value: str | None = ...,
+                 data_type: str | None = None) -> None:
+    """Создать/обновить поле — единственный способ создать поле (D24).
+    default_value не передан (...) — не менять; None/'' — сбросить.
+    data_type text|number|date|image|bool; None — у нового поля 'text', у существующего не менять.
+    Неизвестный тип → ValueError. Смена типа не переписывает уже сохранённые значения."""
+    dt = check_type(data_type) if data_type is not None else None
+    cols, vals, upd = ["name", "label", "sort_order"], [name, label, sort_order], ["label=excluded.label", "sort_order=excluded.sort_order"]
+    if default_value is not ...:
+        cols.append("default_value"); vals.append(None if default_value in (None, "") else str(default_value))
+        upd.append("default_value=excluded.default_value")
+    if dt is not None:
+        cols.append("data_type"); vals.append(dt); upd.append("data_type=excluded.data_type")
+    with con: con.execute(f"INSERT INTO person_fields({','.join(cols)}) VALUES ({','.join('?'*len(cols))}) "
+                          f"ON CONFLICT(name) DO UPDATE SET {', '.join(upd)}", vals)
+
+def set_field_type(con, name: str, data_type: str) -> None:
+    """D24: сменить тип поля (ValueError — неизвестное поле/тип)."""
+    _need_field(con, name)
+    with con: con.execute("UPDATE person_fields SET data_type=? WHERE name=?", (check_type(data_type), name))
 
 # ---------- template_elements ----------
 def list_elements(con, side: str | None = None) -> list[dict]:
@@ -324,6 +371,6 @@ def restore_db(target_path, backup_path) -> None:
         src.close()
 
 # ---------- этап 13: импорт/экспорт таблиц и БД ----------
-from .services.sources import (Sheet, open_source, read_rows, auto_match, import_rows,  # noqa: F401
+from .services.sources import (Sheet, open_source, read_rows, auto_match, label_mapping, import_rows,  # noqa: F401
                                save_mapping, load_mapping)
 from .services.table_export import export_persons, XLS_MAX_ROWS  # noqa: F401
