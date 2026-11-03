@@ -18,7 +18,7 @@ def test_defaults_identity_and_not_mutated():
     assert out is not src and out.tobytes() == before and api.apply_photo_edit(src, {}).tobytes() == before
     api.apply_photo_edit(src, {"brightness": 30, "contrast": -20, "scale": 150, "rotate": 33, "crop": (1, 1, 5, 5), "autoeffect": True})
     assert src.tobytes() == before and src.size == (60, 40)
-    assert api.DEFAULT_PHOTO_EDIT == {"brightness": 0, "contrast": 0, "scale": 100, "rotate": 0.0, "crop": None, "autoeffect": False}
+    assert api.DEFAULT_PHOTO_EDIT == {"brightness": 0, "contrast": 0, "scale": 100, "rotate": 0.0, "crop": None, "autoeffect": False, "portrait": False}
 
 def test_brightness_contrast():
     src = _grad(); m = _mean(src)
@@ -31,7 +31,7 @@ def test_brightness_contrast():
 def test_clamping_and_types():
     from badge_backend.services.photo_edit import normalize_params
     p = normalize_params({"brightness": 999, "contrast": "-80", "scale": 1, "rotate": 500, "autoeffect": 1, "crop": [1.4, 2, 3, 4], "junk": 5})
-    assert p == {"brightness": 50, "contrast": -50, "scale": 10, "rotate": 180.0, "crop": (1, 2, 3, 4), "autoeffect": True}
+    assert p == {"brightness": 50, "contrast": -50, "scale": 10, "rotate": 180.0, "crop": (1, 2, 3, 4), "autoeffect": True, "portrait": False}
     assert normalize_params({"scale": 9999})["scale"] == 400
     with pytest.raises(ValueError): normalize_params({"brightness": "abc"})
     with pytest.raises(ValueError): normalize_params({"crop": (0, 0, 0, 5)})

@@ -16,6 +16,10 @@ load_photo_for_edit(path, base_dir=None) -> Image   EXIF-поворот + реж
              обрезается границами изображения; пустое пересечение → ValueError
   autoeffect bool  ImageOps.autocontrast(cutoff=1%) + нормализация средней яркости к 128
              (множитель 0.6..1.6); ручные brightness/contrast применяются поверх
+  portrait   bool  галочка «Портрет» (UI: кадрировать по лицу через detect_face_crop); в apply_photo_edit
+             не влияет на пиксели, хранится в умолчаниях проекта. Строки "true"/"false"/"1"/"0" принимаются.
+Умолчания проекта: project_settings key="photo_edit_defaults", JSON всех ключей кроме crop (=null);
+старые значения без "portrait" читаются как portrait=False.
 Порядок: autoeffect → brightness → contrast → scale → rotate → crop.
 Скорость превью: UI передаёт уменьшенное изображение (crop тогда в его пикселях); при параметрах по
 умолчанию возвращается копия без пересчёта.
@@ -25,12 +29,21 @@ import json, os, sys
 from pathlib import Path
 from PIL import Image, ImageEnhance, ImageOps, ImageStat
 
-DEFAULT_PHOTO_EDIT = {"brightness": 0, "contrast": 0, "scale": 100, "rotate": 0.0, "crop": None, "autoeffect": False}
+DEFAULT_PHOTO_EDIT = {"brightness": 0, "contrast": 0, "scale": 100, "rotate": 0.0, "crop": None, "autoeffect": False,
+                      "portrait": False}
 RANGES = {"brightness": (-50, 50), "contrast": (-50, 50), "scale": (10, 400), "rotate": (-180.0, 180.0)}
 SETTINGS_KEY = "photo_edit_defaults"
 
 
 def _clamp(v, lo, hi): return lo if v < lo else hi if v > hi else v
+
+def _to_bool(v):
+    if isinstance(v, str):
+        t = v.strip().lower()
+        if t in ("1", "true", "yes", "on", "да"): return True
+        if t in ("", "0", "false", "no", "off", "нет"): return False
+        raise ValueError("ожидается bool")
+    return bool(v)
 
 def normalize_params(params: dict | None) -> dict:
     """Привести/обрезать параметры к допустимым; None/{} → DEFAULT_PHOTO_EDIT. Нечисло → ValueError."""
@@ -40,7 +53,7 @@ def normalize_params(params: dict | None) -> dict:
         try:
             if k in ("brightness", "contrast", "scale"): p[k] = int(round(_clamp(float(v), *RANGES[k])))
             elif k == "rotate": p[k] = float(_clamp(float(v), *RANGES[k]))
-            elif k == "autoeffect": p[k] = bool(v)
+            elif k in ("autoeffect", "portrait"): p[k] = _to_bool(v)
             elif k == "crop":
                 if v is None: p[k] = None
                 else:
@@ -51,7 +64,8 @@ def normalize_params(params: dict | None) -> dict:
             raise ValueError(f"параметр {k}={v!r}: {e}") from None
     return p
 
-def _is_identity(p): return p == DEFAULT_PHOTO_EDIT
+def _is_identity(p):  # portrait — флаг UI (галочка «Портрет»), на пиксели не влияет
+    return {**p, "portrait": False} == DEFAULT_PHOTO_EDIT
 
 def _split_alpha(im):
     if im.mode in ("RGBA", "LA", "PA") or (im.mode == "P" and "transparency" in im.info):
