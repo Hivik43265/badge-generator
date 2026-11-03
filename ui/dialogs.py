@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLi
                              QDialogButtonBox, QRadioButton, QCheckBox, QLabel, QHeaderView,
                              QButtonGroup, QMessageBox, QProgressDialog, QApplication, QProgressBar, QToolButton)
 from PyQt6.QtGui import QColor, QPixmap
-from .backend_api import (person_caption, BackendAPI, MissingPhotosError,
+from .backend_api import (SERVICE_COLUMNS, person_caption, BackendAPI, MissingPhotosError,
                           export_png_from_snapshot, export_pdf_from_snapshot, print_snapshot,
                           IMPORT_FORMATS, DATA_FORMATS, SHEET_KINDS, XLS_MAX_ROWS, FIELD_TYPE_NAMES, field_type,
                           open_source, read_rows, save_mapping, load_mapping)
@@ -57,7 +57,6 @@ PREVIEW_LIMIT = 200
 SERVICE_TARGETS = [("photo_config", "Настройки фото", "Строка"),
                    ("print_mark", "Отметка печати", "Да/Нет"), ("printed", "Напечатано", "Да/Нет"),
                    ("printed_at", "Дата печати", "Дата"), ("__fio__", "ФИО (разбить на поля БД)", "Строка")]
-SERVICE_KEYS = {k for k, *_ in SERVICE_TARGETS}
 confirm_fields_hook = None   # тесты: confirm_fields_hook(new_fields) -> True (создать) | False (только существующие) | None (отмена)
 
 
@@ -121,6 +120,8 @@ class ImportDialog(QDialog):
         bottom = QHBoxLayout(); bottom.addWidget(QLabel("Ход импорта:")); bottom.addWidget(self.progress, 1)
         for b in (self.b_save, self.b_load, self.btn, self.b_close): bottom.addWidget(b)
         lay = QVBoxLayout(self); lay.addLayout(top); lay.addLayout(top2); lay.addLayout(mid, 3)
+        self.no_image_hint = QLabel("Добавьте поле типа Изображение в Менеджере полей")
+        self.no_image_hint.setStyleSheet("color:#a05a00;"); lay.addWidget(self.no_image_hint); self.update_image_hint()
         lay.addWidget(QLabel("Превью строк:")); lay.addWidget(self.preview, 2); lay.addWidget(self.log); lay.addLayout(bottom)
 
     # ---- жизненный цикл: временные копии .db удаляет Sheet.close() ----
@@ -178,7 +179,15 @@ class ImportDialog(QDialog):
     def is_db(self):
         sh = self.current_sheet(); return sh is not None and sh.kind in ("project", "sqlite")
 
+    def has_image_field(self):
+        return any(f.get("data_type") == "image" for f in self.api.list_fields())
+
+    def update_image_hint(self):
+        """Подсказка видна только если в проекте нет поля типа «Изображение»."""
+        self.no_image_hint.setHidden(self.has_image_field())
+
     def _load(self):
+        self.update_image_hint()
         sh = self.current_sheet()
         if sh is None: return
         self.sheet_kind.setText(f"({SHEET_KINDS.get(sh.kind, sh.kind)})")
@@ -324,7 +333,7 @@ class ImportDialog(QDialog):
         sh = self.current_sheet()
         if sh is None or sh.kind != "project": return []
         have = {f["name"] for f in self.api.list_fields()}
-        return [h for h in self.headers if h not in SERVICE_KEYS and h not in have]
+        return [h for h in self.headers if h not in SERVICE_COLUMNS and h not in have]
 
     def ask_import_fields(self):
         """True — создать поля источника, False — только существующие, None — отмена."""

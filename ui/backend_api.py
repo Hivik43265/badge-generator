@@ -13,6 +13,10 @@ from badge_backend import CARD_W_PX, CARD_H_PX  # noqa: F401
 from badge_backend.photo_config import PhotoConfig, DEFAULT as DEFAULT_PHOTO_CONFIG  # noqa: F401
 from badge_backend.services.importer import read_table, ImportReport  # noqa: F401
 from badge_backend.services.headers import SYNONYMS, LABELS  # noqa: F401
+from badge_backend.services.headers import SERVICE_KEYS as _SERVICE_KEYS
+from badge_backend.services.sources import PROJECT_COLS as _PROJECT_COLS
+# служебные колонки по списку Backend (не создаются как поля)
+SERVICE_COLUMNS = frozenset(_SERVICE_KEYS) | frozenset(_PROJECT_COLS)
 from badge_backend.api import MissingPhotosError  # noqa: F401
 
 ROOT = Path(__file__).resolve().parent.parent
