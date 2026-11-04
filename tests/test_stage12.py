@@ -16,24 +16,24 @@ def test_v3_to_v4_keeps_data_and_ids(tmp_path):
         raw.execute("INSERT INTO template_elements(type,x,y,w,h) VALUES ('ellipse',0,0,10,10)")
     raw.commit(); raw.close()
     con = api.connect(p)
-    assert api.get_schema_version(con) == 6 == db.LATEST
+    assert api.get_schema_version(con) == 7 == db.LATEST
     assert [(e["id"], e["type"]) for e in api.list_elements(con)] == [(7, "line"), (9, "field")]
     assert "default_value" in db._cols(con, "person_fields")
     assert api.list_fields(con)[0]["default_value"] is None
     eid = api.create_element(con, "ellipse", 0, 0, 10, 10)
     assert api.list_elements(con)[-1]["id"] == eid
     with pytest.raises(sqlite3.IntegrityError): api.create_element(con, "ellipse", 0, 0, 0, 10)
-    assert db.migrate(con) == 6
+    assert db.migrate(con) == db.LATEST
 
 def test_v4_idempotent_rerun():
     con = api.connect()
-    con.execute("PRAGMA user_version=3"); assert db.migrate(con) == 6
+    con.execute("PRAGMA user_version=3"); assert db.migrate(con) == db.LATEST
     assert list(db._cols(con, "person_fields")).count("default_value") == 1
 
 def test_legacy_helper_v4(tmp_path):
     raw = sqlite3.connect(create_legacy_db(tmp_path / "v4.db", version=4))
     assert api.get_schema_version(raw) == 4
-    with pytest.raises(ValueError): create_legacy_db(tmp_path / "v7.db", version=7)
+    with pytest.raises(ValueError): create_legacy_db(tmp_path / "v8.db", version=8)
 
 # ---------- ellipse ----------
 def _el(**k): return {"id": 1, "type": "ellipse", "x": 100, "y": 100, "w": 400, "h": 200, **k}
@@ -127,7 +127,7 @@ def test_link_unlink_and_links():
     assert api.link_field(con, 999, "fio") is False
     assert api.unlink_field(con, f)
     e = [x for x in api.list_elements(con) if x["id"] == f][0]
-    assert (e["type"], e["field_name"], e["static_value"]) == ("text", None, "Иванов")
+    assert (e["type"], e["field_name"], e["static_value"]) == ("field", None, "Иванов")   # этап 15: отвязанное поле остаётся полем
     assert api.unlink_field(con, q, static_value="000123")
     e = [x for x in api.list_elements(con) if x["id"] == q][0]
     assert (e["type"], e["field_name"], e["static_value"]) == ("qr", None, "000123")
@@ -141,7 +141,7 @@ def test_delete_field():
     assert [x["name"] for x in api.list_fields(con)] == ["free", "fio"] or len(api.list_fields(con)) == 2
     assert api.delete_field(con, "free", unlink=False)
     assert api.delete_field(con, "fio") and api.list_fields(con) == []
-    assert api.list_elements(con)[0]["type"] == "text" and api.list_elements(con)[0]["field_name"] is None
+    assert api.list_elements(con)[0]["type"] == "field" and api.list_elements(con)[0]["field_name"] is None
     assert api.delete_field(con, "fio") is False
 
 # ---------- карты / статусы ----------
@@ -229,7 +229,7 @@ def test_backup_and_vacuum(tmp_path):
     p, con = _filled(tmp_path)
     out = api.backup_db(con, tmp_path / "bk" / "b1.db")
     assert out == tmp_path / "bk" / "b1.db" and not (tmp_path / "bk" / "b1.db.tmp").exists()
-    b = api.connect(out); assert len(api.list_persons(b)) == 5 and api.get_schema_version(b) == 6; b.close()
+    b = api.connect(out); assert len(api.list_persons(b)) == 5 and api.get_schema_version(b) == db.LATEST; b.close()
     with pytest.raises(ValueError): api.backup_db(con, p)
     r = api.vacuum_db(con)
     assert set(r) == {"size_before", "size_after"} and r["size_after"] < r["size_before"]
@@ -252,7 +252,7 @@ def test_restore_db(tmp_path):
     # бэкап старой версии мигрирует
     old = create_legacy_db(tmp_path / "v2.db", version=2)
     api.restore_db(tmp_path / "t.db", old)
-    assert api.get_schema_version(sqlite3.connect(tmp_path / "t.db")) == 6
+    assert api.get_schema_version(sqlite3.connect(tmp_path / "t.db")) == db.LATEST
     bad = tmp_path / "bad.db"; bad.write_bytes(b"not a database" * 100)
     with pytest.raises(ValueError): api.restore_db(tmp_path / "t2.db", bad)
     zero = tmp_path / "zero.db"; sqlite3.connect(zero).execute("CREATE TABLE x(a)").connection.commit()
@@ -273,10 +273,10 @@ def test_cycle_text():
     e = _el_by_id(con, t); assert (e["type"], e["field_name"], e["static_value"]) == ("field", "fio", None)
     assert {k: e[k] for k in _GEOM} == g0
     assert api.unlink_field(con, t)
-    e = _el_by_id(con, t); assert (e["type"], e["field_name"], e["static_value"]) == ("text", None, None)
+    e = _el_by_id(con, t); assert (e["type"], e["field_name"], e["static_value"]) == ("field", None, None)
     assert api.link_field(con, t, "fio") and _el_by_id(con, t)["type"] == "field"
     assert api.unlink_field(con, t, static_value="Петров")
-    e = _el_by_id(con, t); assert (e["type"], e["field_name"], e["static_value"]) == ("text", None, "Петров")
+    e = _el_by_id(con, t); assert (e["type"], e["field_name"], e["static_value"]) == ("field", None, "Петров")
     assert api.link_field(con, t, "fio")
     e = _el_by_id(con, t); assert (e["type"], e["field_name"], e["static_value"]) == ("field", "fio", None)
     assert {k: e[k] for k in _GEOM} == g0

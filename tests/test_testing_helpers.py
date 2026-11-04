@@ -9,7 +9,7 @@ def test_legacy_v1_then_migrate(tmp_path):
     assert "printed_at" not in [r[1] for r in raw.execute("PRAGMA table_info(persons)")]
     raw.close()
     con = api.connect(str(p))
-    assert api.get_schema_version(con) == 6
+    assert api.get_schema_version(con) == db.LATEST
     assert "printed_at" in [r[1] for r in con.execute("PRAGMA table_info(persons)")]
 
 def test_legacy_errors(tmp_path):

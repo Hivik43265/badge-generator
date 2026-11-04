@@ -1,5 +1,5 @@
 """D5: миграция v2 (persons.printed_at) и mark_printed."""
-import re, sqlite3, pytest
+import json, re, sqlite3, pytest
 from badge_backend import api, db
 
 ISO = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$")
@@ -17,17 +17,24 @@ def test_migrate_old_v1_db(tmp_path):
     before = [tuple(r) for r in old.execute("SELECT * FROM persons ORDER BY id")]; old.close()
     assert "printed_at" not in db._cols(sqlite3.connect(str(p)), "persons")
     con = api.connect(p)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 6 == db.LATEST
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 7 == db.LATEST
     assert "printed_at" in db._cols(con, "persons")
     after = [tuple(r) for r in con.execute("SELECT * FROM persons ORDER BY id")]
-    assert [a[:-1] for a in after] == before and all(a[-1] is None for a in after)
+    # v7: photo_path копируется в новое поле «Фото», created_at/updated_at (UTC) → локальное время со смещением
+    exp = []
+    for b in before:
+        fj = json.loads(b[1])
+        if b[2]: fj["Фото"] = b[2]
+        exp.append((b[0], fj, *b[2:5], db._utc_to_local(b[5]), db._utc_to_local(b[6])))
+    assert [(a[0], json.loads(a[1]), *a[2:5], a[5], a[6]) for a in after] == exp and all(a[-1] is None for a in after)
+    assert all("T" in a[5] and "T" in a[6] for a in after)
     assert [x["printed_at"] for x in api.list_persons(con)] == [None, None]
 
 def test_migrate_repeat_idempotent(tmp_path):
     p = tmp_path / "x.db"; c = api.connect(p); c.close()
-    c = api.connect(p); assert db.migrate(c) == 6 and db.migrate(c) == 6
+    c = api.connect(p); assert db.migrate(c) == db.LATEST and db.migrate(c) == db.LATEST
     # столбец уже есть, а version откатили — шаг всё равно не падает
-    c.execute("PRAGMA user_version=1"); assert db.migrate(c) == 6
+    c.execute("PRAGMA user_version=1"); assert db.migrate(c) == db.LATEST
     assert sum(1 for col in db._cols(c, "persons") if col == "printed_at") == 1
 
 def test_new_db_has_printed_at():
