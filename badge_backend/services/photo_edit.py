@@ -154,8 +154,8 @@ def detect_face_crop(img: Image.Image, aspect: float):
 # ---------- рамка из шаблона ----------
 def get_photo_frame_spec(con, field=None):
     """Пропорции и размер выходного фото для image-поля (D42).
-    field: имя поля (str) или rowid (int) из person_fields; None — фото записи (persons.photo_path),
-    т.е. фото-элементы без field_name. Берётся первый фото-элемент (type='photo') с этим field_name:
+    field: имя поля (str) или rowid (int) из person_fields; None — фото записи: этап 15 — объект, связанный
+    с полем «Фото», иначе несвязанный фото-объект. Только АКТИВНЫЙ шаблон. Берётся первый фото-элемент:
     сначала лицевая сторона, затем z_order, id. Размеры элемента в px холста 300 DPI → мм = px·25.4/300.
     → {'aspect': w/h, 'width_mm', 'height_mm', 'width_px', 'height_px' (300 DPI, округл.), 'element_id', 'side'}
     Нет связанного элемента (или поле не image / не найдено) → None: редактор работает без фикс. пропорций."""
@@ -166,9 +166,16 @@ def get_photo_frame_spec(con, field=None):
         r = con.execute(f"SELECT name, data_type FROM person_fields WHERE {col}=?", (field,)).fetchone()
         if r is None or r[1] != "image": return None
         name = r[0]
-    cond = "field_name=?" if name is not None else "(field_name IS NULL OR field_name='')"
-    r = con.execute(f"SELECT id, w, h, side FROM template_elements WHERE type='photo' AND {cond} "
-                    "ORDER BY side<>'front', z_order, id LIMIT 1", (name,) if name is not None else ()).fetchone()
+    from ..db import active_template_id, PHOTO_FIELD
+    tid = active_template_id(con)
+    if name is not None:
+        r = con.execute("SELECT id, w, h, side FROM template_elements WHERE type='photo' AND template_id=? AND field_name=? "
+                        "ORDER BY side<>'front', z_order, id LIMIT 1", (tid, name)).fetchone()
+    else:   # этап 15 (п.7): сначала объект, связанный с полем «Фото», затем несвязанный; только активный шаблон
+        r = con.execute("SELECT id, w, h, side FROM template_elements WHERE type='photo' AND template_id=? "
+                        "AND (COALESCE(field_name, '')='' OR field_name=?) "
+                        "ORDER BY COALESCE(field_name, '')<>?, side<>'front', z_order, id LIMIT 1",
+                        (tid, PHOTO_FIELD, PHOTO_FIELD)).fetchone()
     if r is None: return None
     eid, w, h, side = r
     wmm, hmm = w * 25.4 / DPI, h * 25.4 / DPI
@@ -255,8 +262,97 @@ def apply_and_save_photo(con, source_path, params, *, person_id=None, field_name
     with con:
         if field_name is not None:
             d = _j.loads(row[0] or "{}"); d[field_name] = rel
-            con.execute("UPDATE persons SET fields_json=?, updated_at=datetime('now') WHERE id=?",
-                        (_j.dumps(d, ensure_ascii=False), int(person_id)))
+            con.execute("UPDATE persons SET fields_json=?, updated_at=? WHERE id=?",
+                        (_j.dumps(d, ensure_ascii=False), _now(), int(person_id)))
         else:
-            con.execute("UPDATE persons SET photo_path=?, updated_at=datetime('now') WHERE id=?", (rel, int(person_id)))
+            con.execute("UPDATE persons SET photo_path=?, updated_at=? WHERE id=?", (rel, _now(), int(person_id)))
     return rel
+
+
+def _now():
+    from ..db import now_iso
+    return now_iso()
+
+# ---------- этап 15: вид фото записи (исходник не меняется) ----------
+def _view_key(con, field_name):
+    if field_name in (None, ""): return ""
+    r = con.execute("SELECT data_type FROM person_fields WHERE name=?", (field_name,)).fetchone()
+    if r is None or r[0] != "image": raise ValueError(f"поле «{field_name}» не существует или не типа «изображение»")
+    return field_name
+
+def get_photo_view(con, person_id: int, field_name: str | None = None) -> dict:
+    """Параметры вида фото записи (кадр, масштаб, поворот, яркость, контраст, флаги) для image-поля
+    (None — persons.photo_path). Не сохранены → умолчания проекта (crop=None). Всегда нормализованы.
+    Нет записи → ValueError."""
+    key = _view_key(con, field_name)
+    if con.execute("SELECT 1 FROM persons WHERE id=?", (int(person_id),)).fetchone() is None:
+        raise ValueError(f"нет записи id={person_id}")
+    r = con.execute("SELECT params_json FROM person_photo_views WHERE person_id=? AND field_name=?",
+                    (int(person_id), key)).fetchone()
+    if r is None: return get_photo_edit_defaults(con)
+    try: return normalize_params(json.loads(r[0]))
+    except (ValueError, TypeError): return get_photo_edit_defaults(con)
+
+def set_photo_view(con, person_id: int, params: dict | None, field_name: str | None = None) -> dict:
+    """Сохранить вид фото записи (нормализованный). Файл фото НЕ создаётся и НЕ меняется: рендер/печать/экспорт
+    применяют параметры к исходнику в памяти. crop — (x,y,w,h) в px исходника после scale/rotate
+    (как apply_photo_edit). params=None — удалить вид (вернуться к умолчаниям). → сохранённое."""
+    key = _view_key(con, field_name)
+    if con.execute("SELECT 1 FROM persons WHERE id=?", (int(person_id),)).fetchone() is None:
+        raise ValueError(f"нет записи id={person_id}")
+    with con:
+        if params is None:
+            con.execute("DELETE FROM person_photo_views WHERE person_id=? AND field_name=?", (int(person_id), key))
+            return get_photo_edit_defaults(con)
+        p = normalize_params(params)
+        con.execute("INSERT INTO person_photo_views(person_id, field_name, params_json, updated_at) VALUES (?,?,?,?) "
+                    "ON CONFLICT(person_id, field_name) DO UPDATE SET params_json=excluded.params_json, updated_at=excluded.updated_at",
+                    (int(person_id), key, json.dumps(p), _now()))
+    return p
+
+def render_photo(con, person_id: int, field_name: str | None = None, *, size=None, base_dir=None):
+    """Фото записи с применённым видом (в памяти) → PIL.Image; size=(w,h) — cover в этот размер
+    (None — размер кадра). Исходник — значение image-поля, иначе persons.photo_path. Нет фото → ValueError."""
+    from .photos import resolve_photo_path, project_base_dir
+    r = con.execute("SELECT * FROM persons WHERE id=?", (int(person_id),)).fetchone()
+    if r is None: raise ValueError(f"нет записи id={person_id}")
+    base = Path(base_dir) if base_dir else project_base_dir(con)
+    src = resolve_photo_path(dict(r), field_name or None, base)
+    if src is None: raise ValueError("у записи нет фото")
+    im = apply_photo_edit(load_photo_for_edit(src), get_photo_view(con, person_id, field_name))
+    if size is not None:
+        w, h = int(size[0]), int(size[1])
+        if w <= 0 or h <= 0: raise ValueError("size должен быть > 0")
+        im = ImageOps.fit(im, (w, h), Image.LANCZOS)
+    return im
+
+def portrait_params(img: Image.Image, aspect: float, params: dict | None = None) -> dict | None:
+    """«Портрет»: кадр по лицу (detect_face_crop, правило D42) для изображения ПОСЛЕ scale/rotate из params.
+    → полный нормализованный набор параметров с crop=(x,y,w,h) и portrait=True (значения — в ползунки);
+    лицо не найдено → None. Пиксели не меняются."""
+    p = normalize_params(params)
+    base = apply_photo_edit(img, {**p, "crop": None, "autoeffect": False, "brightness": 0, "contrast": 0})
+    box = detect_face_crop(base, aspect)
+    if box is None: return None
+    p["crop"] = tuple(int(v) for v in box); p["portrait"] = True
+    return p
+
+def autoeffect_params(img: Image.Image, params: dict | None = None) -> dict:
+    """«Автоэффект»: подобрать яркость и контраст по изображению и вернуть их как ЗНАЧЕНИЯ ползунков.
+    → полный нормализованный набор с brightness/contrast (-50..50) и autoeffect=False (эффект уже выражен
+    ползунками — повторно не применяется). Остальные ключи params сохраняются."""
+    p = normalize_params(params)
+    g = img.convert("L"); hist = g.histogram(); n = sum(hist) or 1
+    lo = hi = None; acc = 0
+    for i, c in enumerate(hist):
+        acc += c
+        if lo is None and acc > n * 0.01: lo = i
+        if hi is None and acc >= n * 0.99: hi = i
+    lo, hi = lo or 0, hi if hi is not None else 255
+    contrast = (255.0 / max(1, hi - lo) - 1) * 100
+    mean = ImageStat.Stat(g).mean[0] or 1.0
+    brightness = (128.0 / mean - 1) * 100
+    p["contrast"] = int(round(_clamp(contrast, *RANGES["contrast"])))
+    p["brightness"] = int(round(_clamp(brightness, *RANGES["brightness"])))
+    p["autoeffect"] = False
+    return p
