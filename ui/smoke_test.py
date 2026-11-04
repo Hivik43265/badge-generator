@@ -94,6 +94,34 @@ ok(f"форма: photo_config={p['photo_config']} только у #{ivanov}")
 f.grab().save(str(shots / "screenshot_record_form.png"))
 # --- редактор: палитра v1, пересечения ---
 w.show_editor(); app.processEvents(); le = w.layout_editor
+# --- этап 15 п.2: режим шаблона ---
+from ui import stage15, layout_editor as _lem
+tt = w.template_tools; MOV = _lem.QGraphicsItem.GraphicsItemFlag.ItemIsMovable
+_warns = []; _lem.warn_hook = lambda t, x: _warns.append(t); stage15.stub_hook = lambda t, x: None
+assert not tt.template_mode and not w.act_template_save.isEnabled() and w.act_template_mode.isEnabled()
+assert le.items() and all(not (i.flags() & MOV) for i in le.items()) and le.show_render
+n0 = len(api.list_elements()); assert le.add_element("text") is None and len(api.list_elements()) == n0 and _warns
+ok("режим шаблона выкл.: элементы заблокированы, добавление — no-op с предупреждением, «✓» недоступна, карточка — данные записи")
+w.act_template_mode.trigger(); app.processEvents()
+assert tt.template_mode and w.act_template_save.isEnabled() and all(i.flags() & MOV for i in le.items()) and le.mode_banner.isVisibleTo(le)
+it0 = le.items()[0]; eid0, p0 = it0.el["id"], (it0.el["x"], it0.el["y"])
+it0.setPos(p0[0] + 7, p0[1] + 5); le._commit_geometry(it0); app.processEvents()
+assert next(e for e in api.list_elements() if e["id"] == eid0)["x"] == p0[0] + 7
+ok("режим шаблона вкл.: перемещение разрешено, «✓» доступна")
+asked = []; tt.confirm_hook = lambda: (asked.append(1), False)[1]
+w.act_template_mode.trigger(); app.processEvents()
+assert asked and tt.template_mode and w.act_template_mode.isChecked()            # отказ → остаёмся в режиме
+tt.confirm_hook = lambda: (asked.append(2), True)[1]
+w.act_template_mode.trigger(); app.processEvents()
+g = next(e for e in api.list_elements() if e["id"] == eid0)
+assert asked == [1, 2] and not tt.template_mode and (g["x"], g["y"]) == p0 and not w.act_template_save.isEnabled()
+ok("выход без сохранения: подтверждение; «Отмена» — остаёмся, «Отменить изменения» — откат через undo")
+w.act_template_mode.trigger(); le.items()[0].setPos(p0[0] + 3, p0[1]); le._commit_geometry(le.items()[0]); asked.clear()
+w.act_template_save.trigger(); app.processEvents()
+assert not tt.template_mode and not asked and not w.act_template_save.isEnabled()
+it0 = next(i for i in le.items() if i.el["id"] == eid0); it0.setPos(*p0); tt.set_template_mode(True); le._commit_geometry(next(i for i in le.items() if i.el["id"] == eid0))
+ok("«✓ Сохранить шаблон» сохраняет (заглушка) и выходит из режима без вопроса")
+tt.confirm_hook = lambda: True; _lem.warn_hook = None; stage15.stub_hook = None   # дальше — редактирование в режиме шаблона
 from ui import layout_editor as lem
 WARN = []; lem.warn_hook = lambda t, m: WARN.append(m)
 RES_WARN = []; dialogs.warning_hook = lambda t, m: RES_WARN.append(m)

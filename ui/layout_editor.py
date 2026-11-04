@@ -133,7 +133,7 @@ class ElementItem(QGraphicsRectItem):
         self._apply_geom(w, h)
 
     def mousePressEvent(self, ev):
-        self._resizing = self.handle.contains(self.handle.mapFromParent(ev.pos()))
+        self._resizing = bool(self.flags() & QGraphicsItem.GraphicsItemFlag.ItemIsMovable) and self.handle.contains(self.handle.mapFromParent(ev.pos()))
         super().mousePressEvent(ev)
 
     def mouseMoveEvent(self, ev):
@@ -174,6 +174,7 @@ class LayoutEditor(QWidget):
         self.overlaps, self.hint = [], None
 
         # Действия (инструменты, удаление, порядок, сторона) живут только в ленте главного окна.
+        self.template_mode = False       # этап 15 п.2: вне режима шаблона элементы заблокированы
         self.show_render = True          # «Рендер под рамками» — переключается действием ленты
         self.person_label = QLabel("Запись на холсте: пустой шаблон"); self.person_label.setWordWrap(True)
         self.selection_actions = []      # действия ленты, активные только при выделенном объекте
@@ -217,7 +218,7 @@ class LayoutEditor(QWidget):
 
         right = QVBoxLayout()
         self.mode_banner = QLabel("Режим создания шаблона: расставьте элементы на карточке вручную и выберите поля; сохранение — «✓ Сохранить шаблон» на ленте"); self.mode_banner.setStyleSheet(
-            "background:#2E7D6B; color:white; font-weight:600; padding:3px 8px;"); self.mode_banner.hide()
+            "background:#2E7D6B; color:white; font-weight:600; padding:3px 8px;"); self.mode_banner.hide(); self.mode_banner.setWordWrap(True)
         # этап 15 п.1: индикатор связи фото-объекта с полем «Фото» (Изображение)
         self.photo_link = QLabel(); self.photo_link.setWordWrap(True); self.photo_link.hide()
         self.photo_link.setStyleSheet("background:#EAF3FF; border:1px solid #3070d0; padding:4px;")
@@ -309,6 +310,8 @@ class LayoutEditor(QWidget):
         self.el_list.clear()
         for el in els:
             it = ElementItem(el, self.bus, self.labels); self.scene.addItem(it)
+            it.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, self.template_mode)   # этап 15: вне режима шаблона — заблокировано
+            it.handle.setVisible(self.template_mode)
             li = QListWidgetItem(f"#{el['id']} {element_caption(el, self.labels)}"); li.setData(Qt.ItemDataRole.UserRole, el["id"])
             self.el_list.addItem(li)
             if el["id"] == select_id: it.setSelected(True); li.setSelected(True)
@@ -486,7 +489,17 @@ class LayoutEditor(QWidget):
             return None
 
     def set_template_mode_banner(self, on):
-        if hasattr(self, "mode_banner"): self.mode_banner.setVisible(bool(on))
+        """Этап 15 п.2: в режиме — добавление/перемещение/связывание; вне — блокировка и данные выбранной записи."""
+        self.template_mode = bool(on)
+        if hasattr(self, "mode_banner"): self.mode_banner.setVisible(self.template_mode)
+        if not self.template_mode: self.show_render = True          # карточка показывает данные выбранной записи
+        for it in self.items():
+            it.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, self.template_mode); it.handle.setVisible(self.template_mode)
+        if not self.template_mode and self.show_render: self.load(self.side, self.current.el["id"] if self.current else None)
+
+    def _locked(self, title):
+        if self.template_mode: return False
+        _warn(self, title, "Включите «Режим шаблона» на ленте, чтобы изменять шаблон"); return True
 
     def _show_photo_link(self, el):
         """Этап 15 п.1 (макет): у фото-объекта — состояние связи с полем «Фото» типа «Изображение»."""
@@ -506,6 +519,7 @@ class LayoutEditor(QWidget):
         self.p_field.addItem(NEW_FIELD); self.p_field.setCurrentText(cur); self.p_field.blockSignals(False)
 
     def _field_chosen(self):
+        if self._locked("Связать поле"): return False
         if self.p_field.currentText() == NEW_FIELD:
             name = self._new_field(); self.p_field.setCurrentText(name or "")
             return bool(name)
@@ -543,6 +557,7 @@ class LayoutEditor(QWidget):
 
     def add_element(self, kind="text", *, field_name=None, image_path=None, static_value=None):
         """Создать элемент по центру холста, выделить его. Возвращает id (None — Backend отклонил)."""
+        if self._locked("Добавить элемент"): return None
         t = dict((k, tt) for k, _l, tt in TOOLS)[kind]
         if t == "field" and field_name is None: field_name = self._ask_field()
         if t == "image" and image_path is None: image_path = self._ask_file("Изображение (логотип)")
@@ -567,6 +582,7 @@ class LayoutEditor(QWidget):
 
     def add_background(self, color=None, image_path=None):
         """Фон стороны через template_backgrounds (set_background)."""
+        if self._locked("Фон"): return None
         cur = self.api.get_background(self.side) or {"color": "#FFFFFF", "image_path": None}
         if color is None and image_path is None:
             choice, ok = QInputDialog.getItem(self, "Фон стороны", "Фон:", ["Цвет", "Изображение", "Сбросить"], 0, False)

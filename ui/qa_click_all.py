@@ -90,6 +90,13 @@ def scenario(tmp, chk, out, EXC):
                     le = w.layout_editor; items = [i for i in le.scene.items() if i.flags() & i.GraphicsItemFlag.ItemIsSelectable]
                     if items and a.objectName() != "act_paste": le.scene.clearSelection(); items[0].setSelected(True)
                 spin(30)
+                if a.objectName() == "act_template_save":                  # этап 15: «✓» доступна только в режиме шаблона
+                    tt = w.template_tools; tt.confirm_hook = lambda: True
+                    chk("«✓ Сохранить шаблон» недоступна вне режима шаблона", tt.template_mode or not a.isEnabled(), a.isEnabled())
+                    if not tt.template_mode: w.act_template_mode.trigger(); spin(50)
+                    chk("«✓ Сохранить шаблон» доступна в режиме шаблона", a.isEnabled(), tt.template_mode)
+                    a.trigger(); spin(250); chk("«✓ Сохранить шаблон» выходит из режима", not tt.template_mode and not a.isEnabled(), tt.template_mode)
+                    continue
                 if not a.isEnabled(): skipped.append(a.objectName()); continue
                 n = len(EXC); OPENED.clear(); a.trigger(); spin(250)
                 if a.isCheckable() and a.objectName() not in ("act_display_all", "act_display_printed", "act_display_unprinted"): a.trigger(); spin(80)
