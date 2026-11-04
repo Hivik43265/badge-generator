@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QGraphicsView, Q
                              QFormLayout, QLabel, QComboBox, QPushButton, QSpinBox, QLineEdit,
                              QPlainTextEdit, QMessageBox, QCheckBox, QToolButton, QGridLayout,
                              QInputDialog, QFileDialog, QColorDialog, QScrollArea, QSizePolicy, QListWidget, QListWidgetItem)
+from .stage15 import FormatPanel, UNLINKED_COLOR, PHOTO_FIELD_LABEL, PHOTO_FIELD_TYPE
 from .backend_api import BackendAPI, CARD_W_PX, CARD_H_PX, TYPE_NAMES, SIDE_NAMES, person_caption
 
 SIDE_LABELS = SIDE_NAMES
@@ -102,14 +103,18 @@ class ElementItem(QGraphicsRectItem):
         self.is_line = el["type"] == "line"
         self.lw, self.lh = el["w"], el["h"]
         self.setPos(el["x"], el["y"]); self.setZValue(1000 + (el.get("z_order") or 0))
-        self.setPen(QPen(QColor("#3070d0"), 2, Qt.PenStyle.DashLine))
+        # этап 15 п.3: связываемый объект без поля — цвет «не связан» (TODO stage15: фото → поле «Фото» в Backend)
+        self.unlinked = el["type"] in ("field", "barcode", "qr", "photo") and not el.get("field_name") and not (
+            el["type"] in ("barcode", "qr") and el.get("static_value"))
+        self.setPen(QPen(QColor(UNLINKED_COLOR if self.unlinked else "#3070d0"), 2, Qt.PenStyle.DashLine))
         self.setBrush(QBrush(QColor(48, 112, 208, 25)))
         self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsMovable | QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
         self.setAcceptHoverEvents(True)
         self.caption = QGraphicsSimpleTextItem(self)
         self.handle = QGraphicsRectItem(0, 0, HANDLE, HANDLE, self)
         self.handle.setBrush(QBrush(QColor("#3070d0")))
-        self.caption.setText(element_caption(el, labels)[:48])
+        self.caption.setText((element_caption(el, labels)[:48]) + ("  · не связан" if self.unlinked else ""))
+        if self.unlinked: self.caption.setBrush(QBrush(QColor(UNLINKED_COLOR)))
         self._apply_geom(el["w"], el["h"])
 
     def _apply_geom(self, w, h):
@@ -211,6 +216,13 @@ class LayoutEditor(QWidget):
         self.props = props; props.setEnabled(False)
 
         right = QVBoxLayout()
+        self.format_panel = FormatPanel(self)            # этап 15 п.2
+        self.mode_banner = QLabel("Режим создания шаблона"); self.mode_banner.setStyleSheet(
+            "background:#2E7D6B; color:white; font-weight:600; padding:3px 8px;"); self.mode_banner.hide()
+        # этап 15 п.1: индикатор связи фото-объекта с полем «Фото» (Изображение)
+        self.photo_link = QLabel(); self.photo_link.setWordWrap(True); self.photo_link.hide()
+        self.photo_link.setStyleSheet("background:#EAF3FF; border:1px solid #3070d0; padding:4px;")
+        right.addWidget(self.format_panel); right.addWidget(self.photo_link)
         right.addWidget(self.person_label)
         # Список элементов — только для выбора (перекрытые объекты); своих кнопок нет,
         # контекстное меню строит главное окно на тех же QAction ленты.
@@ -228,7 +240,8 @@ class LayoutEditor(QWidget):
         corner = QLabel("мм"); corner.setFixedSize(Ruler.T, Ruler.T); corner.setStyleSheet("font-size:8px; background:#F1F3F2;")
         g.addWidget(corner, 0, 0); g.addWidget(self.hruler, 0, 1); g.addWidget(self.vruler, 1, 0); g.addWidget(self.view, 1, 1)
         self.canvas_box = cw
-        lay = QHBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0); lay.addWidget(cw, 1); lay.addWidget(rw)
+        left = QVBoxLayout(); left.setContentsMargins(0, 0, 0, 0); left.setSpacing(0); left.addWidget(self.mode_banner); left.addWidget(cw, 1)
+        lay = QHBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0); lay.addLayout(left, 1); lay.addWidget(rw)
         self.load("front")
 
     cursor_moved = pyqtSignal(float, float)
@@ -400,6 +413,7 @@ class LayoutEditor(QWidget):
         cur = self.current.el["id"] if sel else None
         for r in range(self.el_list.count()):
             it = self.el_list.item(r); it.setSelected(it.data(Qt.ItemDataRole.UserRole) == cur)
+        self._show_photo_link(self.current.el if sel else None)
         if not sel: return
         e = {**sel[0].el, **sel[0].geometry()}; st = e.get("style") or {}; t = e["type"]
         self.p_type.setText(element_caption(e, getattr(self, "labels", {}))); self._show_rows(t)
@@ -471,6 +485,19 @@ class LayoutEditor(QWidget):
             return self.add_background() if key == "background" else self.add_element(key)
         except _Cancelled:
             return None
+
+    def set_template_mode_banner(self, on):
+        if hasattr(self, "mode_banner"): self.mode_banner.setVisible(bool(on))
+
+    def _show_photo_link(self, el):
+        """Этап 15 п.1 (макет): у фото-объекта — состояние связи с полем «Фото» типа «Изображение»."""
+        if not el or el.get("type") != "photo": self.photo_link.hide(); return
+        fn = el.get("field_name")
+        if fn: t = f"🔗 Связан с полем «{fn}» (тип «{PHOTO_FIELD_TYPE}»)"
+        else:   # TODO stage15: Backend должен создать поле «Фото» и связать его при вставке
+            t = (f"🔗 Поле «{PHOTO_FIELD_LABEL}» (тип «{PHOTO_FIELD_TYPE}») будет создано и связано автоматически"
+                 " — заглушка, ждёт Backend")
+        self.photo_link.setText(t); self.photo_link.show()
 
     def _fill_fields(self, fields=None):
         """Комбо поля объекта: только list_fields() + последний пункт «Новое поле…» (D24)."""

@@ -126,7 +126,7 @@ field_manager_hook = None    # тесты: field_manager_hook(kind, dialog) -> �
 class FieldEditDialog(QDialog):
     """Поле БД: имя (подпись), тип данных (D24), значение по умолчанию."""
 
-    def __init__(self, parent=None, label="", data_type="text", default="", title="Поле БД"):
+    def __init__(self, parent=None, label="", data_type="text", default="", title="Поле БД", objects=None):
         super().__init__(parent); self.setWindowTitle(title)
         self.label = QLineEdit(label); self.type = QComboBox()
         for k, t in FIELD_TYPES: self.type.addItem(t, k)
@@ -134,6 +134,11 @@ class FieldEditDialog(QDialog):
         if not BACKEND_HAS_TYPE: self.type.setToolTip("Backend пока не хранит data_type — сохраняется как «Строка»")
         self.default = QLineEdit(default or "")
         form = QFormLayout(); form.addRow("Имя поля:", self.label); form.addRow("Тип данных:", self.type); form.addRow("По умолчанию:", self.default)
+        # этап 15 п.3 (макет): объект шаблона для поля; «создать при связывании» — если объекта нет
+        self.obj = QComboBox(); self.obj.addItem("— нет: создать объект при связывании —", None)
+        for e in objects or []: self.obj.addItem(e[1], e[0])
+        self.obj.setToolTip("TODO stage15: выбор объекта сохраняется только в UI — связывание при создании ждёт Backend")
+        if objects is not None: form.addRow("Объект шаблона:", self.obj)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         bb.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
         bb.accepted.connect(lambda: self.accept() if self.label.text().strip() else None); bb.rejected.connect(self.reject)
@@ -178,7 +183,8 @@ class FieldManager(QDialog):
             b.setMinimumWidth(b.sizeHint().width())
         lay = QVBoxLayout(self)
         lay.addWidget(QLabel("Выделите поле в списке и объект на макете → «Связать поле» / «Отвязать поле». Значение по умолчанию — двойной клик."))
-        lay.addWidget(self.tree, 1); lay.addLayout(b1); lay.addWidget(desc); lay.addLayout(bl)
+        self.status = QLabel(); self.status.setWordWrap(True); self.status.setStyleSheet("color:#9A5B00;")
+        lay.addWidget(self.tree, 1); lay.addLayout(b1); lay.addWidget(desc); lay.addWidget(self.status); lay.addLayout(bl)
         self.reload()
 
     def reload(self):
@@ -224,7 +230,9 @@ class FieldManager(QDialog):
     def add_field(self, label=None, data_type="text", default=None):
         """Новое поле БД (upsert_field). Возвращает имя (ключ) или None."""
         if label is None:
-            d = FieldEditDialog(self, title="Добавить поле")
+            objs = [(e["id"], f"{TYPE_NAMES.get(e['type'], e['type'])} #{e['id']} ({'лиц.' if e['side'] == 'front' else 'обор.'})")
+                    for e in self.api.list_elements() if e["type"] in self.LINKABLE and not e.get("field_name")]
+            d = FieldEditDialog(self, title="Добавить поле", objects=objs)
             if field_manager_hook is not None:
                 v = field_manager_hook("add", d)
                 if not v: return None
@@ -278,6 +286,8 @@ class FieldManager(QDialog):
             is_img = field_type(self._field(self.selected_field())) == "image"
             ok = (e["type"] == "photo") == is_img
         self.b_link.setEnabled(bool(ok))
+        if hasattr(self, "status"):   # этап 15 п.3 (макет): без объекта на макете — подсказка; создание объекта ждёт Backend
+            self.status.setText("Объект на макете не выбран: при связывании он будет создан (заглушка, ждёт Backend)" if fld and e is None else "")
         self.b_unlink.setEnabled(e is not None and bool(e.get("field_name")))
 
     def _edited(self, item, col):
@@ -291,6 +301,11 @@ class FieldManager(QDialog):
     def link(self, field_name=None):
         """Выделенное поле списка ↔ выделенный объект на макете."""
         eid = self.selected_element(); field_name = field_name or self.selected_field()
+        if eid is None and field_name is not None:
+            # этап 15 п.3: объекта нет → он будет создан при связывании. TODO stage15: Backend (создание + link_field)
+            lab = (self._field(field_name) or {}).get("label") or field_name
+            self.status.setText(f"Объект для поля «{lab}» будет создан на шаблоне при связывании — заглушка, ждёт Backend")
+            return False
         if eid is None or field_name is None: return False
         try:
             r = self.api.link_field(eid, field_name)
@@ -304,7 +319,11 @@ class FieldManager(QDialog):
     def unlink(self):
         eid = self.selected_element()
         if eid is None: return False
-        r = self.api.unlink_field(eid); self.reload(); return r
+        r = self.api.unlink_field(eid); self.reload()
+        self.status.setText("Объект отвязан — на шаблоне отмечен цветом «не связан»")     # этап 15 п.3
+        le = getattr(self.parent(), "layout_editor", None)
+        if le is not None: le.reload()
+        return r
 
     def field_list_text(self):
         lines = ["Поля БД и связанные объекты шаблона", ""]

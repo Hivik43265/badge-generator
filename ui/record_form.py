@@ -84,7 +84,7 @@ class RecordForm(QDialog):
 
         self.image_edits = {n: e for n, e in self.edits.items() if getattr(e, "kind", "") == "image"}
         cfg = PhotoConfig.parse(self.person["photo_config"])
-        box = QGroupBox("Фото записи (объекты «Фото» без поля)" if self.image_edits else "Фото"); pf = QFormLayout(box)
+        box = QGroupBox("Фото"); pf = QFormLayout(box)
         self.photo_path = QLineEdit(self.person["photo_path"] or ""); self.photo_path.setReadOnly(True)
         self.photo_block = PhotoBlock(api.base_dir, self.person["photo_path"] or "", self)       # D22: камера / файл
         self.photo_block.changed.connect(lambda p: (self.photo_path.setText(p), self.update_preview()))
@@ -105,7 +105,6 @@ class RecordForm(QDialog):
         self.side = QComboBox(); self.side.addItem("Лицевая", "front"); self.side.addItem("Оборотная", "back")
         self.preview = QLabel(alignment=Qt.AlignmentFlag.AlignCenter); self.preview.setMinimumSize(506, 319)
         self.preview.setStyleSheet("border:1px solid #aaa;")
-        pv = QVBoxLayout(); pv.addWidget(QLabel("Превью (рендер Backend):")); pv.addWidget(self.side); pv.addWidget(self.preview); pv.addStretch()
 
         self._timer = QTimer(self, singleShot=True, interval=150, timeout=self.update_preview)
         for w in (self.sx, self.sy, self.cx, self.cy): w.valueChanged.connect(lambda *_: self._timer.start())
@@ -124,9 +123,12 @@ class RecordForm(QDialog):
         for blk, fn in [(self.photo_block, None), *[(e, n) for n, e in self.image_edits.items()]]:
             blk.save_photo, blk.api, blk.session = api.save_photo, api, self.photo_session      # пропорции рамки — Backend photo_edit_target(field_name)
             blk.field_name, blk.person_id = fn, (person_id if p else None)
-        self.photo_box = box; box.setVisible(not self.image_edits or unlinked)
-        left = QVBoxLayout(); left.addLayout(form); left.addWidget(box); left.addStretch()
-        main = QHBoxLayout(); main.addLayout(left); main.addLayout(pv)
+        self.photo_box = box
+        # этап 15 п.6: превью и блок «Фото записи» убраны из окна записи (виджеты остаются вне макета для совместимости
+        # сохранения photo_config/photo_path; фото — через поля типа «Изображение»).
+        box.setVisible(False); self.preview.setVisible(False); self.side.setVisible(False)
+        left = QVBoxLayout(); left.addLayout(form); left.addStretch()
+        main = QHBoxLayout(); main.addLayout(left)
         lay = QVBoxLayout(self); lay.addLayout(main); lay.addWidget(bb)
         self.update_preview()
 

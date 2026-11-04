@@ -115,15 +115,19 @@ class PhotoEditor(QDialog):
         except LookupError as e: self.src, self.load_error = None, str(e)
         except ValueError as e: self.src, self.load_error = None, f"Не удалось открыть фото: {e}"
         self.img = self.src
-        grid = QGridLayout(); self.sl, self.sp = {}, {}
+        grid = QGridLayout(); self.sl, self.sp, self.applied_labels, self.applied = {}, {}, {}, {}
         for i, (k, lab, lo, hi, suf) in enumerate(self.SLIDERS):
             s = QSlider(Qt.Orientation.Horizontal); s.setRange(lo, hi); sp = QSpinBox(); sp.setRange(lo, hi); sp.setSuffix(suf)
             s.valueChanged.connect(sp.setValue); sp.valueChanged.connect(s.setValue); sp.valueChanged.connect(lambda *_: self._timer.start())
             grid.addWidget(QLabel(lab), i, 0, Qt.AlignmentFlag.AlignRight); grid.addWidget(s, i, 1); grid.addWidget(sp, i, 2)
-            self.sl[k], self.sp[k] = s, sp
+            al = QLabel(); al.setStyleSheet("color:#2E7D6B; font-weight:600;"); al.setMinimumWidth(110); grid.addWidget(al, i, 3)
+            sp.valueChanged.connect(lambda *_, k=k: self._clear_applied(k))
+            self.sl[k], self.sp[k] = s, sp; self.applied_labels[k] = al
         self.portrait, self.autoeffect = QCheckBox("Портрет"), QCheckBox("Автоэффект")
         self.portrait.setToolTip("Рамка по лицу (поиск лица — Backend)"); self.portrait.toggled.connect(lambda on: on and self.find_face())
         self.autoeffect.toggled.connect(lambda *_: self._timer.start())
+        self.portrait.toggled.connect(lambda on: self.show_applied("portrait", on))
+        self.autoeffect.toggled.connect(lambda on: self.show_applied("autoeffect", on))
         self.b_setdef, self.b_def = QPushButton("Установить по умолчанию"), QPushButton("По умолчанию")
         self.b_setdef.clicked.connect(lambda: self.save_defaults()); self.b_def.clicked.connect(lambda: self.load_defaults())
         opts = QHBoxLayout(); opts.addStretch(1); opts.addWidget(self.portrait); opts.addSpacing(30); opts.addWidget(self.autoeffect); opts.addStretch(1)
@@ -151,6 +155,29 @@ class PhotoEditor(QDialog):
             self.base_status = self.load_error; self.status.setText(self.load_error); return
         self.load_defaults(preview=False); self.update_preview(); self.reset_frame()
         if self.portrait.isChecked() and self.aspect is not None: self.find_face()      # D41: «Портрет» из умолчаний → рамка по лицу сразу
+
+    # ---- этап 15 п.6: ползунки показывают значения, применённые «Портретом» / «Автоэффектом» ----
+    # TODO stage15: МАКЕТ. Значения — заглушка MOCK_APPLIED; реальные значения должен вернуть Backend
+    # (apply_photo_edit / detect_face_crop не сообщают их). Ручные значения (поле справа, params) не меняются.
+    MOCK_APPLIED = {"autoeffect": {"brightness": 12, "contrast": 18}, "portrait": {"scale": 135, "rotate": 0}}
+
+    def show_applied(self, mode, on):
+        for k, v in self.MOCK_APPLIED[mode].items():
+            if on: self.applied[k] = (mode, v)
+            elif self.applied.get(k, (None,))[0] == mode: self.applied.pop(k)
+        for k in self.sl:
+            s = self.sl[k]; s.blockSignals(True)
+            if k in self.applied:
+                mode_, v = self.applied[k]; s.setValue(v)
+                self.applied_labels[k].setText(f"{'Автоэффект' if mode_ == 'autoeffect' else 'Портрет'}: {v:+d}" if k != "scale"
+                                               else f"Портрет: {v} %")
+            else:
+                s.setValue(self.sp[k].value()); self.applied_labels[k].setText("")
+            s.blockSignals(False)
+        return dict(self.applied)
+
+    def _clear_applied(self, k):
+        self.applied.pop(k, None); self.applied_labels[k].setText("")
 
     # ---- параметры ----
     def params(self, crop=True):

@@ -2,11 +2,12 @@
 import os
 from datetime import datetime
 from PyQt6.QtCore import pyqtSignal, Qt, QAbstractTableModel, QModelIndex, QSortFilterProxyModel, QSize
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QPixmap, QBrush, QColor
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QComboBox,
-                             QTableView, QAbstractItemView, QMessageBox, QHeaderView, QLabel)
+                             QTableView, QAbstractItemView, QMessageBox, QHeaderView, QLabel, QCompleter)
 from .backend_api import BackendAPI, display_value, field_type
 from .record_form import RecordForm
+from .stage15 import PRINTED_ROW_COLOR
 
 
 PRINTED_LABEL = "Напечатано"
@@ -110,6 +111,8 @@ class PersonsModel(QAbstractTableModel):
         if not index.isValid():
             return None
         p, c = self.rows[index.row()], index.column(); kind = self.cols[c][0]
+        if role == Qt.ItemDataRole.BackgroundRole:   # этап 15 п.4: «Напечатано» — строка цветом; «Не напечатано» — обычный
+            return QBrush(QColor(PRINTED_ROW_COLOR)) if p.get("printed_at") else None
         if kind == "mark":
             if role == Qt.ItemDataRole.CheckStateRole:
                 return Qt.CheckState.Checked if p["print_mark"] else Qt.CheckState.Unchecked
@@ -181,6 +184,34 @@ class RecordsFilter(QSortFilterProxyModel):
 PRINTED_FILTERS = [(None, "Все карты"), (True, "Напечатанные"), (False, "Ненапечатанные")]
 CONDITIONS = [("eq", "равно"), ("ne", "не равно"), ("contains", "содержит"), ("startswith", "начинается с"),
               ("empty", "пусто"), ("not_empty", "не пусто")]
+NO_VALUE = ("empty", "not_empty")
+
+
+def term_text(label, op_text, value):
+    """Этап 15 п.5: «<название поля> оператор [значение]» (без значения для «пусто»/«не пусто»)."""
+    return f"<{label}> {op_text}" + (f" [{value}]" if value is not None else "")
+
+
+def parse_expr(txt, fields):
+    """Обратный разбор term_text через И/ИЛИ (один вид связки). fields: подпись → имя поля."""
+    import re
+    if not txt: return [], "and"
+    join = "or" if " ИЛИ " in txt else "and"
+    if " ИЛИ " in txt and " И " in txt: raise ValueError("Смешивать И и ИЛИ нельзя")
+    ops = sorted(CONDITIONS, key=lambda c: -len(c[1])); terms = []
+    for part in txt.split(" ИЛИ " if join == "or" else " И "):
+        m = re.fullmatch(r"\s*<([^>]+)>\s+(.+?)\s*(?:\[(.*)\])?\s*", part)
+        if not m: raise ValueError(f"Ожидается <название поля> оператор [значение]: «{part.strip()}»")
+        label, op_t, val = m.group(1).strip(), m.group(2).strip(), m.group(3)
+        if label not in fields and label not in fields.values(): raise ValueError(f"Нет поля «{label}»")
+        op = next((k for k, t in ops if t == op_t), None)
+        if op is None: raise ValueError(f"Неизвестный оператор «{op_t}»")
+        t = {"field": fields.get(label, label), "op": op}
+        if op not in NO_VALUE: t["value"] = val or ""
+        terms.append(t)
+    return terms, join
+
+
 confirm_delete_hook = None    # тесты: confirm_delete_hook(parent, n) -> bool
 
 
@@ -199,7 +230,12 @@ class FilterBlock(QWidget):
         self.join.addItem("И", "and"); self.join.addItem("ИЛИ", "or")
         self.value = QLineEdit(placeholderText="Значение"); self.value.returnPressed.connect(lambda: self.records.apply_filter())
         self.add_btn = QPushButton("Добавить"); self.add_btn.clicked.connect(self.add_term)
-        self.expr = QLineEdit(); self.expr.setReadOnly(True); self.expr.setPlaceholderText("Условия не заданы — показаны все записи")
+        # этап 15 п.5: выражение редактируемое, формат «<название поля> оператор [значение]»
+        self.expr = QLineEdit(); self.expr.setPlaceholderText("<название поля> оператор [значение]   — пусто: показаны все записи")
+        self.expr.editingFinished.connect(self._parse_expr)
+        self.completer = QCompleter([], self); self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.completer.setFilterMode(Qt.MatchFlag.MatchContains); self.expr.setCompleter(self.completer)
+        self.parse_error = None
         self.clear_btn = QPushButton("Сбросить"); self.clear_btn.clicked.connect(self.clear)
         g = QGridLayout(self); g.setContentsMargins(0, 0, 0, 0); g.setHorizontalSpacing(4); g.setVerticalSpacing(2)
         g.addWidget(QLabel("Поле"), 0, 0); g.addWidget(self.field, 0, 1); g.addWidget(QLabel("Условие"), 0, 2)
@@ -222,6 +258,13 @@ class FilterBlock(QWidget):
         cur = self.field.currentData(); self.field.clear()
         for f in fields: self.field.addItem(f.get("label") or f["name"], f["name"])
         i = self.field.findData(cur); self.field.setCurrentIndex(max(i, 0))
+        self.completer.model().setStringList(self.suggestions())   # автоподстановка в том же формате
+
+    def suggestions(self):
+        out = []
+        for i in range(self.field.count()):
+            for k, t in CONDITIONS: out.append(term_text(self.field.itemText(i), t, None if k in NO_VALUE else ""))
+        return out
 
     def add_term(self, field=None, op=None, value=None, join=None):
         field = field or self.field.currentData(); op = op or self.cond.currentData()
@@ -238,8 +281,16 @@ class FilterBlock(QWidget):
     def _show(self):
         names = {self.field.itemData(i): self.field.itemText(i) for i in range(self.field.count())}
         ops = dict(CONDITIONS); j = " И " if self.join_value == "and" else " ИЛИ "
-        self.expr.setText(j.join(f"[{names.get(t['field'], t['field'])}] {ops[t['op']]}" + (f" «{t['value']}»" if "value" in t else "")
-                                 for t in self.terms))
+        self.expr.setText(j.join(term_text(names.get(t["field"], t["field"]), ops[t["op"]], t.get("value")) for t in self.terms))
+
+    def _parse_expr(self):
+        """Разбор отредактированного выражения обратно в terms (только UI, без SQL). Ошибка — подсказка у поля."""
+        txt = self.expr.text().strip()
+        try: terms, join = parse_expr(txt, {self.field.itemText(i): self.field.itemData(i) for i in range(self.field.count())})
+        except ValueError as e:
+            self.parse_error = str(e); self.expr.setStyleSheet("border:1px solid #B23A3A;"); self.expr.setToolTip(str(e)); return None
+        self.parse_error = None; self.expr.setStyleSheet(""); self.expr.setToolTip("")
+        self.terms, self.join_value = terms, join; return self.where()
 
     def clear(self):
         self.terms = []; self.join_value = "and"; self._show(); self.records.apply_filter()
