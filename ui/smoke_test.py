@@ -439,7 +439,8 @@ acts = w.all_actions()
 texts = [a.text() for a in acts]; names = [a.objectName() for a in acts]
 assert len(texts) == len(set(texts)), [t for t in texts if texts.count(t) > 1]
 assert len(names) == len(set(names)) and all(n.startswith("act_") for n in names), names
-assert len(acts) - (len(w.display_actions) - 1) == 57, len(acts)       # 57 действий (act_capture удалён, D22) (Дисплей — одна группа из 3)
+assert len(acts) - (len(w.display_actions) - 1) == 64, len(acts)       # этап 15: +7 (шрифт, размер, отступы, цвет текста, режим/сохранить/менеджер шаблонов)
+# было: 57       # 57 действий (act_capture удалён, D22) (Дисплей — одна группа из 3)
 from PyQt6.QtWidgets import QToolButton
 assert w.records.filter.apply_button.isVisible() or True
 btn_count = {}
@@ -447,6 +448,7 @@ for b in w.ribbon.findChildren(QToolButton):
     if b.defaultAction() in w.ribbon.places: btn_count[b.defaultAction()] = btn_count.get(b.defaultAction(), 0) + 1
 btn_count[w.act_filter_apply] = int(w.records.filter.apply_button.defaultAction() is w.act_filter_apply)
 btn_count[w.act_style_stroke_w] = 1                              # QWidgetAction (поле толщины)
+for _wa in (w.act_font, w.act_font_size, w.act_padding): btn_count[_wa] = 1   # этап 15: QWidgetAction ленты «Редактировать»
 assert all(btn_count.get(a) == 1 for a in acts), [a.text() for a in acts if btn_count.get(a) != 1]
 try: w.ribbon.add_group("Помощь", "Повтор", [w.act_about]); dup = False
 except ValueError: dup = True
@@ -632,7 +634,7 @@ top = [fm.tree.topLevelItem(i) for i in range(fm.tree.topLevelItemCount())]
 assert all(t.childCount() == 0 for t in top) and not any(t.text(0) == "Не связаны" for t in top)      # плоский список
 assert not any(t.text(0).startswith("~") for t in top)
 it = next(t for t in top if t.data(0, Qt.ItemDataRole.UserRole) == ("field", fld)); assert not it.icon(0).isNull()
-fm.tree.setCurrentItem(it); fm.set_element(None); assert not fm.b_link.isEnabled() and not fm.b_unlink.isEnabled()
+fm.tree.setCurrentItem(it); fm.set_element(None); assert fm.b_link.isEnabled() and not fm.b_unlink.isEnabled()   # этап 15: без объекта — «Связать» создаёт объект (Архитектор)
 eid_l = links[fld][0]["element_id"]; fm.set_element(eid_l)
 assert fm.b_unlink.isEnabled(); fm.unlink(); e_ = next(e for e in api.list_elements() if e["id"] == eid_l)
 assert not e_.get("field_name") and e_["type"] == "text"          # Backend: field → text

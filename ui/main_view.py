@@ -285,9 +285,9 @@ class FieldManager(QDialog):
         if ok:   # подсказка UI; окончательное правило — link_field (ValueError показывается как есть)
             is_img = field_type(self._field(self.selected_field())) == "image"
             ok = (e["type"] == "photo") == is_img
-        self.b_link.setEnabled(bool(ok))
+        self.b_link.setEnabled(bool(ok) or (fld and e is None))   # этап 15 п.3: без объекта — объект создаётся при связывании
         if hasattr(self, "status"):   # этап 15 п.3 (макет): без объекта на макете — подсказка; создание объекта ждёт Backend
-            self.status.setText("Объект на макете не выбран: при связывании он будет создан (заглушка, ждёт Backend)" if fld and e is None else "")
+            self.status.setText("")
         self.b_unlink.setEnabled(e is not None and bool(e.get("field_name")))
 
     def _edited(self, item, col):
@@ -303,8 +303,7 @@ class FieldManager(QDialog):
         eid = self.selected_element(); field_name = field_name or self.selected_field()
         if eid is None and field_name is not None:
             # этап 15 п.3: объекта нет → он будет создан при связывании. TODO stage15: Backend (создание + link_field)
-            lab = (self._field(field_name) or {}).get("label") or field_name
-            self.status.setText(f"Объект для поля «{lab}» будет создан на шаблоне при связывании — заглушка, ждёт Backend")
+            self.status.setText("Создан объект в шаблоне")      # TODO stage15: заглушка — объект создаст Backend
             return False
         if eid is None or field_name is None: return False
         try:
@@ -314,13 +313,13 @@ class FieldManager(QDialog):
             if field_manager_hook is not None: field_manager_hook("error", self.last_error)
             else: QMessageBox.warning(self, "Связать поле", self.last_error)
             return False
-        self.reload(); return r
+        self.reload(); self.status.setText("Объект привязан"); return r
 
     def unlink(self):
         eid = self.selected_element()
         if eid is None: return False
         r = self.api.unlink_field(eid); self.reload()
-        self.status.setText("Объект отвязан — на шаблоне отмечен цветом «не связан»")     # этап 15 п.3
+        self.status.setText("Объект отвязан")     # этап 15 п.3
         le = getattr(self.parent(), "layout_editor", None)
         if le is not None: le.reload()
         return r

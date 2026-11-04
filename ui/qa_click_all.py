@@ -181,6 +181,7 @@ def scenario(tmp, chk, out, EXC):
                 fr = d.frame.rect(); res["portrait"] = (d.portrait.isChecked() and abs(fr.width() / fr.height() - d.aspect) < 0.02) \
                     or "Лицо не найдено" in d.status.text()
                 d.autoeffect.setChecked(True); spin(100); res["auto"] = d.params()["autoeffect"] is True
+                d.sl["brightness"].setValue(25); spin(20)   # этап 15: автоэффект пишет MOCK-значения в ползунок; возвращаем 25 для проверки умолчаний
                 from PyQt6.QtCore import QRectF, QPointF
                 vp = QRectF(d.view.viewport().rect()); ok42 = []
                 for mv in (None, QPointF(-10000, -10000), QPointF(10000, 10000)):

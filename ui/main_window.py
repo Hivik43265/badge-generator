@@ -12,6 +12,7 @@ from .layout_editor import LayoutEditor
 from .main_view import (PreviewPanel, PrintQueueDialog, PositionDialog, SettingsDialog, FieldManager, ALIGN,
                         aligned_geometry)
 from .ribbon import Ribbon, glyph
+from . import stage15
 from .dialogs import ImportDialog, ExportDialog, confirm_missing_photos, run_snapshot_job, describe_result, show_result_warnings
 from .backend_api import print_snapshot
 
@@ -65,6 +66,24 @@ class StrokeWidthAction(QWidgetAction):
 
     @property
     def spin(self): return self.spins[0]
+
+
+class FieldWidgetAction(QWidgetAction):
+    """Этап 15: поле ленты «Редактировать» (шрифт / размер / отступы): подпись + виджет, создаётся для каждого контейнера."""
+
+    def __init__(self, parent, name, text, factory, on_change, tip=None):
+        super().__init__(parent); self.setObjectName(name); self.setText(text)
+        self.factory, self.on_change, self.tip, self.widgets = factory, on_change, tip, []
+
+    def createWidget(self, parent):
+        w = QWidget(parent); h = QVBoxLayout(w); h.setContentsMargins(2, 4, 2, 0); h.setSpacing(1)
+        e = self.factory(); e.setToolTip(self.tip or self.text()); self.on_change(e)
+        h.addWidget(QLabel(self.text())); h.addWidget(e); h.addStretch(1)
+        self.widgets.append(e); w.destroyed.connect(lambda *_, e=e: self.widgets.remove(e) if e in self.widgets else None)
+        return w
+
+    @property
+    def widget(self): return self.widgets[0]
 
 
 class MainWindow(QMainWindow):
@@ -160,7 +179,27 @@ class MainWindow(QMainWindow):
             sub = QAction(t, self); sub.setObjectName(f"act_align_{how}"); sub.triggered.connect(lambda _=False, h=how: self.align(h))
             self.align_menu.addAction(sub); self.align_actions[how] = sub
         self.act_align.setMenu(self.align_menu)
-        # Редактировать
+        # Редактировать — этап 15: форматирование и шаблон в одну горизонтальную строку групп
+        from PyQt6.QtWidgets import QFontComboBox
+        def _font():
+            f = QFontComboBox(); f.setMaximumWidth(150); return f
+        def _spin(lo, hi, v, suf):
+            def mk():
+                sp = QSpinBox(); sp.setRange(lo, hi); sp.setValue(v); sp.setSuffix(suf); return sp
+            return mk
+        # TODO stage15: font_family / padding — ключей стиля пока нет в рендере Backend (только UI)
+        self.act_font = FieldWidgetAction(self, "act_font", "Шрифт", _font, lambda e: None, "Шрифт (TODO stage15: ждёт Backend)")
+        self.act_font_size = FieldWidgetAction(self, "act_font_size", "Размер", _spin(4, 200, 14, " pt"),
+            lambda e: e.editingFinished.connect(lambda e=e: le.current and (le.p_font.setValue(e.value()), le.apply_props())))
+        self.act_padding = FieldWidgetAction(self, "act_padding", "Отступы", _spin(0, 200, 0, " px"), lambda e: None,
+                                             "Отступы (TODO stage15: ждёт Backend)")
+        self.act_text_color = A("act_text_color", "Цвет текста…", lambda: self.pick_color("color"), "text", icon_text="Цвет\nтекста")
+        fp = stage15.TemplateTools(self, le)
+        self.act_template_mode = A("act_template_mode", "Режим шаблона", fp.set_template_mode, "edit_card", checkable=True,
+                                   icon_text="Режим\nшаблона", tip="Режим создания шаблона: элементы расставляются вручную")
+        self.act_template_save = A("act_template_save", "✓ Сохранить шаблон", fp.save_template, "printed", icon_text="✓ Сохранить\nшаблон")
+        self.act_template_manager = A("act_template_manager", "Менеджер шаблонов…", fp.open_manager, "table", icon_text="Менеджер\nшаблонов")
+        fp.bind(self.act_template_mode, self.act_template_save); self.template_tools = fp
         self.act_undo = A("act_undo", "Отменить", self.undo, "undo", "Ctrl+Z")
         self.act_redo = A("act_redo", "Повторить", self.redo, "redo", ["Ctrl+Y", "Ctrl+Shift+Z"])
         self.act_delete_element = A("act_delete_element", "Удалить объект", self.delete_element, "delete", "Del", icon_text="Удалить")
@@ -227,10 +266,14 @@ class MainWindow(QMainWindow):
         R.add_group("Главная", "Сторона", [self.act_side, self.act_background])
         R.add_group("Рисование", "Данные", [T["field"], T["photo"], T["barcode"], T["qr"]])
         R.add_group("Рисование", "Фигуры", [T["text"], T["rect"], T["ellipse"], T["line"], T["image"]])
-        R.add_group("Рисование", "Стиль", [[self.act_style_fill, self.act_style_stroke], self.act_style_stroke_w, self.act_align])
-        R.add_group("Редактировать", "История", [self.act_undo, self.act_redo])
-        R.add_group("Редактировать", "Объект", [self.act_delete_element, self.act_position])
-        R.add_group("Редактировать", "Порядок", [self.act_z_up, self.act_z_down])
+        R.add_group("Рисование", "Расположение", [self.act_align])
+        R.add_group("Редактировать", "Шрифт", [self.act_font, self.act_font_size])
+        R.add_group("Редактировать", "Отступы", [self.act_padding])
+        R.add_group("Редактировать", "Цвет", [[self.act_text_color, self.act_style_fill]])
+        R.add_group("Редактировать", "Граница", [self.act_style_stroke, self.act_style_stroke_w])
+        R.add_group("Редактировать", "Шаблон", [[self.act_template_mode, self.act_template_save, self.act_template_manager]])
+        R.add_group("Редактировать", "История", [[self.act_undo, self.act_redo]])
+        R.add_group("Редактировать", "Объект", [[self.act_delete_element, self.act_position], [self.act_z_up, self.act_z_down]])  # порядок слоёв — в группе «Объект» (вписывается в 1024 px)
         R.add_group("Просмотр", "Масштаб", [self.act_zoom_in, self.act_zoom_out, self.act_zoom_fit])
         R.add_group("Просмотр", "Показать", [self.act_grid, self.act_rulers, self.act_show_render])
         R.add_group("Просмотр", "Окно", [self.act_reset_layout])

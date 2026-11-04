@@ -115,14 +115,12 @@ class PhotoEditor(QDialog):
         except LookupError as e: self.src, self.load_error = None, str(e)
         except ValueError as e: self.src, self.load_error = None, f"Не удалось открыть фото: {e}"
         self.img = self.src
-        grid = QGridLayout(); self.sl, self.sp, self.applied_labels, self.applied = {}, {}, {}, {}
+        grid = QGridLayout(); self.sl, self.sp = {}, {}
         for i, (k, lab, lo, hi, suf) in enumerate(self.SLIDERS):
             s = QSlider(Qt.Orientation.Horizontal); s.setRange(lo, hi); sp = QSpinBox(); sp.setRange(lo, hi); sp.setSuffix(suf)
             s.valueChanged.connect(sp.setValue); sp.valueChanged.connect(s.setValue); sp.valueChanged.connect(lambda *_: self._timer.start())
             grid.addWidget(QLabel(lab), i, 0, Qt.AlignmentFlag.AlignRight); grid.addWidget(s, i, 1); grid.addWidget(sp, i, 2)
-            al = QLabel(); al.setStyleSheet("color:#2E7D6B; font-weight:600;"); al.setMinimumWidth(110); grid.addWidget(al, i, 3)
-            sp.valueChanged.connect(lambda *_, k=k: self._clear_applied(k))
-            self.sl[k], self.sp[k] = s, sp; self.applied_labels[k] = al
+            self.sl[k], self.sp[k] = s, sp
         self.portrait, self.autoeffect = QCheckBox("Портрет"), QCheckBox("Автоэффект")
         self.portrait.setToolTip("Рамка по лицу (поиск лица — Backend)"); self.portrait.toggled.connect(lambda on: on and self.find_face())
         self.autoeffect.toggled.connect(lambda *_: self._timer.start())
@@ -156,28 +154,14 @@ class PhotoEditor(QDialog):
         self.load_defaults(preview=False); self.update_preview(); self.reset_frame()
         if self.portrait.isChecked() and self.aspect is not None: self.find_face()      # D41: «Портрет» из умолчаний → рамка по лицу сразу
 
-    # ---- этап 15 п.6: ползунки показывают значения, применённые «Портретом» / «Автоэффектом» ----
-    # TODO stage15: МАКЕТ. Значения — заглушка MOCK_APPLIED; реальные значения должен вернуть Backend
-    # (apply_photo_edit / detect_face_crop не сообщают их). Ручные значения (поле справа, params) не меняются.
+    # ---- этап 15 п.6: «Портрет» / «Автоэффект» записывают применённые значения прямо в ползунок и поле ----
+    # TODO stage15: МАКЕТ. Значения — заглушка MOCK_APPLIED; реальные значения вернёт Backend позже.
     MOCK_APPLIED = {"autoeffect": {"brightness": 12, "contrast": 18}, "portrait": {"scale": 135, "rotate": 0}}
 
     def show_applied(self, mode, on):
-        for k, v in self.MOCK_APPLIED[mode].items():
-            if on: self.applied[k] = (mode, v)
-            elif self.applied.get(k, (None,))[0] == mode: self.applied.pop(k)
-        for k in self.sl:
-            s = self.sl[k]; s.blockSignals(True)
-            if k in self.applied:
-                mode_, v = self.applied[k]; s.setValue(v)
-                self.applied_labels[k].setText(f"{'Автоэффект' if mode_ == 'autoeffect' else 'Портрет'}: {v:+d}" if k != "scale"
-                                               else f"Портрет: {v} %")
-            else:
-                s.setValue(self.sp[k].value()); self.applied_labels[k].setText("")
-            s.blockSignals(False)
-        return dict(self.applied)
-
-    def _clear_applied(self, k):
-        self.applied.pop(k, None); self.applied_labels[k].setText("")
+        if not on or getattr(self, "_setting_params", False): return {}
+        for k, v in self.MOCK_APPLIED[mode].items(): self.sp[k].setValue(v)      # ползунок синхронизируется сигналом
+        return dict(self.MOCK_APPLIED[mode])
 
     # ---- параметры ----
     def params(self, crop=True):
@@ -187,6 +171,11 @@ class PhotoEditor(QDialog):
         return p
 
     def set_params(self, p):
+        self._setting_params = True     # умолчания/загрузка: галочки не перезаписывают значения (этап 15)
+        try: self._set_params(p)
+        finally: self._setting_params = False
+
+    def _set_params(self, p):
         for k, *_ in self.SLIDERS: self.sp[k].setValue(int(p.get(k, PHOTO_EDIT_DEFAULTS[k])))
         self.autoeffect.setChecked(bool(p.get("autoeffect")))
         self.portrait.blockSignals(True); self.portrait.setChecked(bool(p.get("portrait"))); self.portrait.blockSignals(False)

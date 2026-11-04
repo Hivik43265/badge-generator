@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QGraphicsView, Q
                              QFormLayout, QLabel, QComboBox, QPushButton, QSpinBox, QLineEdit,
                              QPlainTextEdit, QMessageBox, QCheckBox, QToolButton, QGridLayout,
                              QInputDialog, QFileDialog, QColorDialog, QScrollArea, QSizePolicy, QListWidget, QListWidgetItem)
-from .stage15 import FormatPanel, UNLINKED_COLOR, PHOTO_FIELD_LABEL, PHOTO_FIELD_TYPE
+from .stage15 import UNLINKED_COLOR, PHOTO_FIELD_LABEL, PHOTO_FIELD_TYPE
 from .backend_api import BackendAPI, CARD_W_PX, CARD_H_PX, TYPE_NAMES, SIDE_NAMES, person_caption
 
 SIDE_LABELS = SIDE_NAMES
@@ -216,13 +216,12 @@ class LayoutEditor(QWidget):
         self.props = props; props.setEnabled(False)
 
         right = QVBoxLayout()
-        self.format_panel = FormatPanel(self)            # этап 15 п.2
-        self.mode_banner = QLabel("Режим создания шаблона"); self.mode_banner.setStyleSheet(
+        self.mode_banner = QLabel("Режим создания шаблона: расставьте элементы на карточке вручную и выберите поля; сохранение — «✓ Сохранить шаблон» на ленте"); self.mode_banner.setStyleSheet(
             "background:#2E7D6B; color:white; font-weight:600; padding:3px 8px;"); self.mode_banner.hide()
         # этап 15 п.1: индикатор связи фото-объекта с полем «Фото» (Изображение)
         self.photo_link = QLabel(); self.photo_link.setWordWrap(True); self.photo_link.hide()
         self.photo_link.setStyleSheet("background:#EAF3FF; border:1px solid #3070d0; padding:4px;")
-        right.addWidget(self.format_panel); right.addWidget(self.photo_link)
+        right.addWidget(self.photo_link)
         right.addWidget(self.person_label)
         # Список элементов — только для выбора (перекрытые объекты); своих кнопок нет,
         # контекстное меню строит главное окно на тех же QAction ленты.
