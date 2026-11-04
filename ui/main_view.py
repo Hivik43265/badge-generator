@@ -300,6 +300,7 @@ class FieldManager(QDialog):
 
     def link(self, field_name=None):
         """Выделенное поле списка ↔ выделенный объект на макете."""
+        if self._locked("Связать поле"): return False
         eid = self.selected_element(); field_name = field_name or self.selected_field()
         if eid is None and field_name is not None:
             # этап 15 п.3: объекта нет → он будет создан при связывании. TODO stage15: Backend (создание + link_field)
@@ -315,7 +316,13 @@ class FieldManager(QDialog):
             return False
         self.reload(); self.status.setText("Объект привязан"); return r
 
+    def _locked(self, title):
+        """Этап 15: связывание/отвязка — только в «Режиме шаблона» (то же предупреждение, что и в редакторе)."""
+        le = getattr(self.parent(), "layout_editor", None)
+        return le is not None and le._locked(title)
+
     def unlink(self):
+        if self._locked("Отвязать поле"): return False
         eid = self.selected_element()
         if eid is None: return False
         r = self.api.unlink_field(eid); self.reload()

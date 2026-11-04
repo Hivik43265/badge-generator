@@ -664,6 +664,24 @@ assert not any(t.text(0).startswith("~") for t in top)
 it = next(t for t in top if t.data(0, Qt.ItemDataRole.UserRole) == ("field", fld)); assert not it.icon(0).isNull()
 fm.tree.setCurrentItem(it); fm.set_element(None); assert fm.b_link.isEnabled() and not fm.b_unlink.isEnabled()   # этап 15: без объекта — «Связать» создаёт объект (Архитектор)
 eid_l = links[fld][0]["element_id"]; fm.set_element(eid_l)
+# этап 15: вне режима шаблона «Связать/Отвязать» не выполняются (предупреждение), X/Y/W/H — только чтение
+from ui import stage15 as _s15, layout_editor as _lem2
+_w2 = []; _lem2.warn_hook = lambda t, x: _w2.append((t, x)); _s15.stub_hook = lambda t, x: None
+w.template_tools.save_template(); assert not w.template_tools.template_mode     # выход через «✓» (без отката)
+fm.set_element(eid_l); assert fm.unlink() is False and _w2[-1][0] == "Отвязать поле" and "Режим шаблона" in _w2[-1][1]
+assert next(e for e in api.list_elements() if e["id"] == eid_l).get("field_name") == fld
+fm._select_field(fld); fm.set_element(None); assert fm.link() is False and _w2[-1][0] == "Связать поле"
+le.load(le.side, eid_l); g0 = next(e for e in api.list_elements() if e["id"] == eid_l)
+assert all(x.isReadOnly() for x in (le.p_x, le.p_y, le.p_w, le.p_h))
+le.p_x.setValue(g0["x"] + 11); le.apply_props(); g1 = next(e for e in api.list_elements() if e["id"] == eid_l)
+assert (g1["x"], g1["y"], g1["w"], g1["h"]) == (g0["x"], g0["y"], g0["w"], g0["h"]) and le.p_x.value() == g0["x"]
+ok("вне режима шаблона: X/Y/W/H только чтение (apply_props не меняет геометрию), «Связать/Отвязать поле» — no-op с предупреждением")
+w.template_tools.set_template_mode(True); assert not any(x.isReadOnly() for x in (le.p_x, le.p_y, le.p_w, le.p_h))
+le.load(le.side, eid_l); le.p_x.setValue(g0["x"] + 11); le.apply_props()
+assert next(e for e in api.list_elements() if e["id"] == eid_l)["x"] == g0["x"] + 11
+le.load(le.side, eid_l); le.p_x.setValue(g0["x"]); le.apply_props(); _lem2.warn_hook = None; _s15.stub_hook = None
+ok("в режиме шаблона: X/Y/W/H редактируются и применяются; «Связать/Отвязать» выполняются (ниже)")
+fm._select_field(fld); fm.set_element(eid_l)
 assert fm.b_unlink.isEnabled(); fm.unlink(); e_ = next(e for e in api.list_elements() if e["id"] == eid_l)
 assert not e_.get("field_name") and e_["type"] == "text"          # Backend: field → text
 fm._select_field(fld); fm.set_element(eid_l)

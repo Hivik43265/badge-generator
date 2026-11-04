@@ -184,6 +184,7 @@ class LayoutEditor(QWidget):
         props = QGroupBox("Свойства элемента"); pf = QFormLayout(props)
         self.p_type = QLabel("—"); self.p_type.setWordWrap(True)
         self.p_x, self.p_y, self.p_w, self.p_h = (self._spin(-CARD_W_PX * 2, CARD_W_PX * 2) for _ in range(4))
+        for _w in (self.p_x, self.p_y, self.p_w, self.p_h): _w.setReadOnly(True)    # этап 15: вне режима шаблона — только чтение
         self.p_z = self._spin(-1000, 1000)
         self.p_field = QComboBox(); self.p_field.setEditable(True)
         self.p_static = QLineEdit()
@@ -467,6 +468,10 @@ class LayoutEditor(QWidget):
             style = self.collect_style(t)
         except ValueError as e:
             _warn(self, "Стиль", f"Некорректный JSON: {e}"); return False
+        if not self.template_mode and self.current is not None:      # этап 15: геометрия вне режима шаблона не меняется
+            g = self.current.el
+            for _w, k in ((self.p_x, "x"), (self.p_y, "y"), (self.p_w, "w"), (self.p_h, "h")):
+                _w.blockSignals(True); _w.setValue(g[k]); _w.blockSignals(False)
         changes = dict(x=self.p_x.value(), y=self.p_y.value(), w=self.p_w.value(), h=self.p_h.value(),
                        z_order=self.p_z.value(), field_name=(self.p_field.currentText() if self.p_field.currentText() != NEW_FIELD else None) or None,
                        static_value=self.p_static.text() or None, style=style)
@@ -491,6 +496,7 @@ class LayoutEditor(QWidget):
     def set_template_mode_banner(self, on):
         """Этап 15 п.2: в режиме — добавление/перемещение/связывание; вне — блокировка и данные выбранной записи."""
         self.template_mode = bool(on)
+        for _w in (self.p_x, self.p_y, self.p_w, self.p_h): _w.setReadOnly(not self.template_mode)
         if hasattr(self, "mode_banner"): self.mode_banner.setVisible(self.template_mode)
         if not self.template_mode: self.show_render = True          # карточка показывает данные выбранной записи
         for it in self.items():
