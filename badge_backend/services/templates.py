@@ -148,5 +148,76 @@ def list_font_families() -> list[str]:
     return [f for f, (reg, _b) in _FAMILIES.items() if _find(reg)]
 
 
-def get_template_edit_state(con):   # режим правки шаблона — отдельным коммитом
-    return None
+# ---------- режим правки шаблона: черновик через снимок (project_settings, без новой таблицы) ----------
+EDIT_KEY = "template_edit_snapshot"
+_EL_ALL = ("id", "type", "x", "y", "w", "h", "field_name", "static_value", "style_json", "side", "z_order", "template_id")
+
+def get_template_edit_state(con) -> dict | None:
+    """Незавершённая правка шаблона (снимок есть) → {'template_id','name','started_at','elements'} или None.
+    При старте UI: не None → спросить «Шаблон не был сохранён. Восстановить прежний или оставить правки?»
+    (восстановить = cancel_template_edit, оставить = commit_template_edit)."""
+    r = con.execute("SELECT value FROM project_settings WHERE key=?", (EDIT_KEY,)).fetchone()
+    if r is None: return None
+    s = json.loads(r[0])
+    return {"template_id": s["template_id"], "name": s["template"]["name"], "started_at": s["started_at"],
+            "elements": len(s["elements"])}
+
+def begin_template_edit(con, template_id: int | None = None) -> dict:
+    """«Режим шаблона»: запомнить шаблон целиком (строка templates, все элементы с id и привязками, фоны,
+    список существующих полей) в project_settings['template_edit_snapshot']. Правки дальше пишутся в БД как обычно.
+    Уже идёт правка → ValueError. → get_template_edit_state."""
+    tid = template_id or _db.active_template_id(con)
+    t = _need(con, tid)
+    if get_template_edit_state(con) is not None: raise ValueError("правка шаблона уже начата — сохраните или отмените её")
+    snap = {"template_id": tid, "started_at": _db.now_iso(),
+            "template": {k: t[k] for k in ("name", "style_json", "updated_at")},
+            "elements": [dict(r) for r in con.execute(f"SELECT {','.join(_EL_ALL)} FROM template_elements WHERE template_id=? "
+                                                       "ORDER BY id", (tid,))],
+            "backgrounds": [dict(r) for r in con.execute("SELECT side, image_path, color FROM template_backgrounds2 "
+                                                          "WHERE template_id=?", (tid,))],
+            "fields": [r[0] for r in con.execute("SELECT name FROM person_fields")]}
+    with con: con.execute("INSERT INTO project_settings(key, value) VALUES (?, ?)", (EDIT_KEY, json.dumps(snap, ensure_ascii=False)))
+    return get_template_edit_state(con)
+
+def commit_template_edit(con) -> dict | None:
+    """«✓ Сохранить шаблон» в режиме правки: удалить снимок, обновить updated_at. Режима нет → None.
+    → get_template (сохранённый шаблон)."""
+    st = get_template_edit_state(con)
+    if st is None: return None
+    with con:
+        con.execute("DELETE FROM project_settings WHERE key=?", (EDIT_KEY,))
+        con.execute("UPDATE templates SET updated_at=? WHERE id=?", (_db.now_iso(), st["template_id"]))
+    return get_template(con, st["template_id"])
+
+def _field_has_data(con, name):
+    return con.execute("SELECT 1 FROM persons WHERE COALESCE(CAST(json_extract(fields_json, ?) AS TEXT), '') <> '' LIMIT 1",
+                       ('$."' + name + '"',)).fetchone() is not None
+
+def cancel_template_edit(con) -> dict | None:
+    """«Не сохранять»: ОДНОЙ транзакцией вернуть шаблон к снимку (имя, стиль, все элементы с прежними id и
+    привязками, фоны) и удалить снимок. Поля, созданные во время правки («Связать» с созданием, авто-«Фото»),
+    удаляются, если в записях нет их данных и на них не ссылаются объекты других шаблонов.
+    Режима нет → None. → {'template_id', 'removed_fields': [...]}."""
+    r = con.execute("SELECT value FROM project_settings WHERE key=?", (EDIT_KEY,)).fetchone()
+    if r is None: return None
+    s = json.loads(r[0]); tid = s["template_id"]; removed = []
+    with con:
+        if con.execute("SELECT 1 FROM templates WHERE id=?", (tid,)).fetchone() is not None:
+            t = s["template"]
+            con.execute("UPDATE templates SET name=?, style_json=?, updated_at=? WHERE id=?",
+                        (t["name"], t["style_json"], t["updated_at"], tid))
+            con.execute("DELETE FROM template_elements WHERE template_id=?", (tid,))
+            for e in s["elements"]:
+                con.execute(f"INSERT INTO template_elements({','.join(_EL_ALL)}) VALUES ({','.join('?' * len(_EL_ALL))})",
+                            tuple(e[k] for k in _EL_ALL))
+            con.execute("DELETE FROM template_backgrounds2 WHERE template_id=?", (tid,))
+            for b in s["backgrounds"]:
+                con.execute("INSERT INTO template_backgrounds2(template_id, side, image_path, color) VALUES (?,?,?,?)",
+                            (tid, b["side"], b["image_path"], b["color"]))
+        before = set(s["fields"])
+        for (name,) in con.execute("SELECT name FROM person_fields").fetchall():
+            if name in before or _field_has_data(con, name): continue
+            if con.execute("SELECT 1 FROM template_elements WHERE field_name=? LIMIT 1", (name,)).fetchone(): continue
+            con.execute("DELETE FROM person_fields WHERE name=?", (name,)); removed.append(name)
+        con.execute("DELETE FROM project_settings WHERE key=?", (EDIT_KEY,))
+    return {"template_id": tid, "removed_fields": removed}

@@ -431,7 +431,8 @@ def ensure_photo_field(con) -> str:
 
 from .services.templates import (list_templates, get_template, get_active_template, set_active_template,  # noqa: F401,E402
                                  create_template, rename_template, delete_template, save_template,
-                                 get_template_style, set_template_style, update_element_style, list_font_families)
+                                 get_template_style, set_template_style, update_element_style, list_font_families,
+                                 begin_template_edit, commit_template_edit, cancel_template_edit, get_template_edit_state)
 from .services.photo_edit import (get_photo_view, set_photo_view, render_photo, portrait_params,  # noqa: F401,E402
                                   autoeffect_params)
 from .services.search import parse_search, search_persons  # noqa: F401,E402
