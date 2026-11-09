@@ -156,41 +156,60 @@ def detect_face_crop(img: Image.Image, aspect: float):
     return (x, y, w, h)
 
 # ---------- рамка из шаблона ----------
-def get_photo_frame_spec(con, field=None):
-    """Пропорции и размер выходного фото для image-поля (D42).
-    field: имя поля (str) или rowid (int) из person_fields; None — фото записи: этап 15 — объект, связанный
-    с полем «Фото», иначе несвязанный фото-объект. Только АКТИВНЫЙ шаблон. Берётся первый фото-элемент:
-    сначала лицевая сторона, затем z_order, id. Размеры элемента в px холста 300 DPI → мм = px·25.4/300.
-    → {'aspect': w/h, 'width_mm', 'height_mm', 'width_px', 'height_px' (300 DPI, округл.), 'element_id', 'side'}
-    Нет связанного элемента (или поле не image / не найдено) → None: редактор работает без фикс. пропорций."""
+def _frame_spec(eid, w, h, side):
     from .. import DPI
+    wmm, hmm = w * 25.4 / DPI, h * 25.4 / DPI
+    return {"aspect": w / h, "width_mm": round(wmm, 2), "height_mm": round(hmm, 2),
+            "width_px": int(round(wmm / 25.4 * DPI)), "height_px": int(round(hmm / 25.4 * DPI)),
+            "element_id": eid, "side": side}
+
+def get_photo_frame_spec(con, field=None, *, element_id=None, field_name=None):
+    """Пропорции рамки фото-элемента активного шаблона (D42, этап 15 B5).
+
+    element_id  id элемента (двойной щелчок). Должен быть type='photo' на АКТИВНОМ шаблоне,
+                иначе ValueError. Если задан — field/field_name не используются.
+    field / field_name  (устарели) имя image-поля (str) или rowid (int) из person_fields.
+                Первый фото-элемент этого поля на активном шаблоне (front, z_order, id).
+                Поле не найдено / не image / нет элемента → None.
+    без них     первый фото-элемент активного шаблона: side='front' раньше оборота,
+                затем z_order, id. Предпочтения поля «Фото» нет. Нет фото-элементов → None.
+
+    Размеры элемента в px холста 300 DPI → мм = px·25.4/300.
+    → {'aspect': w/h, 'width_mm', 'height_mm', 'width_px', 'height_px' (300 DPI, округл.), 'element_id', 'side'}
+    """
+    from ..db import active_template_id
+    tid = active_template_id(con)
+    if element_id is not None:
+        r = con.execute("SELECT id, type, w, h, side, template_id FROM template_elements WHERE id=?",
+                        (int(element_id),)).fetchone()
+        if r is None:
+            raise ValueError(f"нет элемента id={element_id}")
+        eid, typ, w, h, side, etid = r[0], r[1], r[2], r[3], r[4], r[5]
+        if typ != "photo":
+            raise ValueError(f"элемент id={element_id} имеет тип «{typ}», нужен «photo»")
+        if etid != tid:
+            raise ValueError(f"элемент id={element_id} не на активном шаблоне")
+        return _frame_spec(eid, w, h, side)
+    if field is None: field = field_name
     name = None
     if field is not None:
         col = "rowid" if isinstance(field, int) and not isinstance(field, bool) else "name"
         r = con.execute(f"SELECT name, data_type FROM person_fields WHERE {col}=?", (field,)).fetchone()
         if r is None or r[1] != "image": return None
         name = r[0]
-    from ..db import active_template_id, PHOTO_FIELD
-    tid = active_template_id(con)
-    if name is not None:
         r = con.execute("SELECT id, w, h, side FROM template_elements WHERE type='photo' AND template_id=? AND field_name=? "
                         "ORDER BY side<>'front', z_order, id LIMIT 1", (tid, name)).fetchone()
-    else:   # этап 15 (п.7): сначала объект, связанный с полем «Фото», затем несвязанный; только активный шаблон
+    else:
         r = con.execute("SELECT id, w, h, side FROM template_elements WHERE type='photo' AND template_id=? "
-                        "AND (COALESCE(field_name, '')='' OR field_name=?) "
-                        "ORDER BY COALESCE(field_name, '')<>?, side<>'front', z_order, id LIMIT 1",
-                        (tid, PHOTO_FIELD, PHOTO_FIELD)).fetchone()
+                        "ORDER BY side<>'front', z_order, id LIMIT 1", (tid,)).fetchone()
     if r is None: return None
-    eid, w, h, side = r
-    wmm, hmm = w * 25.4 / DPI, h * 25.4 / DPI
-    return {"aspect": w / h, "width_mm": round(wmm, 2), "height_mm": round(hmm, 2),
-            "width_px": int(round(wmm / 25.4 * DPI)), "height_px": int(round(hmm / 25.4 * DPI)),
-            "element_id": eid, "side": side}
+    return _frame_spec(r[0], r[1], r[2], r[3])
 
-def photo_edit_target(con, field_name):
-    """Цель редактора фото (имя согласовано с Frontend): get_photo_frame_spec + 'size': (width_px, height_px).
-    Нет связанного фото-элемента → None."""
-    s = get_photo_frame_spec(con, field_name)
+def photo_edit_target(con, field_name=None, *, element_id=None, field=None):
+    """Цель редактора фото: get_photo_frame_spec + 'size': (width_px, height_px).
+    element_id — как в get_photo_frame_spec (ValueError, если не фото активного шаблона).
+    field_name / field — устаревшие (имя или rowid image-поля). Нет элемента → None."""
+    s = get_photo_frame_spec(con, field if field is not None else field_name, element_id=element_id)
     if s is None: return None
     s["size"] = (s["width_px"], s["height_px"]); return s
 
