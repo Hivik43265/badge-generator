@@ -276,3 +276,37 @@ def test_export_db_reads_working_copy(tmp_path):
     assert any(api.get_person(exp, r["id"])["fields"].get("n") == "X" for r in exp.execute("SELECT id FROM persons"))
     assert _hash(s.source_path) == src_hash
     s.close(save=False)
+
+
+def test_unwritable_source_dir_session_goes_to_temp(tmp_path):
+    """Нет записи в каталог исходника — .bg-session рядом с копией в TEMP; open_project не падает."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("chmod не убирает запись у root")
+    src_dir = tmp_path / "ro"
+    src_dir.mkdir()
+    db = src_dir / "p.db"
+    s = api.create_project(db)
+    s.close()
+    mode = src_dir.stat().st_mode
+    os.chmod(src_dir, 0o555)
+    opened = None
+    try:
+        if os.access(src_dir, os.W_OK):
+            pytest.skip("каталог всё ещё доступен на запись")
+        opened = api.open_project(db)
+        assert "BadgeGenerator-work" in str(opened.work_path)
+        sess = opened.work_path.with_name(opened.work_path.name + ".bg-session")
+        assert sess.is_file()
+        assert not (src_dir / "p.db.bg-session").exists()
+        data = PS._read_session(sess)
+        data["pid"] = 999999
+        PS._write_json_atomic(sess, data)
+        found = api.list_recoverable_sessions([src_dir])
+        assert any(i.get("session_path") == str(sess) for i in found)
+        opened.close(save=False)
+        opened = None
+    finally:
+        if opened is not None:
+            try: opened.close(save=False)
+            except Exception: pass
+        os.chmod(src_dir, mode)

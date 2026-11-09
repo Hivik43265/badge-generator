@@ -347,9 +347,17 @@ def _db_file(con):
     return _Path(f) if f else None
 
 def backup_db(con, dest_path) -> _Path:
-    """Копия БД через sqlite3 backup API (консистентно): пишется во временный файл рядом, затем атомарная замена.
-    dest_path не может совпадать с открытой БД (ValueError). → Path копии."""
-    import os
+    """Устарело: для файлового проекта используйте ProjectSession.save / save_as.
+
+    Копия БД через sqlite3 backup API (консистентно): пишется во временный файл рядом, затем атомарная замена.
+    dest_path не может совпадать с открытой БД (ValueError). → Path копии.
+    """
+    import os, warnings
+    warnings.warn(
+        "backup_db устарел; для файлового проекта используйте ProjectSession.save / save_as",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     dest = _Path(dest_path); src = _db_file(con)
     if src and src.resolve() == dest.resolve(): raise ValueError("dest_path совпадает с открытой БД")
     if con.in_transaction: con.commit()
