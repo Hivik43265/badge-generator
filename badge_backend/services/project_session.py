@@ -73,6 +73,32 @@ def session_path(source: Path) -> Path:
     return source.with_name(source.name + ".bg-session")
 
 
+def _work_session_path(work: Path) -> Path:
+    return work.with_name(work.name + ".bg-session")
+
+
+def _find_session_file(source: Path) -> Path | None:
+    """Рядом с исходником или в %TEMP%/BadgeGenerator-work/ (source_path в JSON)."""
+    sp = session_path(source)
+    if sp.is_file():
+        return sp
+    root = Path(tempfile.gettempdir()) / WORK_TEMP_DIR
+    if not root.is_dir():
+        return None
+    try:
+        files = list(root.glob("*.bg-session"))
+    except OSError:
+        return None
+    for cand in files:
+        data = _read_session(cand)
+        if not data:
+            continue
+        src = data.get("source_path")
+        if src and _same_path(src, source):
+            return cand
+    return None
+
+
 def default_work_path(source: Path) -> Path:
     return source.with_name(source.name + ".work")
 
@@ -211,11 +237,16 @@ def cleanup_stale_temp_work(min_age_s: float = STALE_AGE_S) -> list[str]:
 
 
 def list_recoverable_sessions(search_dirs: list | None = None) -> list[dict]:
-    """Сессии с мёртвым pid и существующей рабочей копией."""
+    """Сессии с мёртвым pid и существующей рабочей копией.
+    Всегда просматривает и %TEMP%/BadgeGenerator-work/ (.bg-session рядом с рабочей копией,
+    если каталог исходника недоступен на запись)."""
     dirs, seen, out = [], set(), []
     for d in (search_dirs or []):
         p = Path(d)
         dirs.append(p if p.is_dir() else p.parent)
+    temp_root = Path(tempfile.gettempdir()) / WORK_TEMP_DIR
+    if temp_root not in dirs:
+        dirs.append(temp_root)
     for d in dirs:
         try: files = list(Path(d).glob("*.bg-session"))
         except OSError: continue
@@ -245,7 +276,8 @@ def recover(info_or_path, *, accept: bool) -> "ProjectSession":
         info = info_or_path
     else:
         p = Path(info_or_path)
-        info = _session_info(session_path(p)) or _session_info(p)
+        found = _find_session_file(p)
+        info = (_session_info(found) if found else None) or _session_info(p)
         if info is None:
             return open_project(info_or_path if not str(info_or_path).endswith(".bg-session")
                                 else Path(info_or_path).with_name(Path(info_or_path).name.removesuffix(".bg-session")))
@@ -278,8 +310,8 @@ def open_project(path, *, recover: bool | None = None, create: bool = False) -> 
     if not path.exists():
         if create: return create_project(path)
         raise FileNotFoundError(path)
-    sp = session_path(path)
-    data = _read_session(sp) if sp.is_file() else None
+    sp = _find_session_file(path)
+    data = _read_session(sp) if sp and sp.is_file() else None
     if data:
         work = Path(data.get("work_path") or default_work_path(path))
         pid, host = data.get("pid"), data.get("host")
@@ -307,6 +339,8 @@ def _discard_files(source: Path, work: Path | None):
         _remove_sidecars(work)
         try: work.unlink(missing_ok=True)
         except OSError as e: log.warning("не удалось удалить рабочую копию %s: %s", work, e)
+        try: _work_session_path(work).unlink(missing_ok=True)
+        except OSError: pass
     try: session_path(source).unlink(missing_ok=True)
     except OSError: pass
 
@@ -395,7 +429,17 @@ class ProjectSession:
 
     def _write_session(self):
         if not self.source_path: return
-        _write_json_atomic(session_path(self.source_path), self._session_data())
+        data = self._session_data()
+        dest = session_path(self.source_path)
+        try:
+            _write_json_atomic(dest, data)
+            return
+        except OSError:
+            if self.work_path is None:
+                raise
+            alt = _work_session_path(self.work_path)
+            alt.parent.mkdir(parents=True, exist_ok=True)
+            _write_json_atomic(alt, data)
 
     def is_dirty(self) -> bool:
         if self.con is None: return False

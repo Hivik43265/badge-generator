@@ -45,7 +45,7 @@ def test_frame_spec(tmp_path):
 def _check(img, crop, aspect):
     fx, fy, fw, fh = _haar(img)
     x, y, w, h = crop
-    head_top = fy - 0.25 * fh; chin = fy + fh
+    head_top = fy - pe.HEAD_TOP * fh; chin = fy + fh
     assert abs(w / h - aspect) < 0.01
     assert 0 <= x and x + w <= img.width and 0 <= y and y + h <= img.height
     assert y <= head_top                                                  # макушка внутри рамки
@@ -69,10 +69,10 @@ def test_two_templates_different_aspects(tmp_path):
 def test_shift_then_shrink():
     img = Image.open(FIX).convert("RGB")
     fx, fy, fw, fh = _haar(img)
-    left = img.crop((int(fx) - 40, 0, img.width, img.height))             # лицо у левого края → сдвиг
+    left = img.crop((int(fx) - 80, 0, img.width, img.height))             # лицо у левого края → сдвиг
     x, y, w, h = pe.detect_face_crop(left, 0.78)
     lfx, lfy, lfw, lfh = _haar(left)
-    assert x == 0 and h == pytest.approx(2 * 1.25 * lfh, abs=2)           # размер не уменьшен
+    assert x == 0 and h == pytest.approx((1 + pe.HEAD_TOP) / pe.HEAD_SHARE * lfh, abs=2)  # размер не уменьшен
     tight = img.crop((0, 60, img.width, 460))                             # фото ниже рамки → уменьшение
     x, y, w, h = pe.detect_face_crop(tight, 0.78)
     assert h <= tight.height and y + h <= tight.height and abs(w / h - 0.78) < 0.01
@@ -108,3 +108,23 @@ def test_frame_spec_no_foto_preference(tmp_path):
     api.create_element(con, "photo", 0, 0, 200, 50)                          # авто-«Фото», больше id
     s = pe.get_photo_frame_spec(con)
     assert s["element_id"] == a and abs(s["aspect"] - 1.0) < 1e-9
+
+ASTRO = Path(__file__).parent / "fixtures" / "face_astronaut.jpg"
+
+def test_portrait_astronaut_crown_and_tone():
+    """Портрет на face_astronaut: макушка (верх Haar − 0.5·fh) внутри рамки, голова 40–60 % высоты;
+    яркость и контраст не меняются."""
+    img = Image.open(ASTRO); img.load()
+    prev = {"brightness": 18, "contrast": 8, "scale": 110}
+    p = pe.portrait_params(img, 0.75, prev)
+    assert p is not None and p["portrait"] is True
+    assert p["brightness"] == 18 and p["contrast"] == 8 and p["scale"] == 110
+    base = pe.apply_photo_edit(img, {**prev, "crop": None, "autoeffect": False, "brightness": 0, "contrast": 0})
+    fx, fy, fw, fh = _haar(base)
+    x, y, w, h = p["crop"]
+    assert 0 <= x and x + w <= base.width and 0 <= y and y + h <= base.height
+    crown, chin = fy - 0.5 * fh, fy + fh
+    assert y <= crown
+    share = (chin - crown) / h
+    assert 0.40 <= share <= 0.60, share
+
