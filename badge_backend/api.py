@@ -436,3 +436,7 @@ from .services.templates import (list_templates, get_template, get_active_templa
 from .services.photo_edit import (get_photo_view, set_photo_view, render_photo, portrait_params,  # noqa: F401,E402
                                   autoeffect_params, get_photo_editor_state)
 from .services.search import parse_search, search_persons  # noqa: F401,E402
+from .services.project_session import (  # noqa: F401,E402
+    ProjectSession, ProjectLockedError, RecoverableProjectError, ProjectSaveError,
+    UnsavedChangesError, TemplateEditActiveError,
+    open_project, create_project, recover, list_recoverable_sessions)
