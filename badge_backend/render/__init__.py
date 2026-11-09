@@ -88,16 +88,9 @@ def _photo_view(person, el):
     return v if v is not None else pv.get("")
 
 def _view_tile(src, w, h, params):
-    """Вид фото (person_photo_views) — ЕДИНСТВЕННЫЙ путь рендера фото: apply_photo_edit к исходнику В ПАМЯТИ
-    (файл не меняется), затем 'placement' (перенесённый photo_config: x;y;scale;crop_x;crop_y;angle) через
-    transform_photo, без него — cover w×h."""
-    from ..services.photo_edit import apply_photo_edit
-    params = dict(params or {}); placement = params.pop("placement", None)
-    try: im = apply_photo_edit(src, params)
-    except ValueError as e:
-        log.warning("вид фото не применён (%s) — исходник целиком", e); im = src
-    if placement: return transform_photo(im, w, h, placement)
-    return _cover_crop(im.convert("RGBA"), w, h)
+    """Вид фото (person_photo_views) — ЕДИНСТВЕННЫЙ путь рендера фото: см. photo_edit.apply_photo_view."""
+    from ..services.photo_edit import apply_photo_view
+    return apply_photo_view(src, w, h, params)
 
 # ---------- текст ----------
 _BREAK_AFTER = "-\u2010\u2011\u2012\u2013\u2014\u2015/"   # дефисы, тире, слэш: знак остаётся в конце строки
