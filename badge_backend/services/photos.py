@@ -9,7 +9,17 @@ from pathlib import Path
 
 PHOTO_SUBDIR = "photos"
 
+_CON_BASE_DIR: dict[int, Path] = {}
+
+def set_project_base_dir(con, path) -> None:
+    """Привязать к соединению каталог исходника (не .work). path=None — снять."""
+    if path is None: _CON_BASE_DIR.pop(id(con), None)
+    else: _CON_BASE_DIR[id(con)] = Path(path)
+
 def project_base_dir(con) -> Path:
+    """Каталог исходного файла проекта (session.base_dir), не каталог рабочей копии .work."""
+    custom = _CON_BASE_DIR.get(id(con))
+    if custom: return custom
     for _, name, file in con.execute("PRAGMA database_list"):
         if name == "main": return Path(file).resolve().parent if file else Path.cwd()
     return Path.cwd()

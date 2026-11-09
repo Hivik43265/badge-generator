@@ -3,7 +3,7 @@
 print_cards(con, printer, sides=('front','back'), base_dir=None, ids=None) -> int (число страниц)
  - берёт ТОЛЬКО записи с print_mark=1 (ids, если заданы, дополнительно фильтруют этот набор);
  - каждая сторона рендерится render_card (1011×638) и печатается на своей странице;
- - страница: QPageSize 85.6×54 мм (custom, FuzzyMatch), поля 0, FullPage;
+ - страница: QPageSize 85.6×53.98 мм (ISO ID-1 / CARD_H_MM, FuzzyMatch), поля 0, FullPage;
    рисуется в прямоугольник ровно CR80 мм (не растягивается под paperRect — у принтера
    он может остаться A4, если драйвер не принял custom size).
 PyQt6 импортируется лениво: модуль можно импортировать без Qt.
@@ -24,7 +24,7 @@ def setup_printer(printer) -> None:
     """Выставить страницу CR80 85.6×54 мм, нулевые поля, FullPage.
 
     FuzzyMatch, не ExactMatch: карточный принтер часто заявляет ISO ID-1 85.60×53.98 мм.
-    ExactMatch с высотой 54.0 мм не совпадает — setPageLayout тихо отказывает, страница
+    ExactMatch с высотой, отличающейся на сотые мм, не совпадает — setPageLayout тихо отказывает, страница
     остаётся A4 (после QPrintDialog), и drawImage на весь paperRect растягивал пропуск до A4.
     """
     from PyQt6.QtCore import QSizeF, QMarginsF
@@ -65,7 +65,7 @@ def pdf_page_sizes_mm(path) -> list[tuple[float, float]]:
     return out
 
 def pdf_pages_are_cr80(path, tol: float = 0.15) -> bool:
-    """Все страницы PDF имеют размер CR80 (85.6×54 мм, допуск D1 ±0.15 мм, включает ISO 53.98)."""
+    """Все страницы PDF имеют размер CR80 (CARD_W_MM×CARD_H_MM, допуск D1 ±0.15 мм)."""
     sizes = pdf_page_sizes_mm(path)
     return bool(sizes) and all(abs(w - CARD_W_MM) <= tol and abs(h - CARD_H_MM) <= tol for w, h in sizes)
 
