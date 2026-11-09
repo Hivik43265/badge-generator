@@ -144,3 +144,88 @@ def test_template_style_font_padding():
     st = T.set_template_style(con, {"font_family": "DejaVu Sans", "padding": 12})
     assert T.get_template_style(con) == st and st["padding"] == 12
     with pytest.raises(ValueError): T.set_template_style(con, {"padding": 500})
+
+
+# ---------- photo_config → person_photo_views: рендер до/после миграции пиксель в пиксель ----------
+import subprocess, sys, tarfile, io
+from pathlib import Path
+BASE_COMMIT = "db5d65b"   # последняя v6-версия Backend
+_OLD_RENDER = r"""
+import sqlite3, sys
+from badge_backend.render import render_card_db
+con = sqlite3.connect(sys.argv[1]); con.row_factory = sqlite3.Row
+for pid, in con.execute("SELECT id FROM persons").fetchall():
+    for side in ("front", "back"):
+        render_card_db(con, pid, side, sys.argv[2]).save(f"{sys.argv[3]}/{pid}_{side}.png")
+"""
+
+def _old_backend(tmp):
+    repo = Path(__file__).resolve().parents[1]
+    try: data = subprocess.run(["git", "-C", str(repo), "archive", BASE_COMMIT, "badge_backend"], check=True, capture_output=True).stdout
+    except (OSError, subprocess.CalledProcessError): pytest.skip("нет git/коммита v6 для эталонного рендера")
+    d = tmp / "old"; d.mkdir(); tarfile.open(fileobj=io.BytesIO(data)).extractall(d, filter="data"); return d
+
+def _compare_before_after(tmp, dbfile, base):
+    """Рендер старым кодом (v6, без миграции) vs новым (после миграции копии) — идентичность пикселей."""
+    old = _old_backend(tmp); out = tmp / "old_png"; out.mkdir()
+    subprocess.run([sys.executable, "-c", _OLD_RENDER, str(dbfile), str(base), str(out)], check=True,
+                   cwd=old, env={**os.environ, "PYTHONPATH": str(old)})
+    mig = tmp / ("mig_" + dbfile.name); shutil.copy(dbfile, mig)
+    con = db.connect(str(mig)); n = 0
+    for (pid,) in con.execute("SELECT id FROM persons").fetchall():
+        for side in ("front", "back"):
+            a = Image.open(out / f"{pid}_{side}.png"); b = render_card_db(con, pid, side, str(base))
+            assert a.mode == b.mode and a.size == b.size and a.tobytes() == b.tobytes(), (dbfile, pid, side); n += 1
+    return n
+
+def test_photo_config_migrated_render_pixel_identical(tmp_path):
+    p = tmp_path / "v6.db"; _v6(p)
+    Image.radial_gradient("L").convert("RGB").resize((300, 400)).save(tmp_path / "1.jpg")
+    (tmp_path / "p").mkdir(); Image.new("RGB", (320, 240), (200, 30, 90)).save(tmp_path / "p" / "1.jpg")
+    raw = sqlite3.connect(p)
+    raw.execute("UPDATE persons SET photo_config='12;-7;1.3;5;9;15' WHERE id=1")
+    raw.execute("INSERT INTO persons(fields_json,photo_path,photo_config) VALUES ('{\"fio\":\"Сидоров\"}','1.jpg','-20;4;0.8;0;30;-90')")
+    raw.commit(); raw.close()
+    assert _compare_before_after(tmp_path, p, tmp_path) == 6
+    con = db.connect(str(p))
+    assert PE.get_photo_view(con, 1)["placement"] == "12;-7;1.3;5;9;15"
+    api.update_photo_config(con, 1, "1;2;1.0;0;0;0")                    # колонка → вид (триггер)
+    assert PE.get_photo_view(con, 1)["placement"] == "1;2;1.0;0;0;0"
+    pid = api.create_person(con, {}, photo_path="1.jpg", photo_config="3;3;1.0;0;0;0")
+    assert PE.get_photo_view(con, pid)["placement"] == "3;3;1.0;0;0;0"
+
+def test_real_selftest_dbs_render_identical_after_migration(tmp_path):
+    srcs = [Path(s) for s in glob.glob("/tmp/bg_selftest_*/*.db") if sqlite3.connect(s).execute("PRAGMA user_version").fetchone()[0] == 6]
+    if not srcs: pytest.skip("нет реальных v6-БД на машине")
+    for i, s in enumerate(srcs):
+        t = tmp_path / str(i); t.mkdir(); c = t / s.name; shutil.copy(s, c)
+        _compare_before_after(t, c, s.parent)
+        assert sqlite3.connect(s).execute("PRAGMA user_version").fetchone()[0] == 6
+
+
+# ---------- field без field_name: новый — запрещён, отвязанный — допустим (замена CHECK из test_schema) ----------
+def test_create_field_without_field_name_rejected():
+    con = api.connect()
+    with pytest.raises(sqlite3.IntegrityError): api.create_element(con, "field", 0, 0, 10, 10)
+    with pytest.raises(sqlite3.IntegrityError): api.create_element(con, "field", 0, 0, 10, 10, field_name="")
+    assert api.list_elements(con) == []
+
+def test_unlinked_field_with_null_field_name_allowed():
+    con = api.connect(); api.upsert_field(con, "fio", "ФИО")
+    eid = api.create_element(con, "field", 0, 0, 10, 10, field_name="fio")
+    assert api.unlink_field(con, eid, static_value="—")
+    r = con.execute("SELECT type, field_name, static_value FROM template_elements WHERE id=?", (eid,)).fetchone()
+    assert tuple(r) == ("field", None, "—")
+    con.execute("UPDATE template_elements SET x=5 WHERE id=?", (eid,)); con.commit()   # строка остаётся валидной
+
+
+def test_already_v7_without_views_backfills_photo_config(tmp_path):
+    """БД, уже на v7 без переноса photo_config (ранний этап 15): повторный connect дописывает вид."""
+    p = tmp_path / "v6.db"; _v6(p)
+    con = db.connect(str(p))
+    con.execute("UPDATE persons SET photo_config='12;-7;1.3;5;9;15' WHERE id=1")
+    con.execute("DELETE FROM person_photo_views")
+    con.commit(); con.close()
+    con = db.connect(str(p))
+    assert PE.get_photo_view(con, 1)["placement"] == "12;-7;1.3;5;9;15"
+    assert db.get_schema_version(con) == 7

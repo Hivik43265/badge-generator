@@ -48,6 +48,9 @@ def _to_bool(v):
 def normalize_params(params: dict | None) -> dict:
     """Привести/обрезать параметры к допустимым; None/{} → DEFAULT_PHOTO_EDIT. Нечисло → ValueError."""
     p = dict(DEFAULT_PHOTO_EDIT)
+    if (params or {}).get("placement"):   # этап 15: перенесённый photo_config (x;y;scale;crop_x;crop_y;angle)
+        from ..photo_config import normalize as _pc_norm
+        p["placement"] = _pc_norm(params["placement"])
     for k, v in (params or {}).items():
         if k not in p or v is None and k != "crop": continue
         try:
@@ -64,8 +67,9 @@ def normalize_params(params: dict | None) -> dict:
             raise ValueError(f"параметр {k}={v!r}: {e}") from None
     return p
 
-def _is_identity(p):  # portrait — флаг UI (галочка «Портрет»), на пиксели не влияет
-    return {**p, "portrait": False} == DEFAULT_PHOTO_EDIT
+def _is_identity(p):  # portrait — флаг UI; placement — перенесённый photo_config (кадр), не правки фильтров
+    q = {**p, "portrait": False}; q.pop("placement", None)
+    return q == DEFAULT_PHOTO_EDIT
 
 def _split_alpha(im):
     if im.mode in ("RGBA", "LA", "PA") or (im.mode == "P" and "transparency" in im.info):
