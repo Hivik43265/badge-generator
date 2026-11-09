@@ -98,7 +98,7 @@ def test_photo_view_nondestructive(tmp_path):
 
 def test_autoeffect_and_portrait_params():
     img = Image.new("RGB", (200, 200), (60, 60, 60))
-    p = PE.autoeffect_params(img); assert p["autoeffect"] is False and "brightness" in p
+    p = PE.autoeffect_params(img); assert p["autoeffect"] is True and "brightness" in p
     assert PE.portrait_params(img, 0.8) is None      # лица нет
 
 
@@ -229,3 +229,35 @@ def test_already_v7_without_views_backfills_photo_config(tmp_path):
     con = db.connect(str(p))
     assert PE.get_photo_view(con, 1)["placement"] == "12;-7;1.3;5;9;15"
     assert db.get_schema_version(con) == 7
+
+
+def test_photo_editor_state_roundtrip(tmp_path):
+    """set_photo_view → get_photo_editor_state отдаёт те же значения → рендер карты тот же."""
+    Image.new("RGB", (200, 240), (80, 90, 100)).save(tmp_path / "a.jpg")
+    con = api.connect(); api.upsert_field(con, "Фото", "Фото", data_type="image")
+    eid = api.create_element(con, "photo", 10, 10, 100, 120, field_name="Фото")
+    pid = api.create_person(con, {"Фото": "a.jpg"}, photo_path="a.jpg")
+    params = {"brightness": 18, "contrast": -8, "scale": 110, "rotate": 5.0,
+              "crop": (4, 6, 80, 90), "autoeffect": True, "portrait": True}
+    saved = PE.set_photo_view(con, pid, params, field_name="Фото")
+    st = api.get_photo_editor_state(con, pid, element_id=eid)
+    assert st["params"] == saved
+    assert st["params"]["crop"] == (4, 6, 80, 90) and st["params"]["portrait"] is True
+    assert st["params"]["autoeffect"] is True
+    assert st["photo_path"] == "a.jpg" and st["element_id"] == eid and st["field_name"] == "Фото"
+    assert st["frame"]["element_id"] == eid and st["frame"]["size"] == (st["frame"]["width_px"], st["frame"]["height_px"])
+    before = render_card_db(con, pid, "front", str(tmp_path))
+    PE.set_photo_view(con, pid, st["params"], field_name=st["field_name"])
+    after = render_card_db(con, pid, "front", str(tmp_path))
+    assert before.tobytes() == after.tobytes()
+    raw = {"brightness": 5, "contrast": 0, "scale": 100, "rotate": 0.0, "crop": None, "autoeffect": False}
+    PE.set_photo_view(con, pid, raw, field_name="Фото")
+    assert api.get_photo_editor_state(con, pid, eid)["params"]["portrait"] is False   # ключ добавлен
+
+def test_flags_ignored_by_render():
+    img = Image.new("RGB", (80, 80)); img.putdata([(40 + (i % 80) // 4,) * 3 for i in range(6400)])
+    p = PE.autoeffect_params(img)
+    assert p["autoeffect"] is True and p["portrait"] is False
+    a = PE.apply_photo_edit(img, p)
+    assert PE.apply_photo_edit(img, {**p, "autoeffect": False, "portrait": True}).tobytes() == a.tobytes()
+    assert PE.apply_photo_edit(img, {"portrait": True, "autoeffect": True}).tobytes() == img.tobytes()

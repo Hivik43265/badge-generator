@@ -12,15 +12,21 @@ load_photo_for_edit(path, base_dir=None) -> Image   EXIF-поворот + реж
   scale      int  10..400   % размера; 100 — без изменений (LANCZOS)
   rotate     float -180..180 градусов ПО ЧАСОВОЙ стрелке (PIL rotate — против, поэтому rotate(-deg)),
              expand=True, углы заливаются белым (RGBA — прозрачным)
-  crop       (x,y,w,h) | None — в пикселях УЖЕ преобразованного изображения (после scale/rotate);
-             обрезается границами изображения; пустое пересечение → ValueError
-  autoeffect bool  ImageOps.autocontrast(cutoff=1%) + нормализация средней яркости к 128
-             (множитель 0.6..1.6); ручные brightness/contrast применяются поверх
-  portrait   bool  галочка «Портрет» (UI: кадрировать по лицу через detect_face_crop); в apply_photo_edit
-             не влияет на пиксели, хранится в умолчаниях проекта. Строки "true"/"false"/"1"/"0" принимаются.
+  crop       (x,y,w,h) | None — координаты в пикселях изображения ПОСЛЕ scale и rotate
+             (и ПОСЛЕ EXIF-поворота при загрузке), но ДО brightness/contrast (они геометрию не меняют).
+             Не в пикселях исходного файла, если scale≠100 или rotate≠0.
+             Обрезается границами этого преобразованного изображения; пустое пересечение → ValueError.
+             Формат хранения не менять: JSON-массив/кортеж из четырёх чисел (x, y, w, h).
+  autoeffect bool  галочка «Автоэффект» — только маркер UI (как portrait). apply_photo_edit и рендер
+             карточки флаг ИГНОРИРУЮТ: пиксельный эффект уже записан в brightness/contrast
+             (их подбирает autoeffect_params). Повторно autocontrast не применяется.
+  portrait   bool  галочка «Портрет» — только маркер UI; в apply_photo_edit на пиксели не влияет.
+             Кадр по лицу пишет portrait_params в crop. Строки "true"/"false"/"1"/"0" принимаются.
 Умолчания проекта: project_settings key="photo_edit_defaults", JSON всех ключей кроме crop (=null);
 старые значения без "portrait" читаются как portrait=False.
-Порядок: autoeffect → brightness → contrast → scale → rotate → crop.
+Порядок правки пикселей: brightness → contrast → scale → rotate → crop.
+После «Портрет»/«Автоэффект» флаг в возвращённых/сохранённых params остаётся True (маркер для UI);
+сброс при ручном движении ползунка — на стороне UI.
 Скорость превью: UI передаёт уменьшенное изображение (crop тогда в его пикселях); при параметрах по
 умолчанию возвращается копия без пересчёта.
 """
@@ -67,8 +73,8 @@ def normalize_params(params: dict | None) -> dict:
             raise ValueError(f"параметр {k}={v!r}: {e}") from None
     return p
 
-def _is_identity(p):  # portrait — флаг UI; placement — перенесённый photo_config (кадр), не правки фильтров
-    q = {**p, "portrait": False}; q.pop("placement", None)
+def _is_identity(p):  # portrait/autoeffect — флаги UI; placement — перенесённый photo_config
+    q = {**p, "portrait": False, "autoeffect": False}; q.pop("placement", None)
     return q == DEFAULT_PHOTO_EDIT
 
 def _split_alpha(im):
@@ -87,7 +93,7 @@ def apply_photo_edit(img: Image.Image, params: dict | None) -> Image.Image:
     p = normalize_params(params)
     if _is_identity(p): return img.copy()
     im, alpha = _split_alpha(img.copy())
-    if p["autoeffect"]: im = _autoeffect(im)
+    # autoeffect и portrait — маркеры UI, на пиксели не влияют
     if p["brightness"]: im = ImageEnhance.Brightness(im).enhance(1 + p["brightness"] / 100)
     if p["contrast"]: im = ImageEnhance.Contrast(im).enhance(1 + p["contrast"] / 100)
     if alpha is not None: im = im.convert("RGBA"); im.putalpha(alpha)
@@ -305,7 +311,8 @@ def _view_key(con, field_name):
 
 def get_photo_view(con, person_id: int, field_name: str | None = None) -> dict:
     """Параметры вида фото записи (кадр, масштаб, поворот, яркость, контраст, флаги) для image-поля
-    (None — persons.photo_path). Не сохранены → умолчания проекта (crop=None). Всегда нормализованы.
+    (None — persons.photo_path). Не сохранены → умолчания проекта (crop=None). Всегда нормализованы
+    (нет ключа portrait → False). crop — (x,y,w,h) в px после scale/rotate, см. docstring модуля.
     Нет записи → ValueError."""
     key = _view_key(con, field_name)
     if con.execute("SELECT 1 FROM persons WHERE id=?", (int(person_id),)).fetchone() is None:
@@ -318,8 +325,9 @@ def get_photo_view(con, person_id: int, field_name: str | None = None) -> dict:
 
 def set_photo_view(con, person_id: int, params: dict | None, field_name: str | None = None) -> dict:
     """Сохранить вид фото записи (нормализованный). Файл фото НЕ создаётся и НЕ меняется: рендер/печать/экспорт
-    применяют параметры к исходнику в памяти. crop — (x,y,w,h) в px исходника после scale/rotate
-    (как apply_photo_edit). params=None — удалить вид (вернуться к умолчаниям). → сохранённое."""
+    применяют параметры к исходнику в памяти. crop — (x,y,w,h) в пикселях изображения ПОСЛЕ scale и rotate
+    (не исходного файла, если scale≠100 или rotate≠0); формат не менять. params=None — удалить вид
+    (вернуться к умолчаниям). → сохранённое."""
     key = _view_key(con, field_name)
     if con.execute("SELECT 1 FROM persons WHERE id=?", (int(person_id),)).fetchone() is None:
         raise ValueError(f"нет записи id={person_id}")
@@ -351,8 +359,8 @@ def render_photo(con, person_id: int, field_name: str | None = None, *, size=Non
 
 def portrait_params(img: Image.Image, aspect: float, params: dict | None = None) -> dict | None:
     """«Портрет»: кадр по лицу (detect_face_crop, правило D42) для изображения ПОСЛЕ scale/rotate из params.
-    → полный нормализованный набор параметров с crop=(x,y,w,h) и portrait=True (значения — в ползунки);
-    лицо не найдено → None. Пиксели не меняются."""
+    → полный нормализованный набор с crop=(x,y,w,h) в тех же координатах (после scale/rotate) и
+    portrait=True (маркер UI, рендер флаг игнорирует). Лицо не найдено → None. Пиксели не меняются."""
     p = normalize_params(params)
     base = apply_photo_edit(img, {**p, "crop": None, "autoeffect": False, "brightness": 0, "contrast": 0})
     box = detect_face_crop(base, aspect)
@@ -362,8 +370,8 @@ def portrait_params(img: Image.Image, aspect: float, params: dict | None = None)
 
 def autoeffect_params(img: Image.Image, params: dict | None = None) -> dict:
     """«Автоэффект»: подобрать яркость и контраст по изображению и вернуть их как ЗНАЧЕНИЯ ползунков.
-    → полный нормализованный набор с brightness/contrast (-50..50) и autoeffect=False (эффект уже выражен
-    ползунками — повторно не применяется). Остальные ключи params сохраняются."""
+    → полный нормализованный набор с brightness/contrast (-50..50) и autoeffect=True (маркер UI;
+    рендер флаг игнорирует — повторно autocontrast не применяется). Остальные ключи params сохраняются."""
     p = normalize_params(params)
     g = img.convert("L"); hist = g.histogram(); n = sum(hist) or 1
     lo = hi = None; acc = 0
@@ -377,5 +385,52 @@ def autoeffect_params(img: Image.Image, params: dict | None = None) -> dict:
     brightness = (128.0 / mean - 1) * 100
     p["contrast"] = int(round(_clamp(contrast, *RANGES["contrast"])))
     p["brightness"] = int(round(_clamp(brightness, *RANGES["brightness"])))
-    p["autoeffect"] = False
+    p["autoeffect"] = True
     return p
+
+
+def get_photo_editor_state(con, person_id: int, element_id=None) -> dict:
+    """Всё, что нужно редактору фото при открытии: сохранённые ползунки/кадр, рамка, исходник.
+
+    person_id     запись. Нет записи → ValueError.
+    element_id    фото-элемент активного шаблона (как get_photo_frame_spec). None — первый
+                  фото-элемент активного шаблона (front, z_order, id). Не photo / другой шаблон
+                  / нет такого id → ValueError. Нет ни одного фото-элемента и element_id не задан
+                  → frame=None, вид берётся для persons.photo_path (field_name пустой).
+
+    → {
+        'params':      нормализованный вид (get_photo_view); нет portrait → False;
+                       crop=(x,y,w,h) в px после scale/rotate (см. docstring модуля);
+        'frame':       get_photo_frame_spec + 'size', либо None;
+        'photo_path':  относительный путь исходника в проекте (поле элемента или photo_path),
+                       либо None, если у записи нет фото. Файл на диске не меняется;
+        'element_id':  id использованного элемента или None;
+        'field_name':  имя image-поля элемента (None, если объект не привязан — тогда вид '').
+      }
+    """
+    if con.execute("SELECT 1 FROM persons WHERE id=?", (int(person_id),)).fetchone() is None:
+        raise ValueError(f"нет записи id={person_id}")
+    fname = None; eid = None; frame = None
+    if element_id is not None:
+        frame = photo_edit_target(con, element_id=element_id)
+        eid = int(element_id)
+        r = con.execute("SELECT field_name FROM template_elements WHERE id=?", (eid,)).fetchone()
+        fname = (r[0] if r and r[0] else None)
+    else:
+        frame = photo_edit_target(con)
+        if frame is not None:
+            eid = frame["element_id"]
+            r = con.execute("SELECT field_name FROM template_elements WHERE id=?", (eid,)).fetchone()
+            fname = (r[0] if r and r[0] else None)
+    params = get_photo_view(con, person_id, fname)
+    row = con.execute("SELECT fields_json, photo_path FROM persons WHERE id=?", (int(person_id),)).fetchone()
+    stored = None
+    if fname:
+        try: fields = json.loads(row[0] or "{}")
+        except (TypeError, ValueError): fields = {}
+        stored = fields.get(fname) or None
+    if not stored:
+        stored = row[1] or None
+    if stored in ("", None): stored = None
+    return {"params": params, "frame": frame, "photo_path": stored,
+            "element_id": eid, "field_name": fname}

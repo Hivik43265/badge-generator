@@ -434,5 +434,5 @@ from .services.templates import (list_templates, get_template, get_active_templa
                                  get_template_style, set_template_style, update_element_style, list_font_families,
                                  begin_template_edit, commit_template_edit, cancel_template_edit, get_template_edit_state)
 from .services.photo_edit import (get_photo_view, set_photo_view, render_photo, portrait_params,  # noqa: F401,E402
-                                  autoeffect_params)
+                                  autoeffect_params, get_photo_editor_state)
 from .services.search import parse_search, search_persons  # noqa: F401,E402
