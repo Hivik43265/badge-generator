@@ -112,7 +112,7 @@ def apply_photo_edit(img: Image.Image, params: dict | None) -> Image.Image:
 
 # ---------- лицо ----------
 CASCADE = "haarcascade_frontalface_default.xml"
-HEAD_TOP = 0.25     # макушка = верх Haar − HEAD_TOP·fh (Haar начинается ото лба)
+HEAD_TOP = 0.50     # макушка = верх Haar − HEAD_TOP·fh (Haar идёт от бровей, не от макушки)
 HEAD_SHARE = 0.50   # голова (макушка..подбородок = низ Haar) занимает ~50 % высоты рамки (45–55 %)
 HEADROOM = 0.10     # запас над макушкой — 10 % высоты рамки; ниже подбородка ~40 % (шея, плечи)
 

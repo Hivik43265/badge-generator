@@ -78,12 +78,12 @@ def test_detect_face_crop():
         x, y, w, h = r
         assert 0 <= x and 0 <= y and x + w <= img.width and y + h <= img.height
         assert abs(w / h - aspect) < 0.03
-    # лицо по центру по горизонтали; маленькое фото → рамка уменьшена, макушка (Haar−0.25·fh) внутри (D42)
+    # лицо по центру по горизонтали; маленькое фото → рамка уменьшена, макушка (Haar−HEAD_TOP·fh) внутри (D42)
     import cv2, numpy as np
-    from badge_backend.services.photo_edit import _classifier
-    fx, fy, fw, fh = max(_classifier().detectMultiScale(np.asarray(img.convert("L")), 1.1, 5, minSize=(20, 20)), key=lambda f: f[2] * f[3])
+    from badge_backend.services import photo_edit as pe
+    fx, fy, fw, fh = max(pe._classifier().detectMultiScale(np.asarray(img.convert("L")), 1.1, 5, minSize=(20, 20)), key=lambda f: f[2] * f[3])
     x, y, w, h = api.detect_face_crop(img, 0.75)
-    assert abs((x + w / 2) - (fx + fw / 2)) <= 2 and y <= fy - 0.25 * fh
+    assert abs((x + w / 2) - (fx + fw / 2)) <= 2 and y <= fy - pe.HEAD_TOP * fh
 
 def test_detect_face_crop_clamps_big_frame():
     img = Image.open(FACE).crop((40, 10, 140, 90))   # лицо почти во весь кадр → кадр уменьшен и вписан
