@@ -6,7 +6,7 @@ progress: callable(done, total); вернул False → отмена.
 """
 from __future__ import annotations
 from pathlib import Path
-from ..render import render_card, load_elements, load_background
+from ..render import render_card, load_elements, load_background, load_photo_views
 
 import os
 from pathlib import PosixPath, WindowsPath
@@ -106,7 +106,7 @@ def snapshot(con, ids=None, sides=("front", "back")) -> list[dict]:
     for pid in _ids(con, ids):
         r = con.execute("SELECT * FROM persons WHERE id=?", (pid,)).fetchone()
         if r is None: continue
-        p = dict(r)
+        p = dict(r); p["photo_views"] = load_photo_views(con, pid)   # этап 15: вид фото записи
         for s in sides: out.append({"person": p, "side": s, "elements": els[s], "background": bgs[s]})
     return out
 

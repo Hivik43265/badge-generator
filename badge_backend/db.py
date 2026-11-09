@@ -96,7 +96,119 @@ def _v5_field_types(con):
 _V6_SETTINGS = """CREATE TABLE IF NOT EXISTS project_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);"""
 # v6 (этап 14): настройки проекта key → value (JSON-строка); первая — photo_edit_defaults.
 
-MIGRATIONS = [SCHEMA, _v2_printed_at, _v3_line, _v4_ellipse_defaults, _v5_field_types, _V6_SETTINGS]   # индекс + 1 = user_version; str — SQL-скрипт, callable — шаг на Python
+# ---------- v7 (этап 15) ----------
+# Локальное время со смещением в SQL (как now_iso): 'YYYY-MM-DDTHH:MM:SS+HH:MM'. Используется в триггерах.
+_OFS = "CAST(round((julianday('now','localtime') - julianday('now')) * 86400) AS INTEGER)"
+LOCAL_NOW_SQL = (f"(strftime('%Y-%m-%dT%H:%M:%S','now','localtime') || CASE WHEN {_OFS} < 0 THEN '-' ELSE '+' END"
+                 f" || printf('%02d:%02d', abs({_OFS}) / 3600, (abs({_OFS}) % 3600) / 60))")
+
+_TE_V7 = """CREATE TABLE template_elements (
+    id           INTEGER PRIMARY KEY,
+    type         TEXT NOT NULL CHECK (type IN ('text','field','photo','image','rect','qr','barcode','line','ellipse')),
+    x INTEGER NOT NULL, y INTEGER NOT NULL,
+    w INTEGER NOT NULL, h INTEGER NOT NULL,
+    field_name   TEXT,                 -- NULL у 'field' = объект отвязан (этап 15), рисуется static_value
+    static_value TEXT,
+    style_json   TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(style_json)),
+    side         TEXT NOT NULL DEFAULT 'front' CHECK (side IN ('front','back')),
+    z_order      INTEGER NOT NULL DEFAULT 0,
+    template_id  INTEGER REFERENCES templates(id) ON DELETE CASCADE,
+    CHECK ((type <> 'line' AND w > 0 AND h > 0) OR (type = 'line' AND NOT (w = 0 AND h = 0))))"""
+
+PHOTO_FIELD = "Фото"
+ACTIVE_KEY = "active_template_id"
+
+def _utc_to_local(v):
+    """'YYYY-MM-DD HH:MM:SS' (UTC из datetime('now')) → ISO с локальным смещением; иное — как есть."""
+    from datetime import datetime, timezone
+    if not isinstance(v, str) or "T" in v: return v
+    try: d = datetime.strptime(v, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except ValueError: return v
+    return d.astimezone().isoformat(timespec="seconds")
+
+def _v7_templates(con):
+    """v7 (этап 15): несколько шаблонов, вид фото записи, поле «Фото», локальное время. Идемпотентно по частям.
+    1) templates (+style_json — шрифт/отступы шаблона); все элементы и фоны → шаблон «Основной» (активный);
+    2) template_elements пересобирается: + template_id, снят CHECK «field ⇒ field_name» (отвязанный объект остаётся полем);
+    3) template_backgrounds2 (template_id, side); старая template_backgrounds не удаляется (legacy, только чтение);
+    4) person_photo_views (вид фото записи, исходник не меняется);
+    5) есть фото (photo_path у записей или фото-объекты) и нет ни одного image-поля → создаётся «Фото», persons.photo_path копируется в него, несвязанные фото-объекты
+       связываются с ним (файлы и photo_path не трогаются);
+    6) время: триггеры пишут локальное время со смещением; старые created_at/updated_at (UTC) → локальные."""
+    con.execute("""CREATE TABLE IF NOT EXISTS templates (
+        id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        style_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(style_json)),
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""")
+    now = now_iso()
+    r = con.execute("SELECT id FROM templates ORDER BY id LIMIT 1").fetchone()
+    tid = r[0] if r else con.execute("INSERT INTO templates(name, created_at, updated_at) VALUES ('Основной', ?, ?)",
+                                     (now, now)).lastrowid
+    if "template_id" not in _cols(con, "template_elements"):
+        cols = "id,type,x,y,w,h,field_name,static_value,style_json,side,z_order"
+        con.execute("ALTER TABLE template_elements RENAME TO _te_old")
+        con.execute(_TE_V7)
+        con.execute(f"INSERT INTO template_elements({cols},template_id) SELECT {cols}, ? FROM _te_old", (tid,))
+        con.execute("DROP TABLE _te_old")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_te_side_z ON template_elements(side, z_order)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_te_tpl ON template_elements(template_id, side, z_order)")
+    con.execute("""CREATE TABLE IF NOT EXISTS template_backgrounds2 (
+        template_id INTEGER NOT NULL REFERENCES templates(id) ON DELETE CASCADE,
+        side TEXT NOT NULL CHECK (side IN ('front','back')), image_path TEXT, color TEXT NOT NULL DEFAULT '#FFFFFF',
+        PRIMARY KEY (template_id, side))""")
+    con.execute("INSERT OR IGNORE INTO template_backgrounds2(template_id, side, image_path, color) "
+                "SELECT ?, side, image_path, color FROM template_backgrounds", (tid,))
+    con.execute("""CREATE TABLE IF NOT EXISTS person_photo_views (
+        person_id INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+        field_name TEXT NOT NULL DEFAULT '',
+        params_json TEXT NOT NULL CHECK (json_valid(params_json)),
+        updated_at TEXT NOT NULL, PRIMARY KEY (person_id, field_name))""")
+    con.execute("INSERT OR IGNORE INTO project_settings(key, value) VALUES (?, ?)", (ACTIVE_KEY, str(tid)))
+    # триггеры — до правок persons, чтобы старый persons_touch не переписал updated_at
+    con.execute("DROP TRIGGER IF EXISTS persons_touch")
+    con.execute(f"""CREATE TRIGGER persons_touch AFTER UPDATE ON persons WHEN NEW.updated_at = OLD.updated_at
+        BEGIN UPDATE persons SET updated_at = {LOCAL_NOW_SQL} WHERE id = NEW.id; END""")
+    con.execute("DROP TRIGGER IF EXISTS persons_created_local")
+    con.execute(f"""CREATE TRIGGER persons_created_local AFTER INSERT ON persons
+        WHEN instr(NEW.created_at, 'T') = 0 OR instr(NEW.updated_at, 'T') = 0
+        BEGIN UPDATE persons SET
+            created_at = CASE WHEN instr(NEW.created_at, 'T') = 0 THEN {LOCAL_NOW_SQL} ELSE NEW.created_at END,
+            updated_at = CASE WHEN instr(NEW.updated_at, 'T') = 0 THEN {LOCAL_NOW_SQL} ELSE NEW.updated_at END
+        WHERE id = NEW.id; END""")
+    has_photo = con.execute("SELECT 1 FROM persons WHERE COALESCE(photo_path, '') <> '' UNION ALL "
+                            "SELECT 1 FROM template_elements WHERE type='photo' LIMIT 1").fetchone() is not None
+    # D24: пустой/новый проект полей не получает — «Фото» создаётся только там, где фото уже используется
+    if has_photo and con.execute("SELECT 1 FROM person_fields WHERE data_type='image'").fetchone() is None:
+        so = con.execute("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM person_fields").fetchone()[0]
+        con.execute("INSERT INTO person_fields(name, label, sort_order, data_type) VALUES (?, ?, ?, 'image') "
+                    "ON CONFLICT(name) DO UPDATE SET data_type='image'", (PHOTO_FIELD, PHOTO_FIELD, so))
+        con.execute("UPDATE persons SET fields_json = json_set(fields_json, ?, photo_path) "
+                    "WHERE COALESCE(photo_path, '') <> '' AND COALESCE(json_extract(fields_json, ?), '') = ''",
+                    ('$."Фото"', '$."Фото"'))
+        con.execute("UPDATE template_elements SET field_name=? WHERE type='photo' AND COALESCE(field_name, '') = ''",
+                    (PHOTO_FIELD,))
+    rows = con.execute("SELECT id, created_at, updated_at FROM persons").fetchall()
+    for pid, c, u in rows:
+        c2, u2 = _utc_to_local(c), _utc_to_local(u)
+        if (c2, u2) != (c, u): con.execute("UPDATE persons SET created_at=?, updated_at=? WHERE id=?", (c2, u2, pid))
+
+def active_template_id(con) -> int:
+    """id активного шаблона (project_settings['active_template_id']); битое/нет → первый шаблон
+    (настройка исправляется); шаблонов нет → создаётся «Основной»."""
+    r = con.execute("SELECT value FROM project_settings WHERE key=?", (ACTIVE_KEY,)).fetchone()
+    try: tid = int(r[0]) if r else None
+    except (TypeError, ValueError): tid = None
+    if tid is not None and con.execute("SELECT 1 FROM templates WHERE id=?", (tid,)).fetchone(): return tid
+    r = con.execute("SELECT id FROM templates ORDER BY id LIMIT 1").fetchone()
+    with con:
+        if r: tid = r[0]
+        else:
+            n = now_iso()
+            tid = con.execute("INSERT INTO templates(name, created_at, updated_at) VALUES ('Основной', ?, ?)", (n, n)).lastrowid
+        con.execute("INSERT INTO project_settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (ACTIVE_KEY, str(tid)))
+    return tid
+
+MIGRATIONS = [SCHEMA, _v2_printed_at, _v3_line, _v4_ellipse_defaults, _v5_field_types, _V6_SETTINGS, _v7_templates]   # индекс + 1 = user_version; str — SQL-скрипт, callable — шаг на Python
 LATEST = len(MIGRATIONS)
 
 def now_iso() -> str:
@@ -123,8 +235,20 @@ def get_schema_version(con) -> int:
     """Текущая версия схемы БД (PRAGMA user_version); после migrate() == LATEST."""
     return int(con.execute("PRAGMA user_version").fetchone()[0])
 
+_cleaned = False
+
 def connect(path=":memory:") -> sqlite3.Connection:
-    """Открыть БД (Row factory, foreign_keys=ON) и довести схему до LATEST."""
+    """Открыть БД (Row factory, foreign_keys=ON) и довести схему до LATEST.
+    D48: при первом вызове в процессе (старт приложения — BackendAPI → connect) удаляются старые
+    рабочие копии .db-импорта (sources._cleanup_stale_work_copies; ошибки только в лог)."""
+    global _cleaned
+    if not _cleaned:
+        _cleaned = True
+        try:
+            from .services.sources import _cleanup_stale_work_copies
+            _cleanup_stale_work_copies()
+        except Exception:   # noqa: BLE001
+            import logging; logging.getLogger(__name__).exception("очистка рабочих копий")
     con = sqlite3.connect(str(path))
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys=ON")

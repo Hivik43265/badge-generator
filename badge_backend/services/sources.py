@@ -43,6 +43,43 @@ class Sheet:
         return {"path": str(self.path), "name": self.name, "kind": self.kind, "index": self.index,
                 "schema_version": self.schema_version}
 
+# D48: рабочие копии .db-импорта — только в своём каталоге и со своим префиксом
+_WORK_DIR_NAME = "BadgeGenerator-import"
+_WORK_PREFIX = "bg_import_"
+_STALE_AGE_S = 6 * 3600       # моложе — не трогаем (может принадлежать другому запущенному экземпляру)
+
+def _work_dir() -> Path:
+    d = Path(tempfile.gettempdir()) / _WORK_DIR_NAME; d.mkdir(parents=True, exist_ok=True); return d
+
+_LEGACY_RE = __import__("re").compile(r"^bg_import_.+\.db(-journal|-wal|-shm)?$")
+
+def _cleanup_stale_work_copies(min_age_s: float = _STALE_AGE_S) -> list[str]:
+    """Удалить оставшиеся рабочие копии (Sheet.close не смог удалить), старше min_age_s:
+    - <tmp>/BadgeGenerator-import/: файлы bg_import_* (копии и их -journal/-wal/-shm);
+    - корень <tmp> (копии до D48): только файлы bg_import_*.db и bg_import_*.db-journal|-wal|-shm.
+    Не рекурсивно. Занятые/ошибки — в лог, пропуск; никогда не бросает исключений. → список удалённых имён."""
+    import time
+    log = logging.getLogger(__name__); out = []
+    try:
+        root = Path(tempfile.gettempdir()); now = time.time()
+        for d, match in ((root / _WORK_DIR_NAME, lambda n: n.startswith(_WORK_PREFIX)),
+                         (root, lambda n: bool(_LEGACY_RE.match(n)))):
+            try:
+                if not d.is_dir(): continue
+                files = list(d.iterdir())
+            except OSError as e:
+                log.warning("не удалось прочитать %s: %s", d, e); continue
+            for f in files:
+                try:
+                    if not (match(f.name) and f.is_file()): continue
+                    if now - f.stat().st_mtime < min_age_s: continue
+                    f.unlink(); out.append(f.name)
+                except OSError as e:
+                    log.warning("не удалось удалить старую рабочую копию %s: %s", f, e)
+    except Exception:   # noqa: BLE001 — очистка не должна ломать старт
+        log.exception("ошибка очистки рабочих копий импорта")
+    return out
+
 def _ro(path) -> sqlite3.Connection:
     return sqlite3.connect(f"file:{Path(path).resolve().as_posix()}?mode=ro", uri=True)
 
@@ -73,7 +110,7 @@ def open_source(path) -> list[Sheet]:
             if {"persons", "person_fields"} <= set(tabs):
                 from .. import db
                 ver = db.get_schema_version(src)
-                fd, tmp = tempfile.mkstemp(prefix="bg_import_", suffix=".db"); os.close(fd)
+                fd, tmp = tempfile.mkstemp(prefix=_WORK_PREFIX, suffix=".db", dir=_work_dir()); os.close(fd)
                 try:
                     with closing(sqlite3.connect(tmp)) as dst:
                         src.backup(dst); db.migrate(dst)

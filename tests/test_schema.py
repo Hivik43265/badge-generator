@@ -8,7 +8,7 @@ def test_card_px(): assert (CARD_W_PX, CARD_H_PX) == (1011, 638)
 
 def test_migration_from_scratch(tmp_path):
     con = connect(tmp_path / "b.db")
-    assert con.execute("PRAGMA user_version").fetchone()[0] == LATEST == 6
+    assert con.execute("PRAGMA user_version").fetchone()[0] == LATEST == 7
     names = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"persons", "template_elements", "person_fields", "template_backgrounds"} <= names
     assert migrate(con) == LATEST  # идемпотентно
@@ -20,7 +20,6 @@ def test_defaults():
     assert DEFAULT == "0;0;1.0;0;0;0"
 
 @pytest.mark.parametrize("sql", [
-    "INSERT INTO template_elements(type,x,y,w,h) VALUES ('field',0,0,1,1)",
     "INSERT INTO template_elements(type,x,y,w,h,side) VALUES ('text',0,0,1,1,'top')",
     "INSERT INTO template_elements(type,x,y,w,h) VALUES ('circle',0,0,1,1)",
     "INSERT INTO template_elements(type,x,y,w,h) VALUES ('rect',0,0,0,1)",

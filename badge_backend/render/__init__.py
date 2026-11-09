@@ -12,7 +12,7 @@ from ..photo_config import PhotoConfig
 from .fonts import get_font, find_font_path
 log = logging.getLogger(__name__)
 __all__ = ["render_card", "render_card_db", "render_preview", "transform_photo", "load_elements",
-           "load_background", "get_font", "find_font_path"]
+           "load_background", "load_photo_views", "get_font", "find_font_path"]
 
 def _d(row):
     if row is None: return {}
@@ -77,6 +77,19 @@ def _placeholder(w, h, label="нет фото"):
     d.pieslice((w * .12, h * .55, w * .88, h * 1.25), 180, 360, fill=c)
     f = get_font(max(10, h // 14)); d.text((w / 2, h - 6), label, font=f, fill=(90, 95, 100, 255), anchor="md")
     return im
+
+def _photo_view(person, el):
+    """Этап 15: параметры вида фото записи для элемента (person['photo_views'][field_name or ''])."""
+    pv = (person or {}).get("photo_views") or {}
+    return pv.get(el.get("field_name") or "")
+
+def _view_tile(src, w, h, params):
+    """Вид фото (person_photo_views): apply_photo_edit к исходнику В ПАМЯТИ (файл не меняется) → cover w×h."""
+    from ..services.photo_edit import apply_photo_edit
+    try: im = apply_photo_edit(src, params)
+    except ValueError as e:
+        log.warning("вид фото не применён (%s) — исходник целиком", e); im = src
+    return _cover_crop(im.convert("RGBA"), w, h)
 
 # ---------- текст ----------
 _BREAK_AFTER = "-\u2010\u2011\u2012\u2013\u2014\u2015/"   # дефисы, тире, слэш: знак остаётся в конце строки
@@ -264,6 +277,7 @@ def render_card(person, elements, side: str = "front", background=None, base_dir
     """Отрисовать сторону карточки.
 
     person      dict или sqlite3.Row: fields_json (str JSON или dict), photo_path, photo_config;
+                этап 15: 'photo_views' {field_name|'': params} — вид фото записи (важнее photo_config);
                 краткая форма {'fields': {...}, 'photo_path': ..., 'photo_config': ...};
                 None — пустой шаблон. Если есть и fields_json, и fields — используется fields_json.
     elements    итерируемое template_elements (dict/Row); берутся только с данным side.
@@ -293,14 +307,17 @@ def render_card(person, elements, side: str = "front", background=None, base_dir
                 _ellipse(img, el, st)
             elif t in ("text", "field"):
                 _box(img, el, st)
-                val = el.get("static_value") if t == "text" else _field_value(person, el.get("field_name"), el.get("default_value"))
+                if t == "text" or not el.get("field_name"): val = el.get("static_value")   # этап 15: отвязанное поле
+                else: val = _field_value(person, el.get("field_name"), el.get("default_value"))
                 if t == "field" and el.get("data_type"): val = format_value(el["data_type"], val) if val is not None else val
                 _draw_text(img, el, val, st)
             elif t == "photo":
                 pp = resolve_photo_path(person, el, base_dir)
                 src = _open(pp) if pp else None
-                tile = transform_photo(src, el["w"], el["h"], person.get("photo_config")) if src \
-                    else _placeholder(el["w"], el["h"])
+                view = _photo_view(person, el)
+                if src and view is not None: tile = _view_tile(src, el["w"], el["h"], view)
+                elif src: tile = transform_photo(src, el["w"], el["h"], person.get("photo_config"))
+                else: tile = _placeholder(el["w"], el["h"])
                 _paste_clipped(img, el, tile, st); _box(img, el, {**st, "fill": None})
             elif t == "image":
                 src = _open(_resolve(el.get("static_value"), base_dir))
@@ -338,15 +355,34 @@ def render_card(person, elements, side: str = "front", background=None, base_dir
             log.warning("элемент %s (%s) не отрисован: %s", el.get("id"), t, e)
     return img.convert("RGB")
 
-def load_elements(con, side=None):
-    """Элементы стороны + default_value привязанного поля (person_fields.default_value) для подстановки в рендер."""
+def load_elements(con, side=None, template_id=None):
+    """Элементы стороны шаблона (None — активного) + default_value привязанного поля (person_fields.default_value).
+    Этап 15: стиль шаблона (font_family, padding) подмешивается в style_json text/field-объектов, где своего нет."""
+    from ..db import active_template_id
+    tid = template_id or active_template_id(con)
+    tst = json.loads((con.execute("SELECT style_json FROM templates WHERE id=?", (tid,)).fetchone() or ["{}"])[0] or "{}")
     q = ("SELECT e.*, f.default_value AS default_value, f.data_type AS data_type FROM template_elements e "
-         "LEFT JOIN person_fields f ON f.name = e.field_name" + (" WHERE e.side=?" if side else "") + " ORDER BY e.z_order, e.id")
-    return [dict(r) for r in con.execute(q, (side,) if side else ())]
+         "LEFT JOIN person_fields f ON f.name = e.field_name WHERE e.template_id=?" + (" AND e.side=?" if side else "")
+         + " ORDER BY e.z_order, e.id")
+    out = []
+    for r in con.execute(q, (tid, side) if side else (tid,)):
+        d = dict(r)
+        if tst and d["type"] in ("text", "field"):
+            d["style_json"] = json.dumps({**tst, **_json(d.get("style_json"))}, ensure_ascii=False)
+        out.append(d)
+    return out
 
-def load_background(con, side):
-    r = con.execute("SELECT * FROM template_backgrounds WHERE side=?", (side,)).fetchone()
+def load_background(con, side, template_id=None):
+    """Фон стороны шаблона (None — активного) → {'side','image_path','color'} | None."""
+    from ..db import active_template_id
+    r = con.execute("SELECT side, image_path, color FROM template_backgrounds2 WHERE template_id=? AND side=?",
+                    (template_id or active_template_id(con), side)).fetchone()
     return dict(r) if r else None
+
+def load_photo_views(con, person_id) -> dict:
+    """{field_name ('' — photo_path): params} вида фото записи (person_photo_views)."""
+    return {r[0]: json.loads(r[1]) for r in con.execute(
+        "SELECT field_name, params_json FROM person_photo_views WHERE person_id=?", (person_id,))}
 
 def render_card_db(con, person, side="front", base_dir=None) -> Image.Image:
     """render_card по данным из БД. person — id или row; None — пустой шаблон."""
@@ -354,6 +390,9 @@ def render_card_db(con, person, side="front", base_dir=None) -> Image.Image:
         r = con.execute("SELECT * FROM persons WHERE id=?", (person,)).fetchone()
         if r is None: raise KeyError(f"person {person} не найден")
         person = r
+    if person is not None:
+        person = dict(person)
+        if "photo_views" not in person and person.get("id") is not None: person["photo_views"] = load_photo_views(con, person["id"])
     return render_card(person, load_elements(con, side), side, load_background(con, side), base_dir)
 
 def render_preview(con, person, side="front", scale: float = 0.5, base_dir=None) -> Image.Image:

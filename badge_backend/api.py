@@ -5,7 +5,8 @@
 from __future__ import annotations
 import json
 from .fields import FIELD_TYPES, FieldValueWarning, check_type, normalize_value, format_value  # noqa: F401
-from .db import connect, DEFAULT_DB_PATH, default_db_path, get_schema_version  # noqa: F401  (реэкспорт)
+from .db import connect, DEFAULT_DB_PATH, default_db_path, get_schema_version, active_template_id  # noqa: F401  (реэкспорт)
+from . import db as _db
 from .photo_config import PhotoConfig, normalize, DEFAULT as PHOTO_CONFIG_DEFAULT  # noqa
 from .render import render_card, render_card_db, render_preview  # noqa
 from .services.importer import import_file  # noqa
@@ -15,6 +16,7 @@ from .services.headers import map_headers  # noqa
 from .services.print_service import print_cards, print_snapshot  # noqa  (PyQt6 импортируется лениво)
 
 _EL_COLS = ("type", "x", "y", "w", "h", "field_name", "static_value", "style_json", "side", "z_order")
+import sqlite3 as _sqlite3
 
 def _row(r):
     if r is None: return None
@@ -66,9 +68,10 @@ def create_person(con, fields: dict, photo_path: str | None = None, photo_config
     Значения приводятся к data_type полей (см. _typed; неверные — FieldValueWarning, сохраняются как есть)."""
     fields, photo_path = _typed(con, fields, photo_path)
     with con:
-        return con.execute("INSERT INTO persons(fields_json, photo_path, photo_config, print_mark) VALUES (?,?,?,?)",
-                           (json.dumps(fields or {}, ensure_ascii=False), photo_path,
-                            normalize(photo_config), int(bool(print_mark)))).lastrowid
+        n = _db.now_iso()
+        return con.execute("INSERT INTO persons(fields_json, photo_path, photo_config, print_mark, created_at, updated_at) "
+                           "VALUES (?,?,?,?,?,?)", (json.dumps(fields or {}, ensure_ascii=False), photo_path,
+                                                    normalize(photo_config), int(bool(print_mark)), n, n)).lastrowid
 
 def update_person(con, person_id: int, fields: dict | None = None, photo_path=..., print_mark=None,
                   merge: bool = True) -> bool:
@@ -85,7 +88,7 @@ def update_person(con, person_id: int, fields: dict | None = None, photo_path=..
     if photo_path is not ...: sets.append("photo_path=?"); args.append(photo_path)
     if print_mark is not None: sets.append("print_mark=?"); args.append(int(bool(print_mark)))
     if not sets: return True
-    with con: con.execute(f"UPDATE persons SET {','.join(sets)}, updated_at=datetime('now') WHERE id=?", (*args, person_id))
+    with con: con.execute(f"UPDATE persons SET {','.join(sets)}, updated_at=? WHERE id=?", (*args, _db.now_iso(), person_id))
     return True
 
 def delete_person(con, person_id: int) -> bool:
@@ -94,7 +97,7 @@ def delete_person(con, person_id: int) -> bool:
 def update_photo_config(con, person_id: int, config: str | PhotoConfig) -> str:
     """Сохранить photo_config (строка или PhotoConfig). Возвращает записанную нормализованную строку."""
     s = config.dump() if isinstance(config, PhotoConfig) else normalize(config)
-    with con: con.execute("UPDATE persons SET photo_config=?, updated_at=datetime('now') WHERE id=?", (s, person_id))
+    with con: con.execute("UPDATE persons SET photo_config=?, updated_at=? WHERE id=?", (s, _db.now_iso(), person_id))
     return s
 
 def list_fields(con) -> list[dict]:
@@ -124,10 +127,11 @@ def set_field_type(con, name: str, data_type: str) -> None:
     with con: con.execute("UPDATE person_fields SET data_type=? WHERE name=?", (check_type(data_type), name))
 
 # ---------- template_elements ----------
-def list_elements(con, side: str | None = None) -> list[dict]:
-    """Элементы шаблона по z_order; 'style' — dict из style_json."""
-    q = "SELECT * FROM template_elements" + (" WHERE side=?" if side else "") + " ORDER BY side, z_order, id"
-    return [_row(r) for r in con.execute(q, (side,) if side else ())]
+def list_elements(con, side: str | None = None, *, template_id: int | None = None) -> list[dict]:
+    """Элементы шаблона по z_order; 'style' — dict из style_json. Этап 15: template_id=None — активный шаблон."""
+    tid = template_id or active_template_id(con)
+    q = "SELECT * FROM template_elements WHERE template_id=?" + (" AND side=?" if side else "") + " ORDER BY side, z_order, id"
+    return [_row(r) for r in con.execute(q, (tid, side) if side else (tid,))]
 
 def _el_vals(d):
     d = dict(d)
@@ -138,10 +142,18 @@ def _el_vals(d):
     return {k: v for k, v in d.items() if k in _EL_COLS}
 
 def create_element(con, type: str, x: int, y: int, w: int, h: int, side: str = "front", z_order: int = 0,
-                   field_name: str | None = None, static_value: str | None = None, style: dict | None = None) -> int:
-    """Добавить элемент (type: text|field|photo|image|rect|qr|barcode|line; у line w,h — вектор, может быть ≤0, но не (0,0)). Нарушение CHECK → sqlite3.IntegrityError."""
+                   field_name: str | None = None, static_value: str | None = None, style: dict | None = None,
+                   *, template_id: int | None = None, auto_photo_field: bool = True) -> int:
+    """Добавить элемент (type: text|field|photo|image|rect|qr|barcode|line; у line w,h — вектор, может быть ≤0, но не (0,0)). Нарушение CHECK → sqlite3.IntegrityError.
+    Этап 15: элемент попадает в template_id (None — активный шаблон). type='photo' без field_name и
+    auto_photo_field=True → создаётся (если нет) поле «Фото» типа image и объект сразу с ним связан (ensure_photo_field).
+    type='field' без field_name → IntegrityError (поле без связи бывает только после unlink_field)."""
+    if type == "field" and not field_name: raise _sqlite3.IntegrityError("элемент 'field' требует field_name")
+    if type == "photo" and not field_name and auto_photo_field: field_name = ensure_photo_field(con)
+    tid = template_id or active_template_id(con)
     v = _el_vals(dict(type=type, x=x, y=y, w=w, h=h, side=side, z_order=z_order, field_name=field_name,
                       static_value=static_value, style_json=style or {}))
+    v["template_id"] = tid
     with con:
         return con.execute(f"INSERT INTO template_elements({','.join(v)}) VALUES ({','.join('?'*len(v))})",
                            tuple(v.values())).lastrowid
@@ -157,14 +169,17 @@ def update_element(con, element_id: int, **changes) -> bool:
 def delete_element(con, element_id: int) -> bool:
     with con: return con.execute("DELETE FROM template_elements WHERE id=?", (element_id,)).rowcount > 0
 
-def set_background(con, side: str, color: str = "#FFFFFF", image_path: str | None = None) -> None:
-    """Фон стороны: цвет и/или картинка (растягивается cover)."""
-    with con: con.execute("INSERT INTO template_backgrounds(side,image_path,color) VALUES (?,?,?) ON CONFLICT(side) "
-                          "DO UPDATE SET image_path=excluded.image_path, color=excluded.color", (side, image_path, color))
+def set_background(con, side: str, color: str = "#FFFFFF", image_path: str | None = None, *, template_id: int | None = None) -> None:
+    """Фон стороны: цвет и/или картинка (растягивается cover). Этап 15: шаблона template_id (None — активного)."""
+    tid = template_id or active_template_id(con)
+    with con: con.execute("INSERT INTO template_backgrounds2(template_id,side,image_path,color) VALUES (?,?,?,?) "
+                          "ON CONFLICT(template_id,side) DO UPDATE SET image_path=excluded.image_path, color=excluded.color",
+                          (tid, side, image_path, color))
 
-def get_background(con, side: str) -> dict | None:
-    r = con.execute("SELECT * FROM template_backgrounds WHERE side=?", (side,)).fetchone()
-    return dict(r) if r else None
+def get_background(con, side: str, *, template_id: int | None = None) -> dict | None:
+    """→ {'side','image_path','color'} или None."""
+    from .render import load_background
+    return load_background(con, side, template_id)
 
 # ---------- этап 12 (сигнатуры — reports/stage-12-actions.md §3) ----------
 from pathlib import Path as _Path
@@ -191,7 +206,7 @@ def delete_field(con, name: str, *, unlink: bool = True) -> bool:
     """Удалить поле из person_fields (данные в fields_json не трогаются). Привязанные элементы:
     unlink=True — отвязываются (unlink_field); unlink=False — ValueError, если поле используется. Нет поля → False."""
     if name not in _field_names(con): return False
-    linked = list_field_links(con).get(name, [])
+    linked = [{"element_id": r[0]} for r in con.execute("SELECT id FROM template_elements WHERE field_name=?", (name,))]   # все шаблоны
     if linked and not unlink: raise ValueError(f"поле {name!r} используется элементами {[e['element_id'] for e in linked]}")
     with con:
         for e in linked: _unlink(con, e["element_id"], None)
@@ -200,23 +215,37 @@ def delete_field(con, name: str, *, unlink: bool = True) -> bool:
 
 # --- связь поля и объектов шаблона ---
 def list_field_links(con) -> dict[str, list[dict]]:
-    """field_name → [{'element_id', 'id' (= element_id), 'type', 'side', 'label'}]; label — static_value или ''."""
+    """field_name → [{'element_id', 'id' (= element_id), 'type', 'side', 'label'}]; label — static_value или ''.
+    Этап 15: только объекты активного шаблона."""
     out: dict[str, list[dict]] = {}
     for r in con.execute("SELECT id, type, side, field_name, static_value FROM template_elements "
-                         "WHERE field_name IS NOT NULL ORDER BY field_name, id"):
+                         "WHERE field_name IS NOT NULL AND template_id=? ORDER BY field_name, id", (active_template_id(con),)):
         out.setdefault(r[3], []).append({"element_id": r[0], "id": r[0], "type": r[1], "side": r[2], "label": r[4] or ""})
     return out
 
 _LINKABLE = ("text", "field", "barcode", "qr", "photo")
 
-def link_field(con, element_id: int, field_name: str) -> bool:
+DEFAULT_LINK_GEOMETRY = {"photo": (40, 120, 236, 295), "field": (320, 120, 600, 80)}   # px холста; 236×295 ≈ 20×25 мм
+
+def link_field(con, element_id: int | None, field_name: str, *, side: str = "front",
+               template_id: int | None = None) -> bool | int:
     """Привязать элемент к полю (поле должно существовать, иначе ValueError).
     photo ↔ только поле data_type='image'; text|field|barcode|qr ↔ только не-image поля; прочее → ValueError.
-    text → field (static_value очищается, style и геометрия сохраняются). Нет элемента → False."""
+    text → field (static_value очищается, style и геометрия сохраняются). Нет элемента → False.
+    Этап 15 («Связать», объекта нет): element_id=None → создаётся объект на стороне side шаблона template_id
+    (None — активный): image-поле → 'photo', иначе 'field' (геометрия DEFAULT_LINK_GEOMETRY, поверх остальных)
+    → id нового объекта (int). С element_id — как раньше, True/False."""
     _need_field(con, field_name)
-    r = con.execute("SELECT type FROM template_elements WHERE id=?", (element_id,)).fetchone()
+    if element_id is None:
+        ft = con.execute("SELECT data_type FROM person_fields WHERE name=?", (field_name,)).fetchone()[0] or "text"
+        t = "photo" if ft == "image" else "field"
+        tid = template_id or active_template_id(con)
+        z = con.execute("SELECT COALESCE(MAX(z_order), -1) + 1 FROM template_elements WHERE template_id=? AND side=?",
+                        (tid, side)).fetchone()[0]
+        return create_element(con, t, *DEFAULT_LINK_GEOMETRY[t], side=side, z_order=z, field_name=field_name, template_id=tid)
+    r = con.execute("SELECT type, field_name FROM template_elements WHERE id=?", (element_id,)).fetchone()
     if r is None: return False
-    t = r[0]
+    t, was_unlinked = r[0], not r[1]
     if t not in _LINKABLE: raise ValueError(f"элемент типа «{t}» нельзя привязать к полю")
     ft = con.execute("SELECT data_type FROM person_fields WHERE name=?", (field_name,)).fetchone()[0] or "text"
     if t == "photo" and ft != "image":
@@ -224,7 +253,7 @@ def link_field(con, element_id: int, field_name: str) -> bool:
     if t != "photo" and ft == "image":
         raise ValueError(f"поле «{field_name}» типа «изображение» можно привязать только к элементу «фото», а не к «{t}»")
     with con:
-        if t == "text":
+        if t == "text" or (t == "field" and was_unlinked):   # этап 15: отвязанный 'field' — как text
             con.execute("UPDATE template_elements SET type='field', field_name=?, static_value=NULL WHERE id=?",
                         (field_name, element_id))
         else:
@@ -232,14 +261,14 @@ def link_field(con, element_id: int, field_name: str) -> bool:
     return True
 
 def _unlink(con, element_id, static_value):
-    sv = "COALESCE(?, static_value)"
-    return con.execute(f"UPDATE template_elements SET field_name=NULL, static_value={sv}, "
-                       "type=CASE WHEN type='field' THEN 'text' ELSE type END WHERE id=?",
+    return con.execute("UPDATE template_elements SET field_name=NULL, static_value=COALESCE(?, static_value) WHERE id=?",
                        (static_value, element_id)).rowcount > 0
 
 def unlink_field(con, element_id: int, static_value: str | None = None) -> bool:
-    """Отвязать: field → text, barcode/qr/photo остаются своим типом (photo снова берёт persons.photo_path);
-    static_value (если задан) записывается, иначе прежний сохраняется. Нет элемента → False."""
+    """Отвязать (этап 15): объект остаётся своего типа (field/photo/barcode/qr), field_name=NULL.
+    Отвязанный 'field' рисует static_value (если есть), иначе ничего; photo — persons.photo_path.
+    static_value (если задан) записывается, иначе прежний сохраняется. Нет элемента → False.
+    Поле в person_fields не удаляется."""
     with con: return _unlink(con, element_id, static_value)
 
 # --- карты ---
@@ -251,8 +280,9 @@ def delete_persons(con, ids) -> int:
 def clear_printed(con, ids) -> int:
     """Снять статус «напечатано» (printed_at=NULL); print_mark не трогает. → число изменённых."""
     ids = _ids_list(ids)
-    with con: return sum(con.execute("UPDATE persons SET printed_at=NULL, updated_at=datetime('now') "
-                                     "WHERE id=? AND printed_at IS NOT NULL", (i,)).rowcount for i in ids)
+    n = _db.now_iso()
+    with con: return sum(con.execute("UPDATE persons SET printed_at=NULL, updated_at=? "
+                                     "WHERE id=? AND printed_at IS NOT NULL", (n, i)).rowcount for i in ids)
 
 # --- query_persons ---
 QUERY_OPS = ("eq", "ne", "contains", "startswith", "empty", "not_empty")
@@ -384,3 +414,25 @@ from .services.photo_edit import get_photo_frame_spec, photo_edit_target  # noqa
 from .services.photo_edit import (DEFAULT_PHOTO_EDIT, apply_photo_edit, detect_face_crop,  # noqa: F401,E402
                                   get_photo_edit_defaults, set_photo_edit_defaults, apply_and_save_photo,
                                   load_photo_for_edit)
+
+# ---------- этап 15 ----------
+def ensure_photo_field(con) -> str:
+    """Поле «Фото» типа image: есть — его имя; нет — создаётся (label «Фото», в конце списка).
+    Имя «Фото» занято полем другого типа → создаётся «Фото 2» (3, …). → имя поля."""
+    base = _db.PHOTO_FIELD; name = base; n = 1
+    while True:
+        r = con.execute("SELECT data_type FROM person_fields WHERE name=?", (name,)).fetchone()
+        if r is None: break
+        if r[0] == "image": return name
+        n += 1; name = f"{base} {n}"
+    so = con.execute("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM person_fields").fetchone()[0]
+    upsert_field(con, name, name, so, data_type="image")
+    return name
+
+from .services.templates import (list_templates, get_template, get_active_template, set_active_template,  # noqa: F401,E402
+                                 create_template, rename_template, delete_template, save_template,
+                                 get_template_style, set_template_style, update_element_style, list_font_families,
+                                 begin_template_edit, commit_template_edit, cancel_template_edit, get_template_edit_state)
+from .services.photo_edit import (get_photo_view, set_photo_view, render_photo, portrait_params,  # noqa: F401,E402
+                                  autoeffect_params)
+from .services.search import parse_search, search_persons  # noqa: F401,E402

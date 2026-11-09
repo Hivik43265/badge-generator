@@ -93,17 +93,32 @@ def _export_db(con, path, ids, photo_dir):
                         if d.get(k) in (None, ""): continue
                         d[k], ok = _copy_file(d[k], photo_dir, pdir, used, warn, resolve_photo_path(r, k, photo_dir)); copied += ok
                     fj = json.dumps(d, ensure_ascii=False)
-                new.execute("INSERT INTO persons(fields_json,photo_path,photo_config,print_mark,printed_at,created_at,updated_at) "
+                npid = new.execute("INSERT INTO persons(fields_json,photo_path,photo_config,print_mark,printed_at,created_at,updated_at) "
                             "VALUES (?,?,?,?,?,?,?)", (fj, pp, r["photo_config"], r["print_mark"],
-                                                       r["printed_at"], r["created_at"], r["updated_at"]))
-            cols = "id,type,x,y,w,h,field_name,static_value,style_json,side,z_order"
+                                                       r["printed_at"], r["created_at"], r["updated_at"])).lastrowid
+                for v in _q(con, "SELECT field_name, params_json, updated_at FROM person_photo_views WHERE person_id=?", (r["id"],)):
+                    new.execute("INSERT INTO person_photo_views(person_id, field_name, params_json, updated_at) VALUES (?,?,?,?)",
+                                (npid, v["field_name"], v["params_json"], v["updated_at"]))
+            # этап 15: все шаблоны (элементы, фоны, стиль) и активный шаблон; в новой БД уже есть пустой «Основной»
+            tmap, first = {}, new.execute("SELECT id FROM templates ORDER BY id LIMIT 1").fetchone()[0]
+            for t in _q(con, "SELECT * FROM templates ORDER BY id"):
+                if not tmap:
+                    new.execute("UPDATE templates SET name=?, style_json=?, created_at=?, updated_at=? WHERE id=?",
+                                (t["name"], t["style_json"], t["created_at"], t["updated_at"], first)); tmap[t["id"]] = first
+                else:
+                    tmap[t["id"]] = new.execute("INSERT INTO templates(name, style_json, created_at, updated_at) VALUES (?,?,?,?)",
+                                                (t["name"], t["style_json"], t["created_at"], t["updated_at"])).lastrowid
+            cols = "id,type,x,y,w,h,field_name,static_value,style_json,side,z_order,template_id"
             for e in _q(con, f"SELECT {cols} FROM template_elements ORDER BY id"):
-                e = dict(e)
+                e = dict(e); e["template_id"] = tmap.get(e["template_id"], first)
                 if e["type"] == "image": e["static_value"], ok = _copy_file(e["static_value"], photo_dir, pdir, used, warn); copied += ok
-                new.execute(f"INSERT INTO template_elements({cols}) VALUES ({','.join('?' * 11)})", tuple(e.values()))
-            for b in _q(con, "SELECT side,image_path,color FROM template_backgrounds"):
+                new.execute(f"INSERT INTO template_elements({cols}) VALUES ({','.join('?' * 12)})", tuple(e.values()))
+            for b in _q(con, "SELECT template_id,side,image_path,color FROM template_backgrounds2"):
                 ip, ok = _copy_file(b["image_path"], photo_dir, pdir, used, warn); copied += ok
-                new.execute("INSERT INTO template_backgrounds(side,image_path,color) VALUES (?,?,?)", (b["side"], ip, b["color"]))
+                new.execute("INSERT INTO template_backgrounds2(template_id,side,image_path,color) VALUES (?,?,?,?)",
+                            (tmap.get(b["template_id"], first), b["side"], ip, b["color"]))
+            new.execute("UPDATE project_settings SET value=? WHERE key='active_template_id'",
+                        (str(tmap.get(db.active_template_id(con), first)),))
     finally:
         new.close()
     return {"path": out, "format": "db", "rows": len(ps), "photo_dir": pdir if copied else None,
