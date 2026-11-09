@@ -63,7 +63,10 @@ class PersonsModel(QAbstractTableModel):
         cols = [("mark", "Печать", None)]
         if self.template_logo or any(p["fields"].get("logo") for p in self.rows):
             cols.append(("logo", "Логотип", None))
-        if any(p.get("photo_path") for p in self.rows):
+        img_names = [n for n, typ in self.types.items() if typ == "image" and n != "logo"]
+        if any(p.get("photo_path") for p in self.rows) or any(
+            (p.get("fields") or {}).get(n) for p in self.rows for n in img_names
+        ):
             cols.append(("photo", "Фото", None))
         for n in names:                                   # D19: ровно list_fields(), в его порядке
             if n != "logo": cols.append(("field", label[n] or n, n))
@@ -283,12 +286,39 @@ class FilterBlock(QWidget):
         ops = dict(CONDITIONS); j = " И " if self.join_value == "and" else " ИЛИ "
         self.expr.setText(j.join(term_text(names.get(t["field"], t["field"]), ops[t["op"]], t.get("value")) for t in self.terms))
 
+    SEARCH_OPS = {"eq": "=", "ne": "!=", "contains": "~", "startswith": "^", "empty": "пусто", "not_empty": "непусто"}
+
+    def search_text(self):
+        """terms → строка для Backend parse_search/search_persons (автоподстановка остаётся в формате «<поле> оператор [значение]»)."""
+        if not self.terms: return self.expr.text().strip()
+        names = {self.field.itemData(i): self.field.itemText(i) for i in range(self.field.count())}
+        parts = []
+        for t in self.terms:
+            lab = names.get(t["field"], t["field"])
+            field = f'"{lab}"' if any(c.isspace() for c in lab) else lab
+            op = self.SEARCH_OPS[t["op"]]
+            if t["op"] in NO_VALUE: parts.append(f"{field} {op}"); continue
+            val = str(t.get("value") or "")
+            if any(c in val for c in ' ()="'): val = '"' + val.replace('"', r'"') + '"'
+            parts.append(f"{field} {op} {val}")
+        return (" и " if self.join_value == "and" else " или ").join(parts)
+
     def _parse_expr(self):
-        """Разбор отредактированного выражения обратно в terms (только UI, без SQL). Ошибка — подсказка у поля."""
+        """Разбор выражения: сначала формат «<поле> оператор [значение]», иначе Backend parse_search."""
         txt = self.expr.text().strip()
-        try: terms, join = parse_expr(txt, {self.field.itemText(i): self.field.itemData(i) for i in range(self.field.count())})
-        except ValueError as e:
-            self.parse_error = str(e); self.expr.setStyleSheet("border:1px solid #B23A3A;"); self.expr.setToolTip(str(e)); return None
+        fields = {self.field.itemText(i): self.field.itemData(i) for i in range(self.field.count())}
+        try:
+            terms, join = parse_expr(txt, fields)
+        except ValueError as e_ui:
+            api = getattr(self.records, "api", None)
+            if api is not None and hasattr(api, "parse_search"):
+                try:
+                    w = api.parse_search(txt) if txt else None
+                except ValueError as e:
+                    self.parse_error = str(e); self.expr.setStyleSheet("border:1px solid #B23A3A;"); self.expr.setToolTip(str(e)); return None
+                self.parse_error = None; self.expr.setStyleSheet(""); self.expr.setToolTip("")
+                return w
+            self.parse_error = str(e_ui); self.expr.setStyleSheet("border:1px solid #B23A3A;"); self.expr.setToolTip(str(e_ui)); return None
         self.parse_error = None; self.expr.setStyleSheet(""); self.expr.setToolTip("")
         self.terms, self.join_value = terms, join; return self.where()
 
@@ -330,14 +360,17 @@ class RecordsWidget(QWidget):
         return dict(PRINTED_FILTERS)[value]
 
     def apply_filter(self):
-        """Применить выражение блока фильтра через Backend query_persons (без SQL в UI)."""
-        where = self.filter.where()
-        if where is None:
+        """Применить выражение через Backend parse_search / search_persons (без SQL в UI)."""
+        parsed = self.filter._parse_expr()
+        txt = self.filter.search_text() if self.filter.terms else self.filter.expr.text().strip()
+        if self.filter.parse_error:
+            QMessageBox.warning(self, "Поиск", self.filter.parse_error); return None
+        if not txt:
             self.proxy.set_ids(None); return None
         try:
-            ids = [p["id"] for p in self.api.query_persons(where)]
+            ids = [p["id"] for p in self.api.search_persons(txt)]
         except ValueError as e:
-            QMessageBox.warning(self, "Фильтр", f"Некорректный фильтр: {e}"); return None
+            QMessageBox.warning(self, "Поиск", f"Некорректный поиск: {e}"); return None
         self.proxy.set_ids(ids); return ids
 
     def visible_ids(self):

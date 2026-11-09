@@ -2,31 +2,42 @@
 
 Яркость / Контраст / Масштаб / Вращать — ползунок + поле; превью только через Backend apply_photo_edit (адаптер
 backend_api; исходник только через load_photo_for_edit). Пунктирная рамка кадрирования с пропорциями фото-элемента,
-перетаскивание и изменение размера за углы с сохранением пропорций. «Портрет» — detect_face_crop Backend.
+перетаскивание и изменение размера за углы с сохранением пропорций. Координаты рамки (crop) —
+в пикселях изображения после EXIF-поворота, масштаба и вращения (не пиксели исходного файла).
+«Портрет» — detect_face_crop / portrait_params Backend.
 «Применить» → save_photo → относительный путь (в значение поля типа image). Внизу только «Применить» / «Отмена».
 """
 import json
 from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF
-from PyQt6.QtGui import QPen, QColor, QPixmap, QAction, QTransform
+from PyQt6.QtGui import QPen, QColor, QPixmap, QAction, QTransform, QPainterPath, QBrush
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QSlider, QSpinBox, QCheckBox,
                              QPushButton, QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsPixmapItem, QFrame)
 from .backend_api import (pil_to_qimage, PHOTO_EDIT_DEFAULTS, photo_edit_available, face_detect_available,
-                          open_image, apply_photo_edit, detect_face_crop, image_png_bytes,
-                          apply_and_save_available, NO_TARGET_FN, NO_TARGET)
+                          open_image, apply_photo_edit, apply_photo_view, detect_face_crop, image_png_bytes,
+                          apply_and_save_available, NO_TARGET_FN, NO_TARGET,
+                          portrait_params, autoeffect_params)
 
 editor_hook = None   # тесты: editor_hook(dialog) вместо exec(); возвращает результат exec
 
 
 class CropFrame(QGraphicsRectItem):
-    """Пунктирная рамка: перетаскивание целиком; углы — размер с сохранением пропорций."""
+    """Пунктирная рамка: перетаскивание целиком; углы — размер с сохранением пропорций.
+    Снаружи рамки — полупрозрачная затемняющая маска (только отрисовка, params/рендер карточки не трогает)."""
     H = 10
+    MASK = QColor(0, 0, 0, 128)   # ~50% чёрный
 
     def __init__(self, rect, aspect, bounds):
-        super().__init__(rect); self.aspect, self.bounds, self._mode = aspect, bounds, None
+        super().__init__(rect); self.aspect, self.bounds, self._mode = aspect, QRectF(bounds), None
         pen = QPen(QColor("#1F4FFF")); pen.setStyle(Qt.PenStyle.DashLine); pen.setWidth(0); pen.setCosmetic(True)
-        self.setPen(pen); self.setAcceptHoverEvents(True); self.setZValue(10)
+        self.setPen(pen); self.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        self.setAcceptHoverEvents(True); self.setZValue(10)
 
     PEN_PX = 2   # толщина пера в пикселях экрана
+
+    def set_bounds(self, b):
+        b = QRectF(b)
+        if b == self.bounds: return
+        self.prepareGeometryChange(); self.bounds = b
 
     def _px(self):
         """Размер 1 пикселя экрана в единицах сцены (масштаб первого вида)."""
@@ -34,11 +45,20 @@ class CropFrame(QGraphicsRectItem):
         return 1 / max(v[0].transform().m11(), 1e-6) if v else 1.0
 
     def boundingRect(self):
-        m = self.PEN_PX * self._px(); return self.rect().adjusted(-m, -m, m, m)
+        """Вся область фото + перо: иначе маска за пределами rect() не перерисуется."""
+        m = self.PEN_PX * self._px()
+        return self.bounds.united(self.rect()).adjusted(-m, -m, m, m)
 
     def paint(self, painter, option, widget=None):
-        """D42: все 4 стороны видны — прямоугольник в пикселях устройства, сжатый внутрь на половину пера
-        (у края изображения/вида верх и лево не обрезаются)."""
+        """Затемнение вне crop (OddEven: bounds − rect) + D42 пунктир в пикселях устройства."""
+        # маска: быстро, без правки пикселей изображения
+        hole = self.rect().intersected(self.bounds)
+        path = QPainterPath(); path.setFillRule(Qt.FillRule.OddEvenFill)
+        path.addRect(self.bounds); path.addRect(hole)
+        painter.save()
+        painter.setPen(Qt.PenStyle.NoPen); painter.setBrush(QBrush(self.MASK))
+        painter.drawPath(path); painter.restore()
+        # пунктир рамки
         dev = painter.worldTransform().mapRect(self.rect()); h = self.PEN_PX / 2
         r = dev.adjusted(h, h, -h, -h)
         painter.save(); painter.setWorldTransform(QTransform())
@@ -97,19 +117,43 @@ class PhotoEditor(QDialog):
     SLIDERS = (("brightness", "Яркость", -50, 50, ""), ("contrast", "Контраст", -50, 50, ""),
                ("scale", "Масштаб", 10, 400, " %"), ("rotate", "Вращать", -180, 180, "°"))
 
-    def __init__(self, path, api=None, _aspect_ignored=None, parent=None, *, field_name=None, person_id=None, session=None):
-        """api — BackendAPI; field_name — поле image записи. Пропорции рамки — ТОЛЬКО Backend photo_edit_target(field_name)
-        (третий позиционный аргумент оставлен для совместимости вызовов и не используется)."""
+    def __init__(self, path, api=None, _aspect_ignored=None, parent=None, *, field_name=None, person_id=None, session=None, element_id=None):
+        """api — BackendAPI; element_id — фото-элемент (двойной щелчок). Пропорции рамки — ТОЛЬКО Backend
+        get_photo_editor_state / photo_edit_target(..., element_id=) (третий позиционный аргумент не используется)."""
         super().__init__(parent); self.setWindowTitle("Редактировать изображение"); self.resize(520, 640)
         self.path, self.api, self.result_path = path, api, None
         self.field_name, self.person_id, self.session = field_name, person_id, session   # session — Backend PhotoSession формы
-        self.target, self.aspect, self.target_error = None, None, None
+        self.element_id, self._autoeffect_baked = element_id, False
+        self.target, self.aspect, self.target_error, self._editor_state = None, None, None, None
+        self._crop, self._live_preview = None, False
+        if person_id is not None and api is not None and hasattr(api, "get_photo_editor_state"):
+            try:
+                eid = element_id
+                if eid is None and field_name:
+                    try: spec = api.photo_edit_target(field_name)
+                    except TypeError: spec = api.photo_edit_target(field_name)
+                    if spec: eid = spec.get("element_id")
+                self._editor_state = api.get_photo_editor_state(person_id, eid)
+            except (ValueError, TypeError, LookupError):
+                self._editor_state = None
         try:
-            self.target = api.photo_edit_target(field_name) if api is not None else None
+            if self._editor_state and self._editor_state.get("frame"):
+                self.target = self._editor_state["frame"]
+            elif api is not None:
+                try:
+                    self.target = api.photo_edit_target(field_name, element_id=element_id)
+                except TypeError:
+                    self.target = api.photo_edit_target(field_name)
             if not self.target or not self.target.get("aspect"): self.target, self.target_error = None, _FREE_FRAME   # D46
             else: self.aspect = float(self.target["aspect"])
         except LookupError: self.target_error = NO_TARGET_FN + " — рамка свободная"
         except ValueError as e: self.target_error = f"{NO_TARGET}: {e}"
+        if self._editor_state:
+            if self._editor_state.get("element_id") is not None:
+                self.element_id = self._editor_state["element_id"]
+            if "field_name" in self._editor_state and self._editor_state["field_name"] is not None:
+                self.field_name = self._editor_state["field_name"]
+        if self.element_id is None and self.target: self.element_id = self.target.get("element_id")
         self.load_error = None
         try: self.src = open_image(path, getattr(api, "base_dir", None))
         except LookupError as e: self.src, self.load_error = None, str(e)
@@ -118,14 +162,14 @@ class PhotoEditor(QDialog):
         grid = QGridLayout(); self.sl, self.sp = {}, {}
         for i, (k, lab, lo, hi, suf) in enumerate(self.SLIDERS):
             s = QSlider(Qt.Orientation.Horizontal); s.setRange(lo, hi); sp = QSpinBox(); sp.setRange(lo, hi); sp.setSuffix(suf)
-            s.valueChanged.connect(sp.setValue); sp.valueChanged.connect(s.setValue); sp.valueChanged.connect(lambda *_: self._timer.start())
+            s.valueChanged.connect(sp.setValue); sp.valueChanged.connect(s.setValue)
+            sp.valueChanged.connect(lambda *_: self._timer.start()); sp.valueChanged.connect(lambda *_, k=k: self._on_slider(k))
             grid.addWidget(QLabel(lab), i, 0, Qt.AlignmentFlag.AlignRight); grid.addWidget(s, i, 1); grid.addWidget(sp, i, 2)
             self.sl[k], self.sp[k] = s, sp
         self.portrait, self.autoeffect = QCheckBox("Портрет"), QCheckBox("Автоэффект")
-        self.portrait.setToolTip("Рамка по лицу (поиск лица — Backend)"); self.portrait.toggled.connect(lambda on: on and self.find_face())
-        self.autoeffect.toggled.connect(lambda *_: self._timer.start())
-        self.portrait.toggled.connect(lambda on: self.show_applied("portrait", on))
-        self.autoeffect.toggled.connect(lambda on: self.show_applied("autoeffect", on))
+        self.portrait.setToolTip("Рамка по лицу (поиск лица — Backend)")
+        self.portrait.toggled.connect(self._on_portrait)
+        self.autoeffect.toggled.connect(self._on_autoeffect)
         self.b_setdef, self.b_def = QPushButton("Установить по умолчанию"), QPushButton("По умолчанию")
         self.b_setdef.clicked.connect(lambda: self.save_defaults()); self.b_def.clicked.connect(lambda: self.load_defaults())
         opts = QHBoxLayout(); opts.addStretch(1); opts.addWidget(self.portrait); opts.addSpacing(30); opts.addWidget(self.autoeffect); opts.addStretch(1)
@@ -151,17 +195,88 @@ class PhotoEditor(QDialog):
             for wdg in (*self.sl.values(), *self.sp.values(), self.portrait, self.autoeffect, self.b_setdef, self.b_def, self.b_apply):
                 wdg.setEnabled(False)
             self.base_status = self.load_error; self.status.setText(self.load_error); return
-        self.load_defaults(preview=False); self.update_preview(); self.reset_frame()
-        if self.portrait.isChecked() and self.aspect is not None: self.find_face()      # D41: «Портрет» из умолчаний → рамка по лицу сразу
+        self._load_initial()
 
-    # ---- этап 15 п.6: «Портрет» / «Автоэффект» записывают применённые значения прямо в ползунок и поле ----
-    # TODO stage15: МАКЕТ. Значения — заглушка MOCK_APPLIED; реальные значения вернёт Backend позже.
-    MOCK_APPLIED = {"autoeffect": {"brightness": 12, "contrast": 18}, "portrait": {"scale": 135, "rotate": 0}}
+    def _load_initial(self):
+        view = None
+        if self._editor_state and self._editor_state.get("params") is not None:
+            view = self._editor_state["params"]
+        elif self.person_id is not None and self.api is not None and hasattr(self.api, "get_photo_view"):
+            try: view = self.api.get_photo_view(self.person_id, self.field_name)
+            except ValueError: view = None
+        if view:
+            self._crop = view.get("crop")
+            self.set_params(view); self._live_preview = False
+            self.update_preview()
+            # crop — в пикселях после EXIF/scale/rotate (не исходного файла); рамка = этот crop
+            if view.get("crop"):
+                self.set_crop(*view["crop"])
+            elif self.portrait.isChecked() and self.aspect is not None:
+                self.apply_portrait()
+            else:
+                self.reset_frame()
+            return
+        self.load_defaults(preview=False); self.update_preview(); self.reset_frame()
+        if self.portrait.isChecked() and self.aspect is not None: self.apply_portrait()   # D41
+
+    def _on_slider(self, key):
+        if getattr(self, "_setting_params", False): return
+        self._live_preview = True
+        if key in ("brightness", "contrast") and self.autoeffect.isChecked():
+            self.autoeffect.blockSignals(True); self.autoeffect.setChecked(False); self.autoeffect.blockSignals(False)
+            self._autoeffect_baked = False
+        if key in ("scale", "rotate") and self.portrait.isChecked():
+            self.portrait.blockSignals(True); self.portrait.setChecked(False); self.portrait.blockSignals(False)
+
+    def _on_portrait(self, on):
+        if getattr(self, "_setting_params", False): return
+        self._live_preview = True
+        if on: self.apply_portrait()
+        else: self._timer.start()
+
+    def _on_autoeffect(self, on):
+        if getattr(self, "_setting_params", False): return
+        self._live_preview = True
+        if not on:
+            self._autoeffect_baked = False; self._timer.start(); return
+        if self.src is None: return
+        p = autoeffect_params(self.src, self.params(crop=False)) or {}
+        self._setting_params = True
+        try:
+            for k in ("brightness", "contrast"):
+                if k in p: self.sp[k].setValue(int(p[k]))
+            self.autoeffect.setChecked(True)    # галочка остаётся, даже если Backend вернул autoeffect=False
+        finally:
+            self._setting_params = False
+        self._autoeffect_baked = True; self._timer.start()
+
+    def apply_portrait(self):
+        """«Портрет»: Backend portrait_params → только crop (рамка) и scale; яркость/контраст/автоэффект не трогаем."""
+        if self.src is None or self.aspect is None: return False
+        if self.frame is None: self.reset_frame()
+        cur = self.params(crop=False)
+        p = portrait_params(self.src, self.aspect, cur)
+        if not p or not p.get("crop"):
+            self.portrait.blockSignals(True); self.portrait.setChecked(False); self.portrait.blockSignals(False)
+            self.status.setText("Лицо не найдено" + (f" ({self.base_status})" if not face_detect_available() else ""))
+            return False
+        # не set_params(p): иначе яркость/контраст/автоэффект перезапишутся (в т.ч. значениями автоэффекта)
+        self.portrait.blockSignals(True); self.portrait.setChecked(True); self.portrait.blockSignals(False)
+        if p.get("scale") is not None and int(p["scale"]) != int(self.sp["scale"].value()):
+            self._setting_params = True
+            try: self.sp["scale"].setValue(int(p["scale"]))
+            finally: self._setting_params = False
+        self._live_preview = True
+        self.set_crop(*p["crop"])
+        self.update_preview()
+        self.set_crop(*p["crop"])   # рамка после смены размера превью
+        self.status.setText(self.base_status); return True
 
     def show_applied(self, mode, on):
         if not on or getattr(self, "_setting_params", False): return {}
-        for k, v in self.MOCK_APPLIED[mode].items(): self.sp[k].setValue(v)      # ползунок синхронизируется сигналом
-        return dict(self.MOCK_APPLIED[mode])
+        if mode == "portrait": return {"ok": self.apply_portrait(), "element_id": self.element_id}
+        if mode == "autoeffect": self._on_autoeffect(True); return {k: self.sp[k].value() for k in ("brightness", "contrast")}
+        return {}
 
     # ---- параметры ----
     def params(self, crop=True):
@@ -195,21 +310,49 @@ class PhotoEditor(QDialog):
         self.set_params({**PHOTO_EDIT_DEFAULTS, **p})
         if preview:
             self.update_preview()
-            if self.portrait.isChecked() and self.frame is not None: self.find_face()
+            if self.portrait.isChecked() and self.frame is not None: self.apply_portrait()
+
+    def _preview_size(self):
+        """Размер рамки фото-элемента (width_px, height_px) из get_photo_editor_state()['frame'] / target."""
+        fr = (self._editor_state or {}).get("frame") if self._editor_state else None
+        if not fr: fr = self.target
+        if not fr: return None
+        if fr.get("size"):
+            w, h = fr["size"]
+            return (int(w), int(h)) if w and h else None
+        w, h = fr.get("width_px"), fr.get("height_px")
+        return (int(w), int(h)) if w and h else None
+
+    def _uses_frame_preview(self):
+        return self.person_id is not None and self._preview_size() is not None
 
     # ---- превью: только Backend ----
     def update_preview(self):
+        """Превью = исходник после яркости/контраста/масштаба/поворота БЕЗ crop.
+        Пунктирная рамка = реальный crop из params (то, что попадёт на карточку)."""
         if self.src is None: return False
-        try: self.img = apply_photo_edit(self.src, self.params(crop=False))
+        try:
+            pp = self.params(crop=False)
+            if getattr(self, "_autoeffect_baked", False): pp = {**pp, "autoeffect": False}
+            # crop не вшиваем в пиксели — иначе рамка становится декоративной ~80% поверх уже обрезанного кадра
+            self.img = apply_photo_edit(self.src, {**pp, "crop": None})
         except ValueError as e:
             self.status.setText(f"Ошибка правки: {e}"); return False
         if self.status.text().startswith("Ошибка правки") or self.target_error == _FREE_FRAME:
             self.status.setText(self.base_status)          # D46: текст о свободной рамке не затирается после превью
         self.pix.setPixmap(QPixmap.fromImage(pil_to_qimage(self.img)))
         b = QRectF(0, 0, self.img.width, self.img.height); self.scene.setSceneRect(b)
-        if self.frame is not None:
-            self.frame.bounds = b
-            if not b.contains(self.frame.rect()): self.reset_frame()
+        if self.frame is None:
+            self.reset_frame()
+        else:
+            self.frame.set_bounds(b)
+            if self._crop:
+                x, y, w, h = self._crop
+                r = QRectF(x, y, w, h).intersected(b)
+                if r.width() >= 1 and r.height() >= 1: self.frame.setRect(r)
+                else: self.reset_frame()
+            elif not b.contains(self.frame.rect()):
+                self.reset_frame()
         self.view.fitInView(b, Qt.AspectRatioMode.KeepAspectRatio)
 
     def resizeEvent(self, e):
@@ -227,14 +370,23 @@ class PhotoEditor(QDialog):
             if w > b.width() * 0.8: w = b.width() * 0.8; h = w / self.aspect
         r = QRectF(b.center().x() - w / 2, b.center().y() - h / 2, w, h)
         if self.frame is None: self.frame = CropFrame(r, self.aspect, b); self.scene.addItem(self.frame)
-        else: self.frame.setRect(r)
+        else: self.frame.set_bounds(b); self.frame.setRect(r)
 
     def crop(self):
-        if self.frame is None: return None
-        r = self.frame.rect(); return (int(round(r.x())), int(round(r.y())), int(round(r.width())), int(round(r.height())))
+        """Текущий кадр: из пунктирной рамки (она же попадает на карточку), иначе сохранённый _crop."""
+        if self.frame is not None:
+            r = self.frame.rect()
+            self._crop = (int(round(r.x())), int(round(r.y())), int(round(r.width())), int(round(r.height())))
+            return self._crop
+        return self._crop
 
     def set_crop(self, x, y, w, h):
-        self.frame.setRect(QRectF(x, y, w, h))      # рамка Backend как есть, без подгонки в UI
+        """crop Backend: px после EXIF, масштаба и вращения — совпадает с пунктирной рамкой на превью."""
+        self._crop = (int(x), int(y), int(w), int(h))
+        if self.frame is None: self.reset_frame()
+        if self.frame is not None:
+            self.frame.set_bounds(self.scene.sceneRect())
+            self.frame.setRect(QRectF(self._crop[0], self._crop[1], self._crop[2], self._crop[3]))
 
     def find_face(self):
         if self.src is None or self.frame is None or self.aspect is None: return False
@@ -256,14 +408,17 @@ class PhotoEditor(QDialog):
         if self.api is None:
             self.status.setText("Применить нельзя: нет открытого проекта"); return False
         p = self.params()
+        p_file = {**p, "autoeffect": False} if getattr(self, "_autoeffect_baked", False) else p
         try:
             if apply_and_save_available() and self.path:
                 kw = {"target_field": self.field_name} if self.field_name else {}   # D44: размер — только Backend
-                self.result_path = (self.session.apply_and_save_photo(self.path, p, **kw) if self.session is not None
-                                    else self.api.apply_and_save_photo(self.path, p, **kw))
+                self.result_path = (self.session.apply_and_save_photo(self.path, p_file, **kw) if self.session is not None
+                                    else self.api.apply_and_save_photo(self.path, p_file, **kw))
             else:
                 save = self.session.save_photo if self.session is not None else self.api.save_photo
-                self.result_path = save(image_png_bytes(apply_photo_edit(self.src, p)), person_id=None, ext="png")
+                self.result_path = save(image_png_bytes(apply_photo_edit(self.src, p_file)), person_id=None, ext="png")
+            if self.person_id is not None and hasattr(self.api, "set_photo_view"):
+                self.api.set_photo_view(self.person_id, p, self.field_name)
         except ValueError as e:
             self.status.setText(f"Фото не сохранено: {e}"); return False
         self.accept(); return True

@@ -156,8 +156,14 @@ class PhotoBlock(QWidget):
         from . import photo_editor as pe
         full = self._abs(self.path)
         if not self.path or not os.path.isfile(full) or self.api is None: return None
+        eid = None
+        try:
+            spec = self.api.photo_edit_target(self.field_name)
+            if spec: eid = spec.get("element_id")
+        except Exception:
+            eid = None
         d = self.editor = pe.PhotoEditor(full, self.api, None, self, field_name=self.field_name, person_id=self.person_id,
-                                             session=self.session)
+                                             session=self.session, element_id=eid)
         d.accepted.connect(lambda: self._edited(d))
         return pe.editor_hook(d) if pe.editor_hook is not None else d.exec()
 

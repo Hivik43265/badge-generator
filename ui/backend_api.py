@@ -14,6 +14,11 @@ from badge_backend.photo_config import PhotoConfig, DEFAULT as DEFAULT_PHOTO_CON
 from badge_backend.services.importer import read_table, ImportReport  # noqa: F401
 from badge_backend.services.headers import SYNONYMS, LABELS  # noqa: F401
 from badge_backend.api import MissingPhotosError  # noqa: F401
+from badge_backend.api import (
+    ProjectLockedError, RecoverableProjectError, ProjectSaveError,
+    UnsavedChangesError, TemplateEditActiveError,
+    open_project, create_project, recover, list_recoverable_sessions,
+)  # noqa: F401
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = _api.default_db_path(ROOT)   # README: <project_dir>/project.db
@@ -77,26 +82,56 @@ class BackendAPI:
         self.open_db(db_path, base_dir)
 
     # --- БД ---
-    def open_db(self, path, base_dir=None):
-        if self.con is not None:
-            self.con.close()
-        self.db_path = path if str(path) == ":memory:" else Path(path)
-        if hasattr(self, "_undo"): self.clear_history()
-        self.con = _api.connect(str(self.db_path))
-        # connect() применяет миграции; проверяем версию функцией Backend (без SQL в UI)
-        if self.schema_version() < _db.LATEST:
-            _db.migrate(self.con)
+    def open_db(self, path, base_dir=None, *, recover=None):
+        """Открыть/создать проект через ProjectSession: self.con — рабочая копия (session.con).
+        recover=None и есть несохранённая копия → RecoverableProjectError (диалог в UI)."""
+        if str(path) == ":memory:":
+            sess = open_project(":memory:")
+        else:
+            pth = Path(path)
+            sess = create_project(pth) if not pth.exists() else open_project(pth, recover=recover)
+        self.adopt_session(sess)
+        if base_dir: self.base_dir = str(base_dir)
         if self.schema_version() < _db.LATEST:
             raise RuntimeError(f"БД {path}: схема v{self.schema_version()}, требуется v{_db.LATEST}")
-        if base_dir:
-            self.base_dir = str(base_dir)
-        else:
-            self.base_dir = str(Path.cwd() if str(path) == ":memory:" else Path(path).resolve().parent)
+
+    def adopt_session(self, session):
+        """Подменить сессию (после recover / save_as). Старую закрывает без записи исходника."""
+        old = getattr(self, "session", None)
+        self.session = session
+        self.con = session.con
+        self.db_path = session.source_path if session.source_path is not None else Path(":memory:")
+        self.base_dir = str(session.base_dir)
+        if hasattr(self, "_undo"): self.clear_history()
+        if old is not None and old is not session:
+            self._release_session(old, persist=True)
 
     def schema_version(self) -> int:
         return get_schema_version(self.con)
 
+    def _release_session(self, sess, *, persist=True):
+        """Снять сессию. persist=True — записать исходник (как прежнее прямое соединение с .db)."""
+        if sess is None: return
+        try:
+            if persist and sess.con is not None and sess.source_path is not None and sess.is_dirty():
+                try:
+                    sess.save()
+                except TemplateEditActiveError:
+                    sess.save(commit_template=True)
+        except Exception:
+            pass
+        try:
+            sess.discard()
+        except Exception:
+            if sess.con is not None:
+                try: sess.con.close()
+                except Exception: pass
+
     def close(self):
+        sess = getattr(self, "session", None)
+        if sess is not None:
+            self._release_session(sess, persist=True)
+            self.session = None; self.con = None; return
         if self.con is not None:
             self.con.close(); self.con = None
 
@@ -222,18 +257,22 @@ class BackendAPI:
         return _api.query_persons(self.con, where, printed=printed, only_marked=only_marked, order_by=order_by)
     def clear_printed(self, ids): return _api.clear_printed(self.con, list(ids))
     def delete_persons(self, ids): return _api.delete_persons(self.con, list(ids))
-    def backup_db(self, dest): return _api.backup_db(self.con, dest)
     def vacuum_db(self): return _api.vacuum_db(self.con)
     def compact_and_backup(self, backup_dir): return _api.compact_and_backup(self.con, backup_dir)
     def restore_from(self, backup_path):
-        """Восстановить текущую БД из бэкапа: закрыть соединение → restore_db → открыть заново."""
+        """Восстановить в рабочую копию (исходник не трогать, dirty=True)."""
+        sess = getattr(self, "session", None)
+        if sess is not None:
+            sess.restore_from(backup_path); self.con = sess.con; return
         target = str(self.db_path)
         if target == ":memory:": raise ValueError("Временную БД в памяти восстановить нельзя")
         base = self.base_dir; self.close(); _api.restore_db(target, backup_path); self.open_db(target, base)
     def set_field_default(self, name, value): return _api.set_field_default(self.con, name, value)
     def delete_field(self, name, unlink=True): return _api.delete_field(self.con, name, unlink=unlink)
     def list_field_links(self): return _api.list_field_links(self.con)
-    def link_field(self, element_id, field_name): return _api.link_field(self.con, element_id, field_name)
+    def link_field(self, element_id, field_name, *, side="front"):
+        """element_id=None → Backend создаёт объект на стороне side и сразу связывает (этап 15)."""
+        return _api.link_field(self.con, element_id, field_name, side=side)
     def unlink_field(self, element_id, static_value=None): return _api.unlink_field(self.con, element_id, static_value)
 
     def missing_photos(self, ids=None): return _api.missing_photos(self.con, ids, self.base_dir)
@@ -300,7 +339,8 @@ BackendAPI.export_persons = _bapi_export_persons
 
 # ---------------- Этап 14: редактор фото — Backend ee79d16 (badge_backend.api) ----------------
 # apply_photo_edit(img, params) -> Image; порядок autoeffect → яркость → контраст → масштаб → поворот по часовой
-#   (белая заливка) → crop (x,y,w,h) в пикселях уже преобразованного изображения; ValueError.
+#   (белая заливка) → crop (x,y,w,h) в пикселях изображения ПОСЛЕ EXIF-поворота, масштаба и вращения
+#   (не в пикселях исходного файла); ValueError.
 # detect_face_crop(img, aspect) -> (x,y,w,h)|None; get/set_photo_edit_defaults(con[, params]) — без crop (project_settings, v6);
 # apply_and_save_photo(con, source_path, params, *, person_id, field_name, base_dir) -> "photos/…" (новый файл).
 PHOTO_EDIT_DEFAULTS = dict(getattr(_api, "DEFAULT_PHOTO_EDIT", None) or
@@ -376,12 +416,16 @@ NO_TARGET_FN = "Нет функции Backend для пропорций"
 NO_TARGET = "К полю не привязан фото-элемент шаблона"
 
 
-def _bapi_photo_edit_target(self, field_name):
-    """Backend photo_edit_target(con, field_name) → {"aspect", "size", "width_mm", "height_mm", "element_id"} | None.
-    Пропорции рамки и размер результата — только отсюда (UI ничего не вычисляет). Нет функции → LookupError."""
+def _bapi_photo_edit_target(self, field_name=None, *, element_id=None, field=None):
+    """Backend photo_edit_target(con, field_name=None, *, element_id=None, field=None).
+    element_id — фото-элемент активного шаблона (двойной щелчок). field_name/field устарели.
+    → {"aspect", "size", "width_mm", "height_mm", "element_id"} | None. Нет функции → LookupError."""
     fn = _backend_fn("photo_edit_target")
     if fn is None: raise LookupError(NO_TARGET_FN)
-    return fn(self.con, field_name)
+    try:
+        return fn(self.con, field_name, element_id=element_id, field=field)
+    except TypeError:
+        return fn(self.con, field_name)
 
 
 def _bapi_discard_photo(self, rel_path):
@@ -415,3 +459,107 @@ def _selftest_face_crop(aspect=0.778):
     load, det = getattr(_api, "load_photo_for_edit", None), getattr(_api, "detect_face_crop", None)
     if not callable(load) or not callable(det): raise LookupError("в Backend нет load_photo_for_edit/detect_face_crop")
     return det(load(str(path)), aspect), str(path)
+
+
+# ---------------- Этап 15: шаблоны, поиск, вид фото ----------------
+def apply_photo_view(src, w, h, params=None):
+    """Тот же путь, что render_photo(..., size=(w,h)): apply_photo_view Backend (карточка)."""
+    fn = getattr(_api, "apply_photo_view", None)
+    if fn is None:
+        from badge_backend.services.photo_edit import apply_photo_view as fn
+    return fn(src, int(w), int(h), params)
+
+
+def portrait_params(img, aspect, params=None):
+    fn = getattr(_api, "portrait_params", None)
+    return fn(img, aspect, params) if fn else None
+
+def autoeffect_params(img, params=None):
+    fn = getattr(_api, "autoeffect_params", None)
+    return fn(img, params) if fn else None
+
+
+def _bapi_list_templates(self): return _api.list_templates(self.con)
+def _bapi_get_template(self, template_id=None): return _api.get_template(self.con, template_id)
+def _bapi_get_active_template(self): return _api.get_active_template(self.con)
+def _bapi_set_active_template(self, template_id): return _api.set_active_template(self.con, template_id)
+def _bapi_create_template(self, name, *, copy_from=None, activate=False):
+    return _api.create_template(self.con, name, copy_from=copy_from, activate=activate)
+def _bapi_rename_template(self, template_id, name): return _api.rename_template(self.con, template_id, name)
+def _bapi_delete_template(self, template_id): return _api.delete_template(self.con, template_id)
+def _bapi_get_template_style(self, template_id=None): return _api.get_template_style(self.con, template_id)
+def _bapi_set_template_style(self, style, template_id=None): return _api.set_template_style(self.con, style, template_id)
+def _bapi_list_font_families(self): return list(_api.list_font_families())
+def _bapi_get_template_edit_state(self): return _api.get_template_edit_state(self.con)
+def _bapi_begin_template_edit(self, template_id=None):
+    return _api.begin_template_edit(self.con, template_id)
+def _bapi_commit_template_edit(self):
+    return _api.commit_template_edit(self.con)
+def _bapi_cancel_template_edit(self):
+    r = _api.cancel_template_edit(self.con); self.clear_history(); return r
+def _bapi_parse_search(self, text): return _api.parse_search(text, self.con)
+def _bapi_search_persons(self, text, **kw): return _api.search_persons(self.con, text, **kw)
+def _bapi_get_photo_view(self, person_id, field_name=None): return _api.get_photo_view(self.con, person_id, field_name)
+def _bapi_set_photo_view(self, person_id, params, field_name=None): return _api.set_photo_view(self.con, person_id, params, field_name)
+def _bapi_export_template(self, dest, template_id=None, *, overwrite=True):
+    return _api.export_template(self.con, dest, template_id, overwrite=overwrite)
+def _bapi_import_template(self, src):
+    return _api.import_template(self.con, src)
+def _bapi_preview_template_file(self, src):
+    return _api.preview_template_file(src, self.con)
+def _bapi_get_photo_frame_spec(self, field=None, *, element_id=None, field_name=None):
+    fn = getattr(_api, "get_photo_frame_spec", None)
+    if fn is None: raise LookupError("нет get_photo_frame_spec")
+    return fn(self.con, field, element_id=element_id, field_name=field_name)
+def _bapi_get_photo_editor_state(self, person_id, element_id=None):
+    """Backend get_photo_editor_state(con, person_id, element_id) → {params, frame, photo_path, element_id, field_name}.
+    Рамка crop в params — в пикселях после EXIF, масштаба и вращения. Нет функции → None."""
+    fn = getattr(_api, "get_photo_editor_state", None)
+    return fn(self.con, person_id, element_id) if fn else None
+def _bapi_render_photo(self, person_id, field_name=None, *, size=None):
+    """Backend render_photo(con, person_id, field_name, size=) — вид записи в рамку size (как на карточке)."""
+    fn = getattr(_api, "render_photo", None)
+    if fn is None: raise LookupError("нет render_photo")
+    return fn(self.con, person_id, field_name, size=size, base_dir=self.base_dir)
+
+
+def setup_printer(printer):
+    """Страница CR80 на QPrinter до QPrintDialog (badge_backend.services.print_service)."""
+    from badge_backend.services.print_service import setup_printer as _sp
+    return _sp(printer)
+
+
+def pdf_pages_are_cr80(path, tol=0.15):
+    from badge_backend.services.print_service import pdf_pages_are_cr80 as _fn
+    return _fn(path, tol)
+
+
+def pdf_page_sizes_mm(path):
+    from badge_backend.services.print_service import pdf_page_sizes_mm as _fn
+    return _fn(path)
+
+
+BackendAPI.list_templates = _bapi_list_templates
+BackendAPI.get_template = _bapi_get_template
+BackendAPI.get_active_template = _bapi_get_active_template
+BackendAPI.set_active_template = _bapi_set_active_template
+BackendAPI.create_template = _bapi_create_template
+BackendAPI.rename_template = _bapi_rename_template
+BackendAPI.delete_template = _bapi_delete_template
+BackendAPI.get_template_style = _bapi_get_template_style
+BackendAPI.set_template_style = _bapi_set_template_style
+BackendAPI.list_font_families = _bapi_list_font_families
+BackendAPI.get_template_edit_state = _bapi_get_template_edit_state
+BackendAPI.begin_template_edit = _bapi_begin_template_edit
+BackendAPI.commit_template_edit = _bapi_commit_template_edit
+BackendAPI.cancel_template_edit = _bapi_cancel_template_edit
+BackendAPI.parse_search = _bapi_parse_search
+BackendAPI.search_persons = _bapi_search_persons
+BackendAPI.get_photo_view = _bapi_get_photo_view
+BackendAPI.set_photo_view = _bapi_set_photo_view
+BackendAPI.get_photo_frame_spec = _bapi_get_photo_frame_spec
+BackendAPI.get_photo_editor_state = _bapi_get_photo_editor_state
+BackendAPI.render_photo = _bapi_render_photo
+BackendAPI.export_template = _bapi_export_template
+BackendAPI.import_template = _bapi_import_template
+BackendAPI.preview_template_file = _bapi_preview_template_file

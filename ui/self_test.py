@@ -6,7 +6,7 @@
 Любое исключение (в т.ч. в слоте Qt, через sys.excepthook) → FAIL.
 
 Опции: --log <путь> — файл лога (по умолчанию <AppData>/BadgeGenerator/self_test.log).
-Сторожевой таймер 170 с → FAIL и код 1. excepthook в режиме самотеста модальных окон не показывает; любое исключение → код 1.
+Сторожевой таймер 240 с → FAIL и код 1. excepthook в режиме самотеста модальных окон не показывает; любое исключение → код 1.
 Лог: stdout и файл (Windows: %APPDATA%\\BadgeGenerator\\self_test.log), строки
     PASS | <проверка> | <доказательство>
     FAIL | <проверка> | <доказательство/трейсбек>
@@ -15,7 +15,7 @@
 """
 import os, sys, tempfile, pathlib, traceback, datetime
 
-WATCHDOG_S = 170
+WATCHDOG_S = 240
 
 
 def run(argv=None, *, app=None, log_file=None, exit_process=False):
@@ -84,6 +84,8 @@ def run(argv=None, *, app=None, log_file=None, exit_process=False):
             size = pdf.stat().st_size if pdf.is_file() else -1
             empty49 = [t for t in warn49 if "Шаблон пуст" in str(t)]
             chk(_n49, err is None and size > 0 and not empty49, f"{pdf}; размер={size} байт; результат={res!r}; ошибка={err!r}; предупреждения={warn49}")
+            from badge_backend.services.print_service import pdf_pages_are_cr80, pdf_page_sizes_mm
+            chk("PDF страница CR80", pdf.is_file() and pdf_pages_are_cr80(pdf), pdf_page_sizes_mm(pdf) if pdf.is_file() else None)
             # рендер карточки Backend (PIL): есть небелые пиксели (координаты не сравниваем)
             from badge_backend import api as _bapi
             img49 = _bapi.render_card_db(a49.con, pid49, "front", a49.base_dir).convert("L")

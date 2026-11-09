@@ -115,12 +115,17 @@ tt.confirm_hook = lambda: (asked.append(2), True)[1]
 w.act_template_mode.trigger(); app.processEvents()
 g = next(e for e in api.list_elements() if e["id"] == eid0)
 assert asked == [1, 2] and not tt.template_mode and (g["x"], g["y"]) == p0 and not w.act_template_save.isEnabled()
-ok("выход без сохранения: подтверждение; «Отмена» — остаёмся, «Отменить изменения» — откат через undo")
+ok("выход без сохранения: подтверждение; «Отмена» — остаёмся, «Не сохранять» — cancel_template_edit")
 w.act_template_mode.trigger(); le.items()[0].setPos(p0[0] + 3, p0[1]); le._commit_geometry(le.items()[0]); asked.clear()
 w.act_template_save.trigger(); app.processEvents()
 assert not tt.template_mode and not asked and not w.act_template_save.isEnabled()
+assert api.get_template_edit_state() is None
+g_saved = next(e for e in api.list_elements() if e["id"] == eid0)
+assert (g_saved["x"], g_saved["y"]) == (p0[0] + 3, p0[1])
+le.reload(); g_saved = next(e for e in api.list_elements() if e["id"] == eid0)
+assert (g_saved["x"], g_saved["y"]) == (p0[0] + 3, p0[1])
 it0 = next(i for i in le.items() if i.el["id"] == eid0); it0.setPos(*p0); tt.set_template_mode(True); le._commit_geometry(next(i for i in le.items() if i.el["id"] == eid0))
-ok("«✓ Сохранить шаблон» сохраняет (заглушка) и выходит из режима без вопроса")
+ok("«✓ Сохранить шаблон» вызывает commit_template_edit, выходит из режима и сохраняется после reload")
 tt.confirm_hook = lambda: True; _lem.warn_hook = None; stage15.stub_hook = None   # дальше — редактирование в режиме шаблона
 from ui import layout_editor as lem
 WARN = []; lem.warn_hook = lambda t, m: WARN.append(m)
@@ -189,6 +194,12 @@ mw.clear_marks_hook = lambda parent, n: False   # D5: в этих проверк
 pr = QPrinter(); pr.setOutputFormat(QPrinter.OutputFormat.PdfFormat); pr.setOutputFileName(str(tmp / "print.pdf"))
 res, err = w.do_print(printer=pr); assert err is None and res == 2 and (tmp / "print.pdf").stat().st_size > 0
 ok(f"печать: {int(res)} стр. (только print_mark=1)")
+from badge_backend.services.print_service import pdf_pages_are_cr80, pdf_page_sizes_mm
+pdf_path = tmp / "print.pdf"
+def chk(name, cond, extra=None):
+    assert cond, (name, extra)
+chk("PDF страница CR80", pdf_pages_are_cr80(pdf_path), pdf_page_sizes_mm(pdf_path))
+ok(f"PDF страница CR80 {pdf_page_sizes_mm(pdf_path)}")
 api.set_print_mark([petrova], True); asked.clear()
 dialogs.confirm_hook = lambda parent, ids, names: (asked.append(ids), False)[1]
 assert w.do_print(printer=pr) == (None, None) and asked == [[petrova]]
@@ -467,7 +478,7 @@ acts = w.all_actions()
 texts = [a.text() for a in acts]; names = [a.objectName() for a in acts]
 assert len(texts) == len(set(texts)), [t for t in texts if texts.count(t) > 1]
 assert len(names) == len(set(names)) and all(n.startswith("act_") for n in names), names
-assert len(acts) - (len(w.display_actions) - 1) == 64, len(acts)       # этап 15: +7 (шрифт, размер, отступы, цвет текста, режим/сохранить/менеджер шаблонов)
+assert len(acts) - (len(w.display_actions) - 1) == 65, len(acts)       # этап 15: +8 (F3 «Сохранить» на «Файле»; шрифт/размер/отступы/цвет/режим/✓/менеджер)
 # было: 57       # 57 действий (act_capture удалён, D22) (Дисплей — одна группа из 3)
 from PyQt6.QtWidgets import QToolButton
 assert w.records.filter.apply_button.isVisible() or True
@@ -490,7 +501,7 @@ assert not any(hasattr(le, n) for n in ("tool_actions", "act_delete", "act_up", 
 assert not hasattr(w.records, "search") and not hasattr(w.records, "col_box")
 from PyQt6.QtWidgets import QPushButton
 assert [b.text() for b in w.records.findChildren(QPushButton) if b.parent() is w.records] == []
-ok(f"лента: {len(TABS)} вкладок, {len(acts)} QAction (58 действий), тексты и objectName уникальны, у каждого одно место; повтор → ValueError; старые дубли удалены")
+ok(f"лента: {len(TABS)} вкладок, {len(acts)} QAction, тексты и objectName уникальны, у каждого одно место; повтор → ValueError; старые дубли удалены")
 # контекстные меню используют те же QAction
 for acts_ in (w.canvas_menu_actions, w.list_menu_actions, w.table_menu_actions):
     m_ = w.context_menu(acts_); assert all(a in w.ribbon.places for a in m_.actions() if not a.isSeparator())
@@ -605,7 +616,7 @@ vis = w.records.visible_ids(); assert len(vis) == 1 and api.get_person(vis[0])["
 fb.add_term("last_name", "eq", "Иванов", "or"); w.act_filter_apply.trigger(); assert len(w.records.visible_ids()) == 2
 assert "ИЛИ" in fb.expr.text() and fb.where()["join"] == "or"
 fb.clear(); assert len(w.records.visible_ids()) == len(people)
-ok(f"блок фильтра: «Добавить» → выражение «{'…'}», «Применить» (act_filter_apply) → query_persons")
+ok(f"блок фильтра: «Добавить» → выражение «{'…'}», «Применить» (act_filter_apply) → search_persons")
 assert w.goto("2") and w.records.selected_ids() == [w.records.visible_ids()[1]]
 assert w.goto(f"#{a_id}") and w.records.selected_ids() == [a_id] and not w.goto("999")
 ok("«Перейти к положению»: номер строки и #ID")
@@ -682,11 +693,11 @@ assert next(e for e in api.list_elements() if e["id"] == eid_l)["x"] == g0["x"] 
 le.load(le.side, eid_l); le.p_x.setValue(g0["x"]); le.apply_props(); _lem2.warn_hook = None; _s15.stub_hook = None
 ok("в режиме шаблона: X/Y/W/H редактируются и применяются; «Связать/Отвязать» выполняются (ниже)")
 fm._select_field(fld); fm.set_element(eid_l)
-assert fm.b_unlink.isEnabled(); fm.unlink(); e_ = next(e for e in api.list_elements() if e["id"] == eid_l)
-assert not e_.get("field_name") and e_["type"] == "text"          # Backend: field → text
+assert fm.b_unlink.isEnabled(); typ0 = next(e for e in api.list_elements() if e["id"] == eid_l)["type"]; fm.unlink(); e_ = next(e for e in api.list_elements() if e["id"] == eid_l)
+assert not e_.get("field_name") and e_["type"] == typ0 and fm.status.text() == "Объект отвязан"   # этап 15: тип сохраняется
 fm._select_field(fld); fm.set_element(eid_l)
 assert fm.b_link.isEnabled() and not fm.b_unlink.isEnabled(); fm.link()             # Backend 01a1768: text → field
-e_ = next(e for e in api.list_elements() if e["id"] == eid_l); assert e_["type"] == "field" and e_["field_name"] == fld, e_
+e_ = next(e for e in api.list_elements() if e["id"] == eid_l); assert e_["type"] == "field" and e_["field_name"] == fld and fm.status.text() == "Объект привязан", e_
 assert fm.b_print.text() == "Печать" and fm.b_print.toolTip() == "Печать списка полей"
 assert ImportDialog(api, w).b_fields.defaultAction() is w.act_field_manager   # тот же QAction, без нового действия
 bc = api.create_element(type="barcode", x=10, y=10, w=300, h=80, side="back", static_value="123"); fm.reload()
@@ -723,13 +734,16 @@ fm.resize(640, 520); fm.show(); spin(80); fm.grab().save(str(shots / "stage12_fi
 api.set_field_default("position", None)
 ok(f"менеджер полей: default_value (set_field_default), отвязать → связать снова #{eid_l} ↔ {fld} (text → field), связать штрихкод ↔ employee_id, печать списка; скриншот")
 # бэкап / сжатие / восстановление
+from ui import stage15 as _s15_save
+_s15_save.save_template_project_hook = lambda: True   # save_as при активном черновике шаблона — как «Да»
 bk = tmp / "copy.db"; w.save_as(str(bk)); assert bk.exists()
+_s15_save.save_template_project_hook = None
 r = w.compact(str(tmp / "bk")); assert r and r.get("integrity") == "ok" and Path(r["backup"]).exists(), r
 n_before = len(api.list_persons()); api.create_person({"last_name": "Лишний"}); assert len(api.list_persons()) == n_before + 1
 mwm.ask_hook = lambda kind, parent: str(bk) if kind == "restore" else None
 assert w.restore() and len(api.list_persons()) == n_before and w.records.model.rowCount() == n_before
 mwm.ask_hook = None
-ok("Сохранить как… → backup_db; «Сжать и восстановить» → compact_and_backup / restore_db (переподключение)")
+ok("Сохранить как… → ProjectSession.save_as; «Сжать и восстановить» → compact_and_backup / restore_db (переподключение)")
 # захват изображения из файла
 w.show_main(); demo.make_photo(tmp / "cap.png"); w._select_person(a_id); app.processEvents()
 from ui.photo_block import multimedia
@@ -932,7 +946,8 @@ if _ba14.photo_edit_available():
     _get0 = api14.get_photo_edit_defaults; api14.get_photo_edit_defaults = lambda: {**_get0(), "portrait": True}
     try:
         edp = pe.PhotoEditor(str(tmp / "p14.jpg"), api14, None, field_name="foto")
-        assert edp.portrait.isChecked() and edp.crop() == tuple(_ba14.detect_face_crop(edp.img, 0.75)), edp.crop()
+        _pp = _ba14.portrait_params(edp.src, edp.aspect, edp.params(crop=False))  # как apply_portrait, не detect на превью
+        assert edp.portrait.isChecked() and _pp and _pp.get("crop") and edp.crop() == tuple(_pp["crop"]), edp.crop()
         edp.portrait.setChecked(False); edp.load_defaults(); assert edp.portrait.isChecked(); edp.reject()
     finally: del api14.get_photo_edit_defaults
     api14.set_photo_edit_defaults(dict(_ba14.PHOTO_EDIT_DEFAULTS))
@@ -1015,6 +1030,160 @@ for n_ in (nm, nb, nn):
 mvm.field_manager_hook = None
 fm.resize(720, 560); fm.show(); spin(80); fm.grab().save(str(shots / "stage12_field_manager.png")); fm.close()
 ok("D21/D24: менеджер полей — Поле | Тип данных | Значение по умолчанию; добавить/переименовать/удалить (с подтверждением); редакторы по типу")
+
+# --- этап 15 F1–F4: дочерние проверки (снимок, поиск, фото-вид, Ctrl+S, менеджер .bgt) ---
+from ui import stage15 as _s15f
+# leftover snapshot prompt
+w.template_tools.set_template_mode(False) if w.template_tools.template_mode and not w.template_tools._dirty() else None
+if not w.template_tools.template_mode: w.template_tools.set_template_mode(True)
+el_c = api.list_elements("front")[0]; x_c = el_c["x"]
+itc = next(i for i in w.layout_editor.items() if i.el["id"] == el_c["id"])
+itc.setPos(x_c + 15, el_c["y"]); w.layout_editor._commit_geometry(itc)
+assert api.get_template_edit_state() is not None
+# leave UI mode without clearing backend snapshot: simulate crash (dont commit/cancel via tools)
+w.template_tools._saving = True; w.template_tools.set_template_mode(False); w.template_tools._saving = False
+assert api.get_template_edit_state() is not None and not w.template_tools.template_mode
+seen_restore = []
+_s15f.restore_prompt_hook = lambda st: (seen_restore.append(st), "restore")[1]
+choice = w.offer_template_restore()
+assert choice == "restore" and seen_restore and api.get_template_edit_state() is None
+assert next(e for e in api.list_elements() if e["id"] == el_c["id"])["x"] == x_c
+# keep path
+w.template_tools.set_template_mode(True)
+itc = next(i for i in w.layout_editor.items() if i.el["id"] == el_c["id"])
+itc.setPos(x_c + 9, el_c["y"]); w.layout_editor._commit_geometry(itc)
+w.template_tools._saving = True; w.template_tools.set_template_mode(False); w.template_tools._saving = False
+_s15f.restore_prompt_hook = lambda st: "keep"
+assert w.offer_template_restore() == "keep" and api.get_template_edit_state() is None
+assert next(e for e in api.list_elements() if e["id"] == el_c["id"])["x"] == x_c + 9
+_s15f.restore_prompt_hook = None
+ok("снимок после сбоя: Восстановить → cancel_template_edit, Оставить правки → commit_template_edit")
+
+# search_persons
+w.set_display(None)
+from ui.backend_api import field_type as _ft_s
+_tf = next(f for f in api.list_fields() if _ft_s(f) == "text")
+_fn, _fl = _tf["name"], _tf["label"] or _tf["name"]
+_q = "СмоукПоиск15"
+api.create_person({_fn: _q}); w.records.reload()
+fb = w.records.filter; fb.clear()
+fb.add_term(_fn, "contains", _q); w.act_filter_apply.trigger()
+vis = w.records.visible_ids()
+assert vis and all(_q in str(api.get_person(i)["fields"].get(_fn) or "") for i in vis), (vis, fb.search_text())
+fb.clear()
+_qstr = f'"{_fl}" ~ {_q}' if any(c.isspace() for c in _fl) else f"{_fl} ~ {_q}"
+fb.terms = []; fb.expr.setText(_qstr); w.act_filter_apply.trigger()
+vis = w.records.visible_ids()
+assert vis and all(_q in str(api.get_person(i)["fields"].get(_fn) or "") for i in vis), vis
+fb.clear()
+ok("строка поиска: parse_search/search_persons (формат UI и синтаксис Backend)")
+
+# «Связать» без объекта создаёт объект
+w.template_tools.set_template_mode(True)
+fm2 = w.field_manager(exec_=False)
+n0 = len(api.list_elements())
+_fn_link = next(f["name"] for f in api.list_fields() if f.get("data_type") != "image" and f["name"] != "logo")
+fm2._select_field(_fn_link); fm2.set_element(None)
+r_new = fm2.link(); assert r_new and fm2.status.text() == "Создан объект в шаблоне", (r_new, fm2.status.text(), _fn_link)
+assert len(api.list_elements()) == n0 + 1
+ok("«Связать поле» без объекта: link_field(None) создаёт объект, статус «Создан объект в шаблоне»")
+
+# Ctrl+S в режиме шаблона: вопрос, Да — save(commit_template=True); Отмена — черновик жив
+w.template_tools.set_template_mode(True)
+assert w.template_tools.template_mode and api.get_template_edit_state() is not None
+asked = []
+_s15f.save_template_project_hook = lambda: False
+w.act_project_save.trigger()
+assert api.get_template_edit_state() is not None and w.template_tools.template_mode
+_s15f.save_template_project_hook = lambda: (asked.append("yes"), True)[1]
+w.act_project_save.trigger()
+assert asked == ["yes"]
+assert api.get_template_edit_state() is None and not w.template_tools.template_mode
+assert w.act_project_save in w.ribbon.actions_of("Файл")
+assert w.act_project_save not in w.ribbon.actions_of("Главная")
+w.set_project_dirty(True); assert w.is_project_dirty() and w.windowTitle().startswith("*")
+from PyQt6.QtGui import QCloseEvent
+_s15f.save_changes_hook = lambda: None
+ev = QCloseEvent(); w.closeEvent(ev)
+assert not ev.isAccepted()
+w.set_project_dirty(False); assert "*" not in w.windowTitle()
+_s15f.save_changes_hook = None; _s15f.save_template_project_hook = None
+ok("F3: «Сохранить» на «Файле»; в режиме шаблона Ctrl+S спрашивает и при Да фиксирует черновик; «*» в заголовке; закрытие без dirty — молча")
+
+# менеджер шаблонов + .bgt export/import
+w.template_tools.set_template_mode(True)
+md = w.template_tools.open_manager(exec_=False)
+assert md.b_save_file.text() == "Сохранить шаблон в файл…" and md.b_load_file.text() == "Загрузить шаблон из файла…"
+assert not md.b_load_file.isEnabled()   # в режиме шаблона загрузка недоступна
+md.close()
+w.template_tools.save_template(); assert not w.template_tools.template_mode
+md = w.template_tools.open_manager(exec_=False)
+assert md.b_load_file.isEnabled() and md.list.count() >= 1
+bgt = tmp / "s15_active.bgt"
+_s15f.bgt_path_hook = lambda kind: str(bgt)
+md.save_to_file(); assert Path(bgt).is_file()
+_s15f.replace_template_hook = lambda: False
+assert md.load_from_file() is False
+_s15f.replace_template_hook = lambda: True
+r_imp = md.load_from_file(); assert r_imp is not False
+_s15f.replace_template_hook = None; _s15f.bgt_path_hook = None; md.close()
+ok("F4: «Сохранить шаблон в файл…» / «Загрузить шаблон из файла…»; загрузка выключена в режиме шаблона; подтверждение замены")
+
+# фото: get_photo_editor_state, снятие галочки ползунком, повторное открытие после «Применить»
+from ui import photo_editor as pe
+face = ROOT / "tests" / "fixtures" / "face_astronaut.jpg"
+srcp = tmp / "p1.png"
+if not srcp.is_file() and face.is_file():
+    import shutil; shutil.copy(face, srcp)
+if srcp.is_file() and hasattr(api, "get_photo_editor_state"):
+    ppl = api.list_persons(); pid_v = ppl[0]["id"]
+    photo_els = [e for e in api.list_elements() if e.get("type") == "photo"]
+    eid_v = photo_els[0]["id"] if photo_els else None
+    fn_v = (photo_els[0].get("field_name") if photo_els else None)
+    st0 = api.get_photo_editor_state(pid_v, eid_v)
+    fn_v = st0.get("field_name") if st0 else fn_v
+    api.set_photo_view(pid_v, {"brightness": 21, "contrast": 7, "scale": 100, "rotate": 0,
+                               "portrait": False, "autoeffect": False, "crop": None}, fn_v)
+    edv = pe.PhotoEditor(str(srcp), api, None, field_name=fn_v, person_id=pid_v, element_id=eid_v)
+    assert edv.sp["brightness"].value() == 21 and edv.sp["contrast"].value() == 7
+    assert edv.element_id == eid_v or eid_v is None
+    fr = (st0.get("frame") or {}) if st0 else {}
+    psz = tuple(fr.get("size") or (fr.get("width_px"), fr.get("height_px")) or ())
+    if psz and psz[0] and psz[1]:
+        assert edv.img.size == psz, (edv.img.size, psz)
+        if hasattr(api, "render_photo"):
+            try:
+                rp = api.render_photo(pid_v, fn_v, size=psz)
+                assert rp.size == psz, (rp.size, psz)
+            except ValueError:
+                pass
+        ok(f"редактор фото: размер превью = рамка элемента {psz}")
+    edv.autoeffect.setChecked(True); app.processEvents()
+    assert edv.autoeffect.isChecked()
+    b_after = edv.sp["brightness"].value()
+    edv.sl["brightness"].setValue(b_after + (1 if b_after < 50 else -1)); app.processEvents()
+    assert not edv.autoeffect.isChecked()
+    edv.reject()
+    ok("редактор фото: get_photo_editor_state при открытии; галочка «Автоэффект» снимается при ручном сдвиге ползунка")
+    edv = pe.PhotoEditor(str(srcp), api, None, field_name=fn_v, person_id=pid_v, element_id=eid_v)
+    edv.sl["brightness"].setValue(18); edv.sl["contrast"].setValue(8)
+    edv.sl["scale"].setValue(110); edv.sp["rotate"].setValue(5); app.processEvents()
+    edv.update_preview(); edv.reset_frame()
+    edv.portrait.setChecked(False); edv.autoeffect.setChecked(False); app.processEvents()
+    saved_sl = {k: edv.sp[k].value() for k, *_ in edv.SLIDERS}
+    saved_frame = edv.crop(); saved_chk = (edv.portrait.isChecked(), edv.autoeffect.isChecked())
+    assert edv.apply() is True
+    ed2 = pe.PhotoEditor(str(srcp), api, None, field_name=fn_v, person_id=pid_v, element_id=eid_v)
+    got_sl = {k: ed2.sp[k].value() for k, *_ in ed2.SLIDERS}
+    got_frame = ed2.crop(); got_chk = (ed2.portrait.isChecked(), ed2.autoeffect.isChecked())
+    assert got_sl == saved_sl, (got_sl, saved_sl)
+    assert got_frame == saved_frame, (got_frame, saved_frame)
+    assert got_chk == saved_chk, (got_chk, saved_chk)
+    ed2.reject()
+    ok("редактор фото: после «Применить» повторное открытие совпадает (ползунки, рамка, галочки)")
+else:
+    ok("редактор фото: нет файла/API — проверка вида пропущена")
+
 # ===== self-test (тот же сценарий click-all, что и --self-test) =====
 from ui import self_test
 rc = self_test.run(["x"], app=app, log_file=str(tmp / "self_test.log"))

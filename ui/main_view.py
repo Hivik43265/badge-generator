@@ -137,7 +137,7 @@ class FieldEditDialog(QDialog):
         # этап 15 п.3 (макет): объект шаблона для поля; «создать при связывании» — если объекта нет
         self.obj = QComboBox(); self.obj.addItem("— нет: создать объект при связывании —", None)
         for e in objects or []: self.obj.addItem(e[1], e[0])
-        self.obj.setToolTip("TODO stage15: выбор объекта сохраняется только в UI — связывание при создании ждёт Backend")
+        self.obj.setToolTip("Если объекта нет — он будет создан при «Связать поле»")
         if objects is not None: form.addRow("Объект шаблона:", self.obj)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         bb.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
@@ -229,6 +229,7 @@ class FieldManager(QDialog):
 
     def add_field(self, label=None, data_type="text", default=None):
         """Новое поле БД (upsert_field). Возвращает имя (ключ) или None."""
+        chosen = None
         if label is None:
             objs = [(e["id"], f"{TYPE_NAMES.get(e['type'], e['type'])} #{e['id']} ({'лиц.' if e['side'] == 'front' else 'обор.'})")
                     for e in self.api.list_elements() if e["type"] in self.LINKABLE and not e.get("field_name")]
@@ -236,14 +237,24 @@ class FieldManager(QDialog):
             if field_manager_hook is not None:
                 v = field_manager_hook("add", d)
                 if not v: return None
-                label, data_type, default = v
-            elif d.exec(): label, data_type, default = d.values()
+                label, data_type, default = v[0], v[1], v[2]
+                chosen = v[3] if len(v) > 3 else d.obj.currentData()
+            elif d.exec():
+                label, data_type, default = d.values(); chosen = d.obj.currentData()
             else: return None
         fields = self.api.list_fields()
         name = new_field_name(label, {f["name"] for f in fields})
         self.api.upsert_field(name, label, max([f.get("sort_order") or 0 for f in fields] or [0]) + 1, data_type=data_type)
         if default: self.api.set_field_default(name, default)
-        self.reload(); self._select_field(name); return name
+        if chosen is not None:
+            try: self.api.link_field(chosen, name)
+            except ValueError as e:
+                self.last_error = str(e)
+                if field_manager_hook is not None: field_manager_hook("error", self.last_error)
+                else: QMessageBox.warning(self, "Связать поле", self.last_error)
+        self.reload(); self._select_field(name)
+        if chosen is not None: self.status.setText("Объект привязан")
+        return name
 
     def rename_field(self, label=None, data_type=None):
         name = self.selected_field()
@@ -286,8 +297,6 @@ class FieldManager(QDialog):
             is_img = field_type(self._field(self.selected_field())) == "image"
             ok = (e["type"] == "photo") == is_img
         self.b_link.setEnabled(bool(ok) or (fld and e is None))   # этап 15 п.3: без объекта — объект создаётся при связывании
-        if hasattr(self, "status"):   # этап 15 п.3 (макет): без объекта на макете — подсказка; создание объекта ждёт Backend
-            self.status.setText("")
         self.b_unlink.setEnabled(e is not None and bool(e.get("field_name")))
 
     def _edited(self, item, col):
@@ -302,19 +311,22 @@ class FieldManager(QDialog):
         """Выделенное поле списка ↔ выделенный объект на макете."""
         if self._locked("Связать поле"): return False
         eid = self.selected_element(); field_name = field_name or self.selected_field()
-        if eid is None and field_name is not None:
-            # этап 15 п.3: объекта нет → он будет создан при связывании. TODO stage15: Backend (создание + link_field)
-            self.status.setText("Создан объект в шаблоне")      # TODO stage15: заглушка — объект создаст Backend
-            return False
-        if eid is None or field_name is None: return False
+        le = getattr(self.parent(), "layout_editor", None)
+        side = getattr(le, "side", "front") if le is not None else "front"
+        if field_name is None: return False
         try:
-            r = self.api.link_field(eid, field_name)
+            r = self.api.link_field(eid, field_name, side=side)
         except ValueError as e:
             self.last_error = str(e)                                   # текст Backend как есть
             if field_manager_hook is not None: field_manager_hook("error", self.last_error)
             else: QMessageBox.warning(self, "Связать поле", self.last_error)
             return False
-        self.reload(); self.status.setText("Объект привязан"); return r
+        created = eid is None
+        self.reload()
+        if le is not None: le.reload()
+        self.status.setText("Создан объект в шаблоне" if created else "Объект привязан")
+        if created and isinstance(r, int): self.set_element(r)
+        return r
 
     def _locked(self, title):
         """Этап 15: связывание/отвязка — только в «Режиме шаблона» (то же предупреждение, что и в редакторе)."""

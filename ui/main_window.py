@@ -2,11 +2,14 @@
 Каждое действие — ровно один QAction и одно место в ленте; горячие клавиши и контекстные меню
 используют те же QAction. Вкладка ленты «База данных» показывает таблицу записей, остальные — редактор."""
 import os
+from pathlib import Path
 from PyQt6.QtCore import QSettings, Qt
 from PyQt6.QtGui import QAction, QActionGroup, QKeySequence
 from PyQt6.QtWidgets import (QMainWindow, QFileDialog, QMessageBox, QInputDialog, QSplitter, QMenu, QStackedWidget,
-                             QWidget, QVBoxLayout, QWidgetAction, QSpinBox, QLabel, QHBoxLayout, QColorDialog)
-from .backend_api import BackendAPI, DEFAULT_DB_PATH, TYPE_NAMES
+                             QWidget, QVBoxLayout, QWidgetAction, QSpinBox, QLabel, QHBoxLayout, QColorDialog, QComboBox)
+from .backend_api import (BackendAPI, DEFAULT_DB_PATH, TYPE_NAMES,
+                          RecoverableProjectError, ProjectLockedError, ProjectSaveError,
+                          UnsavedChangesError, TemplateEditActiveError, recover)
 from .records_table import RecordsWidget, PRINTED_FILTERS
 from .layout_editor import LayoutEditor
 from .main_view import (PreviewPanel, PrintQueueDialog, PositionDialog, SettingsDialog, FieldManager, ALIGN,
@@ -14,7 +17,7 @@ from .main_view import (PreviewPanel, PrintQueueDialog, PositionDialog, Settings
 from .ribbon import Ribbon, glyph
 from . import stage15
 from .dialogs import ImportDialog, ExportDialog, confirm_missing_photos, run_snapshot_job, describe_result, show_result_warnings
-from .backend_api import print_snapshot
+from .backend_api import print_snapshot, setup_printer
 
 
 # Хуки для тестов: clear_marks_hook(parent, n) -> bool; position_hook(dialog) -> dict|None; about_hook(text);
@@ -95,7 +98,8 @@ class MainWindow(QMainWindow):
         self.setObjectName("bg_main_window"); self.setStyleSheet(STYLE)
         self.settings = QSettings("BadgeGenerator", "Frontend")
         self._own_api = api is None
-        self.api = api or BackendAPI(self.settings.value("db_path", str(DEFAULT_DB_PATH)))
+        self.api = api if api is not None else self._open_api(self.settings.value("db_path", str(DEFAULT_DB_PATH)))
+        self._dirty_override = None   # тесты: set_project_dirty принудительно показывает «*» / снимает
         self.side, self.clipboard = "front", None
         self.resize(1440, 880)
 
@@ -128,6 +132,7 @@ class MainWindow(QMainWindow):
         self.restore_layout()
         self.ribbon.select("Главная"); self._ribbon_changed(self.ribbon.currentIndex())
         self._update_title(); self._on_record_selected(); self._sync_selection()
+        self.sync_template_style(); self.offer_template_restore()
 
     # --- действия ---
     def _act(self, name, text, slot, icon=None, shortcut=None, checkable=False, icon_text=None, tip=None):
@@ -150,6 +155,9 @@ class MainWindow(QMainWindow):
         # Файл
         self.act_new = A("act_new", "Новый проект", self.new_project, "new", "Ctrl+N", icon_text="Новый\nпроект")
         self.act_open = A("act_open", "Открыть проект…", self.open_db, "open", "Ctrl+O", icon_text="Открыть")
+        # этап 15 F3: один QAction «Сохранить» (Ctrl+S) на вкладке «Файл»; в режиме шаблона черновик не фиксирует.
+        self.act_project_save = A("act_project_save", "Сохранить", self.save_project, "save", "Ctrl+S",
+                                  icon_text="Сохранить", tip="Сохранить проект (Ctrl+S)")
         self.act_save_as = A("act_save_as", "Сохранить как…", self.save_as, "save", "Ctrl+Shift+S", icon_text="Сохранить\nкак…")
         self.act_import = A("act_import", "Импорт записей…", self.do_import, "import", "Ctrl+I", icon_text="Импорт")
         self.act_export = A("act_export", "Экспорт…", self.do_export, "export", "Ctrl+E", icon_text="Экспорт")
@@ -180,19 +188,17 @@ class MainWindow(QMainWindow):
             self.align_menu.addAction(sub); self.align_actions[how] = sub
         self.act_align.setMenu(self.align_menu)
         # Редактировать — этап 15: форматирование и шаблон в одну горизонтальную строку групп
-        from PyQt6.QtWidgets import QFontComboBox
         def _font():
-            f = QFontComboBox(); f.setMaximumWidth(150); return f
+            cb = QComboBox(); cb.setMaximumWidth(150); cb.setMinimumContentsLength(8); return cb
         def _spin(lo, hi, v, suf):
             def mk():
                 sp = QSpinBox(); sp.setRange(lo, hi); sp.setValue(v); sp.setSuffix(suf); return sp
             return mk
-        # TODO stage15: font_family / padding — ключей стиля пока нет в рендере Backend (только UI)
-        self.act_font = FieldWidgetAction(self, "act_font", "Шрифт", _font, lambda e: None, "Шрифт (TODO stage15: ждёт Backend)")
+        self.act_font = FieldWidgetAction(self, "act_font", "Шрифт", _font, self._bind_font, "Шрифт шаблона")
         self.act_font_size = FieldWidgetAction(self, "act_font_size", "Размер", _spin(4, 200, 14, " pt"),
             lambda e: e.editingFinished.connect(lambda e=e: le.current and (le.p_font.setValue(e.value()), le.apply_props())))
-        self.act_padding = FieldWidgetAction(self, "act_padding", "Отступы", _spin(0, 200, 0, " px"), lambda e: None,
-                                             "Отступы (TODO stage15: ждёт Backend)")
+        self.act_padding = FieldWidgetAction(self, "act_padding", "Отступы", _spin(0, 200, 0, " px"), self._bind_padding,
+                                             "Отступы шаблона (0…200 px)")
         self.act_text_color = A("act_text_color", "Цвет текста…", lambda: self.pick_color("color"), "text", icon_text="Цвет\nтекста")
         fp = stage15.TemplateTools(self, le)
         self.act_template_mode = A("act_template_mode", "Режим шаблона", fp.set_template_mode, "edit_card", checkable=True,
@@ -259,7 +265,7 @@ class MainWindow(QMainWindow):
 
     def _build_ribbon(self):
         R, T = self.ribbon, self.tool_actions
-        R.add_group("Файл", "Проект", [self.act_new, self.act_open, self.act_save_as])
+        R.add_group("Файл", "Проект", [self.act_new, self.act_open, self.act_project_save, self.act_save_as])
         R.add_group("Файл", "Данные", [self.act_import, self.act_export])
         R.add_group("Файл", "Параметры", [self.act_settings, self.act_exit])
         R.add_group("Главная", "Буфер", [self.act_cut, self.act_copy, self.act_paste, self.act_duplicate])
@@ -527,10 +533,18 @@ class MainWindow(QMainWindow):
                           QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows)
         self._sync_selection()
 
+    def _copy_project_name(self):
+        p = Path(str(self.api.db_path))
+        if not p or str(p) in (":memory:", "", "."):
+            return "проект_копия.db"
+        suf = p.suffix or ".db"
+        return str(p.with_name(f"{p.stem}_копия{suf}"))
+
     def _ask_path(self, kind, title, save=True, filt="SQLite (*.db *.sqlite)"):
         if ask_hook is not None: return ask_hook(kind, self)
+        start = self._copy_project_name() if kind == "save_as" else str(self.api.db_path)
         f = QFileDialog.getSaveFileName if save else QFileDialog.getOpenFileName
-        p, _ = f(self, title, str(self.api.db_path), filt); return p or None
+        p, _ = f(self, title, start, filt); return p or None
 
     def new_project(self, path=None):
         path = path or self._ask_path("new", "Новый проект (файл БД)")
@@ -556,10 +570,143 @@ class MainWindow(QMainWindow):
         self.switch_db(":memory:")
         self.statusBar().showMessage("БД отключена: открыта временная база в памяти")
 
+    def set_project_dirty(self, dirty=True):
+        """Для тестов/скриншотов: принудительный «*». None-сброс — снова session.is_dirty()."""
+        self._dirty_override = bool(dirty)
+        if not dirty:
+            sess = getattr(self.api, "session", None)
+            if sess is not None:
+                sess._mark_clean()
+            self._dirty_override = False
+        self._update_title()
+        return self.is_project_dirty()
+
+    def is_project_dirty(self):
+        if getattr(self, "_dirty_override", None) is not None:
+            return bool(self._dirty_override)
+        sess = getattr(self.api, "session", None)
+        if sess is not None: return bool(sess.is_dirty())
+        return False
+
+    def _sync_api_from_session(self):
+        sess = getattr(self.api, "session", None)
+        if sess is None: return
+        self.api.con = sess.con
+        if sess.source_path is not None:
+            self.api.db_path = sess.source_path
+            self.api.base_dir = str(sess.base_dir)
+
+    def _after_template_committed(self):
+        tt = getattr(self, "template_tools", None)
+        if tt is not None and tt.template_mode:
+            tt._saving = True
+            try: tt.set_template_mode(False)
+            finally: tt._saving = False
+            if tt.editor is not None: tt.editor.reload()
+
+    def save_project(self):
+        """session.save(); в режиме шаблона TemplateEditActiveError → вопрос и save(commit_template=True)."""
+        sess = getattr(self.api, "session", None)
+        if sess is None:
+            return None
+        if sess.source_path is None:
+            return self.save_as()
+        try:
+            r = sess.save()
+        except TemplateEditActiveError:
+            if not stage15.ask_save_template_and_project(self):
+                return None
+            try:
+                r = sess.save(commit_template=True)
+            except ProjectSaveError as e:
+                stage15.show_save_error(self, e); return None
+            self._after_template_committed()
+        except ProjectSaveError as e:
+            stage15.show_save_error(self, e); return None
+        except ValueError as e:
+            if "save_as" in str(e):
+                return self.save_as()
+            stage15.show_save_error(self, e); return None
+        self._dirty_override = None
+        self._sync_api_from_session(); self._update_title()
+        self.statusBar().showMessage("Проект сохранён")
+        return r
+
+    def _bind_font(self, e):
+        e.blockSignals(True); e.clear()
+        try: families = list(self.api.list_font_families())
+        except Exception: families = []
+        e.addItems(families)
+        e.blockSignals(False)
+        e.currentTextChanged.connect(lambda name: self._set_template_style({"font_family": name}))
+
+    def _bind_padding(self, e):
+        e.editingFinished.connect(lambda e=e: self._set_template_style({"padding": e.value()}))
+
+    def sync_template_style(self):
+        if not hasattr(self, "act_font"): return None
+        try: st = self.api.get_template_style() or {}
+        except Exception: st = {}
+        fam, pad = st.get("font_family") or "", st.get("padding")
+        for w in self.act_font.widgets:
+            w.blockSignals(True)
+            if fam:
+                i = w.findText(fam)
+                if i < 0: w.addItem(fam); i = w.findText(fam)
+                if i >= 0: w.setCurrentIndex(i)
+            w.blockSignals(False)
+        if pad is not None:
+            for w in self.act_padding.widgets:
+                w.blockSignals(True); w.setValue(int(pad)); w.blockSignals(False)
+        return st
+
+    def _set_template_style(self, style):
+        tt = getattr(self, "template_tools", None)
+        if tt is None or not tt.template_mode:
+            from .layout_editor import _warn
+            _warn(self, "Стиль шаблона", "Включите «Режим шаблона» на ленте, чтобы изменять шаблон")
+            self.sync_template_style(); return None
+        try: r = self.api.set_template_style(style)
+        except ValueError as e:
+            QMessageBox.warning(self, "Стиль шаблона", str(e)); self.sync_template_style(); return None
+        self.layout_editor.reload(); return r
+
+    def offer_template_restore(self):
+        """Второй шаг восстановления: снимок шаблона. Рабочую копию спрашивают раньше, в open/switch_db."""
+        api = self.api
+        if api is None or not hasattr(api, "get_template_edit_state"): return None
+        st = api.get_template_edit_state()
+        if st is None: return None
+        choice = stage15.ask_restore_template(self, st)
+        if choice == "restore": api.cancel_template_edit()
+        elif choice == "keep": api.commit_template_edit()
+        else: return st
+        self.refresh_all(); return choice
+
     def save_as(self, dest=None):
-        dest = dest or self._ask_path("save_as", "Сохранить копию БД как…")
+        dest = dest or self._ask_path("save_as", "Сохранить как…")
         if not dest: return None
-        r = self.api.backup_db(dest); self.statusBar().showMessage(f"Копия БД сохранена: {dest}"); return r
+        sess = getattr(self.api, "session", None)
+        if sess is None:
+            stage15.show_save_error(self, "нет открытой сессии проекта"); return None
+        try:
+            r = sess.save_as(dest, overwrite=True)
+        except TemplateEditActiveError:
+            if not stage15.ask_save_template_and_project(self):
+                return None
+            try:
+                r = sess.save_as(dest, overwrite=True, commit_template=True)
+            except (ProjectSaveError, ValueError, FileExistsError) as e:
+                stage15.show_save_error(self, e); return None
+        except (ProjectSaveError, ValueError, FileExistsError) as e:
+            stage15.show_save_error(self, e); return None
+        self.api.adopt_session(sess)
+        self._after_template_committed()
+        self._dirty_override = None
+        if str(self.api.db_path) != ":memory:":
+            self.settings.setValue("db_path", str(self.api.db_path))
+        self.refresh_all(); self.statusBar().showMessage(f"Проект сохранён как: {self.api.db_path}")
+        return r
 
     def compact(self, backup_dir=None):
         if backup_dir is None:
@@ -613,16 +760,51 @@ class MainWindow(QMainWindow):
         return text
 
     def _update_title(self):
-        self.setWindowTitle(f"Генератор пропусков — {self.api.db_path}")
+        star = "* " if self.is_project_dirty() else ""
+        self.setWindowTitle(f"{star}Генератор пропусков — {self.api.db_path}")
         self.statusBar().showMessage(f"БД: {self.api.db_path}; база путей фото: {self.api.base_dir}")
 
     def refresh_all(self):
         self.records.reload(); self.layout_editor.reload(); self.preview_panel.refresh(); self._on_record_selected()
+        self.sync_template_style(); self._update_title()
+
+    def _open_api(self, path):
+        """Создать BackendAPI; единственное место вопроса о рабочей копии при старте."""
+        try:
+            return BackendAPI(path)
+        except RecoverableProjectError as e:
+            ans = stage15.ask_recover_work(self)
+            if ans is None:
+                return BackendAPI(":memory:")
+            inst = BackendAPI.__new__(BackendAPI)
+            inst.con = None; inst.session = None
+            inst.adopt_session(recover(e.info, accept=bool(ans)))
+            return inst
+        except ProjectLockedError:
+            stage15.show_project_locked(self)
+            return BackendAPI(":memory:")
+
+    def _attach_session(self, path):
+        """Открыть path в текущем api: сначала рабочая копия (RecoverableProjectError), без второго такого же вопроса."""
+        try:
+            self.api.open_db(path)
+            return True
+        except RecoverableProjectError as e:
+            ans = stage15.ask_recover_work(self)
+            if ans is None: return False
+            self.api.adopt_session(recover(e.info, accept=ans))
+            return True
+        except ProjectLockedError:
+            stage15.show_project_locked(self); return False
+        except (FileNotFoundError, FileExistsError, OSError, ValueError) as e:
+            QMessageBox.warning(self, "Проект", str(e)); return False
 
     def switch_db(self, path):
-        self.api.open_db(path)
-        if str(path) != ":memory:": self.settings.setValue("db_path", str(path))
-        self.clipboard = None; self.refresh_all(); self._update_title()
+        if not self._attach_session(path): return None
+        if str(self.api.db_path) != ":memory:": self.settings.setValue("db_path", str(self.api.db_path))
+        self.clipboard = None; self._dirty_override = None
+        self.refresh_all(); self._update_title()
+        self.offer_template_restore()   # после рабочей копии — снимок шаблона, если он есть
 
     def do_import(self):
         ImportDialog(self.api, self).exec(); self.refresh_all()
@@ -637,8 +819,11 @@ class MainWindow(QMainWindow):
         ids = [p["id"] for p in self.api.list_persons(only_marked=True)]
         if not ids:
             QMessageBox.information(self, "Печать", "Нет записей, отмеченных для печати."); return None, None
-        if printer is None:
+        ask = printer is None
+        if ask:
             printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        setup_printer(printer)   # до QPrintDialog: страница CR80, не A4 (CR80 / FuzzyMatch)
+        if ask:
             if QPrintDialog(printer, self).exec() != QPrintDialog.DialogCode.Accepted: return None, None
             choice, ok = QInputDialog.getItem(self, "Печать", "Стороны:", ["Обе", "Лицевая", "Оборотная"], 0, False)
             if not ok: return None, None
@@ -672,6 +857,41 @@ class MainWindow(QMainWindow):
         self.records.reload(); self.statusBar().showMessage(f"Отметки сняты: {changed}"); return changed
 
     def closeEvent(self, ev):
+        sess = getattr(self.api, "session", None)
+        dirty = self.is_project_dirty()
+        # Вопрос «Сохранить изменения?» — своё окно приложения или явный test hook.
+        # Иначе w.close() в самотесте/смоуке зависает на модальном диалоге (сессия общая и dirty).
+        if dirty and (self._own_api or stage15.save_changes_hook is not None):
+            ans = stage15.ask_save_changes(self)
+            if ans is None:
+                ev.ignore(); return
+            if ans is True:
+                r = self.save_project()
+                if r is None and self.is_project_dirty():
+                    ev.ignore(); return
+            elif self._own_api and sess is not None:
+                try: sess.close(save=False)
+                except Exception:
+                    try: sess.discard()
+                    except Exception: pass
+                self.api.session = None; self.api.con = None
+        elif self._own_api and sess is not None:
+            try:
+                sess.close()
+            except UnsavedChangesError:
+                ans = stage15.ask_save_changes(self)
+                if ans is None:
+                    ev.ignore(); return
+                try: sess.close(save=bool(ans))
+                except TemplateEditActiveError:
+                    if not stage15.ask_save_template_and_project(self):
+                        ev.ignore(); return
+                    try: sess.close(save=bool(ans), commit_template=True)
+                    except ProjectSaveError as e:
+                        stage15.show_save_error(self, e); ev.ignore(); return
+                except ProjectSaveError as e:
+                    stage15.show_save_error(self, e); ev.ignore(); return
+            self.api.session = None; self.api.con = None
         self.save_layout()          # расположение окна сохраняется автоматически
-        if self._own_api: self.api.close()
+        if self._own_api and getattr(self.api, "con", None) is not None: self.api.close()
         super().closeEvent(ev)

@@ -187,8 +187,9 @@ def scenario(tmp, chk, out, EXC):
                 res["aspect"] = (d.aspect, a14.photo_edit_target("foto")["aspect"])
                 fr = d.frame.rect(); res["portrait"] = (d.portrait.isChecked() and abs(fr.width() / fr.height() - d.aspect) < 0.02) \
                     or "Лицо не найдено" in d.status.text()
-                d.autoeffect.setChecked(True); spin(100); res["auto"] = d.params()["autoeffect"] is True
-                d.sl["brightness"].setValue(25); spin(20)   # этап 15: автоэффект пишет MOCK-значения в ползунок; возвращаем 25 для проверки умолчаний
+                d.autoeffect.setChecked(True); spin(100); res["auto"] = d.autoeffect.isChecked()
+                d.sl["brightness"].setValue(25); spin(20)   # ручной сдвиг ползунка снимает «Автоэффект»; 25 — для проверки умолчаний
+                res["auto_unchecked"] = not d.autoeffect.isChecked()
                 from PyQt6.QtCore import QRectF, QPointF
                 vp = QRectF(d.view.viewport().rect()); ok42 = []
                 for mv in (None, QPointF(-10000, -10000), QPointF(10000, 10000)):
@@ -201,9 +202,11 @@ def scenario(tmp, chk, out, EXC):
                 d.portrait.setChecked(False); d.load_defaults(); res["sent_portrait"] = bool(saved) and "portrait" in saved
                 res["portrait_restored"] = d.portrait.isChecked() or "Лицо не найдено" in d.status.text()   # нет лица → галочка снимается
                 d3 = pe.PhotoEditor(str(ph), a14, None, field_name="foto")
-                box = ba.detect_face_crop(d3.img, d3.aspect)
+                # D41: crop как в apply_portrait — portrait_params(src, aspect, params), не detect на превью с B/C
+                _pp = ba.portrait_params(d3.src, d3.aspect, d3.params(crop=False))
+                box = tuple(_pp["crop"]) if _pp and _pp.get("crop") else None
                 res["portrait_reopen"] = a14.get_photo_edit_defaults().get("portrait") is True and (
-                    (d3.portrait.isChecked() and d3.crop() == tuple(box)) if box else "Лицо не найдено" in d3.status.text())
+                    (d3.portrait.isChecked() and d3.crop() == box) if box else "Лицо не найдено" in d3.status.text())
                 d3.reject()
                 a14.photo_edit_target = lambda fn: None          # D46: нет фото-элемента → свободная рамка, точный текст
                 try:
@@ -212,7 +215,7 @@ def scenario(tmp, chk, out, EXC):
                     res["d46"] = (d4.aspect is None and t0 == d4.status.text() == "В шаблоне нет фото-элемента, пропорции свободные", t0, d4.status.text()); d4.reject()
                 finally: del a14.photo_edit_target
                 a14.set_photo_edit_defaults({**a14.get_photo_edit_defaults(), "portrait": False})
-                res["defaults"] = bool(saved) and d.sp["brightness"].value() == 25 and d.autoeffect.isChecked() \
+                res["defaults"] = bool(saved) and d.sp["brightness"].value() == 25 \
                     and a14.get_photo_edit_defaults()["brightness"] == 25
                 res["apply"] = d.apply(); res["path"] = d.result_path; res["status"] = d.status.text()
                 if d.isVisible(): d.reject()

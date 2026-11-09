@@ -103,7 +103,7 @@ class ElementItem(QGraphicsRectItem):
         self.is_line = el["type"] == "line"
         self.lw, self.lh = el["w"], el["h"]
         self.setPos(el["x"], el["y"]); self.setZValue(1000 + (el.get("z_order") or 0))
-        # этап 15 п.3: связываемый объект без поля — цвет «не связан» (TODO stage15: фото → поле «Фото» в Backend)
+        # этап 15 п.3: связываемый объект без поля — цвет «не связан»
         self.unlinked = el["type"] in ("field", "barcode", "qr", "photo") and not el.get("field_name") and not (
             el["type"] in ("barcode", "qr") and el.get("static_value"))
         self.setPen(QPen(QColor(UNLINKED_COLOR if self.unlinked else "#3070d0"), 2, Qt.PenStyle.DashLine))
@@ -512,9 +512,8 @@ class LayoutEditor(QWidget):
         if not el or el.get("type") != "photo": self.photo_link.hide(); return
         fn = el.get("field_name")
         if fn: t = f"🔗 Связан с полем «{fn}» (тип «{PHOTO_FIELD_TYPE}»)"
-        else:   # TODO stage15: Backend должен создать поле «Фото» и связать его при вставке
-            t = (f"🔗 Поле «{PHOTO_FIELD_LABEL}» (тип «{PHOTO_FIELD_TYPE}») будет создано и связано автоматически"
-                 " — заглушка, ждёт Backend")
+        else:
+            t = f"Объект не связан — при вставке фото создаётся поле «{PHOTO_FIELD_LABEL}» типа «{PHOTO_FIELD_TYPE}»"
         self.photo_link.setText(t); self.photo_link.show()
 
     def _fill_fields(self, fields=None):
