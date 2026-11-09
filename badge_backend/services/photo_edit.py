@@ -31,9 +31,10 @@ load_photo_for_edit(path, base_dir=None) -> Image   EXIF-поворот + реж
 умолчанию возвращается копия без пересчёта.
 """
 from __future__ import annotations
-import json, os, sys
+import json, logging, os, sys
 from pathlib import Path
 from PIL import Image, ImageEnhance, ImageOps, ImageStat
+log = logging.getLogger(__name__)
 
 DEFAULT_PHOTO_EDIT = {"brightness": 0, "contrast": 0, "scale": 100, "rotate": 0.0, "crop": None, "autoeffect": False,
                       "portrait": False}
@@ -341,21 +342,37 @@ def set_photo_view(con, person_id: int, params: dict | None, field_name: str | N
                     (int(person_id), key, json.dumps(p), _now()))
     return p
 
+def apply_photo_view(src: Image.Image, w: int, h: int, params: dict | None) -> Image.Image:
+    """Единственный путь рендера фото в рамку w×h (общий с карточкой): apply_photo_edit к исходнику
+    в памяти, затем 'placement' (перенесённый photo_config) через transform_photo, без него — cover w×h."""
+    from ..render import transform_photo, _cover_crop
+    params = dict(params or {}); placement = params.pop("placement", None)
+    try:
+        im = apply_photo_edit(src, params)
+    except ValueError as e:
+        log.warning("вид фото не применён (%s) — исходник целиком", e); im = src
+    if placement:
+        return transform_photo(im, w, h, placement)
+    return _cover_crop(im.convert("RGBA"), w, h)
+
+
 def render_photo(con, person_id: int, field_name: str | None = None, *, size=None, base_dir=None):
-    """Фото записи с применённым видом (в памяти) → PIL.Image; size=(w,h) — cover в этот размер
-    (None — размер кадра). Исходник — значение image-поля, иначе persons.photo_path. Нет фото → ValueError."""
+    """Фото записи с применённым видом (в памяти) → PIL.Image; size=(w,h) — в этот размер тем же
+    путём, что фото на карточке (apply_photo_view: placement / cover). None — после apply_photo_edit
+    без вписывания в рамку. Исходник — значение image-поля, иначе persons.photo_path. Нет фото → ValueError."""
     from .photos import resolve_photo_path, project_base_dir
     r = con.execute("SELECT * FROM persons WHERE id=?", (int(person_id),)).fetchone()
     if r is None: raise ValueError(f"нет записи id={person_id}")
     base = Path(base_dir) if base_dir else project_base_dir(con)
     src = resolve_photo_path(dict(r), field_name or None, base)
     if src is None: raise ValueError("у записи нет фото")
-    im = apply_photo_edit(load_photo_for_edit(src), get_photo_view(con, person_id, field_name))
+    src_im = load_photo_for_edit(src)
+    params = get_photo_view(con, person_id, field_name)
     if size is not None:
         w, h = int(size[0]), int(size[1])
         if w <= 0 or h <= 0: raise ValueError("size должен быть > 0")
-        im = ImageOps.fit(im, (w, h), Image.LANCZOS)
-    return im
+        return apply_photo_view(src_im, w, h, params)
+    return apply_photo_edit(src_im, params)
 
 def portrait_params(img: Image.Image, aspect: float, params: dict | None = None) -> dict | None:
     """«Портрет»: кадр по лицу (detect_face_crop, правило D42) для изображения ПОСЛЕ scale/rotate из params.

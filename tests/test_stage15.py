@@ -194,6 +194,27 @@ def test_photo_config_migrated_render_pixel_identical(tmp_path):
     pid = api.create_person(con, {}, photo_path="1.jpg", photo_config="3;3;1.0;0;0;0")
     assert PE.get_photo_view(con, pid)["placement"] == "3;3;1.0;0;0;0"
 
+def test_render_photo_matches_card_zone_after_migrated_placement(tmp_path):
+    """После миграции v6 photo_config превью render_photo совпадает с зоной фото на карточке."""
+    p = tmp_path / "v6.db"; _v6(p)
+    (tmp_path / "p").mkdir()
+    Image.radial_gradient("L").convert("RGB").resize((320, 240)).save(tmp_path / "p" / "1.jpg")
+    raw = sqlite3.connect(p)
+    raw.execute("UPDATE persons SET photo_config='12;-7;1.3;5;9;15' WHERE id=1")
+    raw.commit(); raw.close()
+    con = db.connect(str(p))
+    assert PE.get_photo_view(con, 1)["placement"] == "12;-7;1.3;5;9;15"
+    el = next(e for e in api.list_elements(con) if e["type"] == "photo")
+    x, y, w, h = el["x"], el["y"], el["w"], el["h"]
+    card = render_card_db(con, 1, "front", str(tmp_path))
+    zone = card.crop((x, y, x + w, y + h)).convert("RGB")
+    preview = PE.render_photo(con, 1, size=(w, h), base_dir=tmp_path).convert("RGBA")
+    # зона карточки = плитка поверх фона (#EEEEEE из v6); прозрачные углы после placement
+    expected = Image.new("RGB", (w, h), (0xEE, 0xEE, 0xEE))
+    expected.paste(preview.convert("RGB"), (0, 0), preview.getchannel("A"))
+    assert expected.size == zone.size and expected.tobytes() == zone.tobytes()
+
+
 def test_real_selftest_dbs_render_identical_after_migration(tmp_path):
     srcs = [Path(s) for s in glob.glob("/tmp/bg_selftest_*/*.db") if sqlite3.connect(s).execute("PRAGMA user_version").fetchone()[0] == 6]
     if not srcs: pytest.skip("нет реальных v6-БД на машине")
