@@ -79,16 +79,24 @@ def _placeholder(w, h, label="нет фото"):
     return im
 
 def _photo_view(person, el):
-    """Этап 15: параметры вида фото записи для элемента (person['photo_views'][field_name or ''])."""
-    pv = (person or {}).get("photo_views") or {}
-    return pv.get(el.get("field_name") or "")
+    """Этап 15: вид фото записи для элемента: person['photo_views'][field_name], иначе [''] (перенесённый
+    photo_config — 'placement'). Персона без 'photo_views' (словарь в обход БД) → её photo_config как вид ''."""
+    person = person or {}
+    pv = person.get("photo_views")
+    if pv is None: pv = {"": {"placement": person.get("photo_config")}}
+    v = pv.get(el.get("field_name") or "")
+    return v if v is not None else pv.get("")
 
 def _view_tile(src, w, h, params):
-    """Вид фото (person_photo_views): apply_photo_edit к исходнику В ПАМЯТИ (файл не меняется) → cover w×h."""
+    """Вид фото (person_photo_views) — ЕДИНСТВЕННЫЙ путь рендера фото: apply_photo_edit к исходнику В ПАМЯТИ
+    (файл не меняется), затем 'placement' (перенесённый photo_config: x;y;scale;crop_x;crop_y;angle) через
+    transform_photo, без него — cover w×h."""
     from ..services.photo_edit import apply_photo_edit
+    params = dict(params or {}); placement = params.pop("placement", None)
     try: im = apply_photo_edit(src, params)
     except ValueError as e:
         log.warning("вид фото не применён (%s) — исходник целиком", e); im = src
+    if placement: return transform_photo(im, w, h, placement)
     return _cover_crop(im.convert("RGBA"), w, h)
 
 # ---------- текст ----------
@@ -315,8 +323,7 @@ def render_card(person, elements, side: str = "front", background=None, base_dir
                 pp = resolve_photo_path(person, el, base_dir)
                 src = _open(pp) if pp else None
                 view = _photo_view(person, el)
-                if src and view is not None: tile = _view_tile(src, el["w"], el["h"], view)
-                elif src: tile = transform_photo(src, el["w"], el["h"], person.get("photo_config"))
+                if src: tile = _view_tile(src, el["w"], el["h"], view)
                 else: tile = _placeholder(el["w"], el["h"])
                 _paste_clipped(img, el, tile, st); _box(img, el, {**st, "fill": None})
             elif t == "image":

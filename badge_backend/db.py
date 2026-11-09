@@ -126,6 +126,26 @@ def _utc_to_local(v):
     except ValueError: return v
     return d.astimezone().isoformat(timespec="seconds")
 
+
+def _sync_photo_config_views(con):
+    """persons.photo_config → person_photo_views[''].placement (единственный путь рендера).
+    Колонка photo_config остаётся. Идемпотентно: можно вызывать на уже-v7 БД, где перенос не сделали."""
+    tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "person_photo_views" not in tables or "photo_config" not in _cols(con, "persons"):
+        return
+    con.execute(f"""INSERT OR IGNORE INTO person_photo_views(person_id, field_name, params_json, updated_at)
+        SELECT id, '', json_object('placement', COALESCE(photo_config, '0;0;1.0;0;0;0')), {LOCAL_NOW_SQL} FROM persons""")
+    for trg, ev in (("persons_photo_config_ins", "AFTER INSERT ON persons"),
+                    ("persons_photo_config_upd", "AFTER UPDATE OF photo_config ON persons WHEN NEW.photo_config IS NOT OLD.photo_config")):
+        con.execute(f"DROP TRIGGER IF EXISTS {trg}")
+        con.execute(f"""CREATE TRIGGER {trg} {ev} BEGIN
+            INSERT INTO person_photo_views(person_id, field_name, params_json, updated_at)
+            VALUES (NEW.id, '', json_object('placement', COALESCE(NEW.photo_config, '0;0;1.0;0;0;0')), {LOCAL_NOW_SQL})
+            ON CONFLICT(person_id, field_name) DO UPDATE SET
+                params_json = json_set(params_json, '$.placement', json_extract(excluded.params_json, '$.placement')),
+                updated_at = excluded.updated_at; END""")
+
+
 def _v7_templates(con):
     """v7 (этап 15): несколько шаблонов, вид фото записи, поле «Фото», локальное время. Идемпотентно по частям.
     1) templates (+style_json — шрифт/отступы шаблона); все элементы и фоны → шаблон «Основной» (активный);
@@ -134,6 +154,7 @@ def _v7_templates(con):
     4) person_photo_views (вид фото записи, исходник не меняется);
     5) есть фото (photo_path у записей или фото-объекты) и нет ни одного image-поля → создаётся «Фото», persons.photo_path копируется в него, несвязанные фото-объекты
        связываются с ним (файлы и photo_path не трогаются);
+    7) persons.photo_config → person_photo_views[''] {'placement': ...} + триггеры синхронизации (колонка остаётся);
     6) время: триггеры пишут локальное время со смещением; старые created_at/updated_at (UTC) → локальные."""
     con.execute("""CREATE TABLE IF NOT EXISTS templates (
         id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -186,6 +207,7 @@ def _v7_templates(con):
                     ('$."Фото"', '$."Фото"'))
         con.execute("UPDATE template_elements SET field_name=? WHERE type='photo' AND COALESCE(field_name, '') = ''",
                     (PHOTO_FIELD,))
+    _sync_photo_config_views(con)
     rows = con.execute("SELECT id, created_at, updated_at FROM persons").fetchall()
     for pid, c, u in rows:
         c2, u2 = _utc_to_local(c), _utc_to_local(u)
@@ -229,7 +251,11 @@ def migrate(con) -> int:
                 step(con); con.execute(f"PRAGMA user_version={i+1}"); con.execute("COMMIT")
             except BaseException:
                 con.execute("ROLLBACK"); raise
-    return con.execute("PRAGMA user_version").fetchone()[0]
+    v = con.execute("PRAGMA user_version").fetchone()[0]
+    if v >= 7:
+        _sync_photo_config_views(con)
+        con.commit()
+    return v
 
 def get_schema_version(con) -> int:
     """Текущая версия схемы БД (PRAGMA user_version); после migrate() == LATEST."""

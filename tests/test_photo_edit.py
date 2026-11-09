@@ -59,10 +59,11 @@ def test_crop_after_transform():
 
 def test_autoeffect_and_manual_on_top():
     dull = Image.new("RGB", (50, 50)); dull.putdata([(60 + (i % 50) // 5,) * 3 for i in range(2500)])   # тусклое, узкий диапазон
-    a = api.apply_photo_edit(dull, {"autoeffect": True})
-    ex = a.convert("L").getextrema()
-    assert ex[1] - ex[0] > 150 and abs(_mean(a) - 128) < 40
-    assert _mean(api.apply_photo_edit(dull, {"autoeffect": True, "brightness": 40})) > _mean(a) + 15
+    assert api.apply_photo_edit(dull, {"autoeffect": True}).tobytes() == dull.tobytes()  # флаг не меняет пиксели
+    p = api.autoeffect_params(dull); assert p["autoeffect"] is True
+    a = api.apply_photo_edit(dull, p)
+    assert a.tobytes() != dull.tobytes()
+    assert api.apply_photo_edit(dull, {**p, "autoeffect": False}).tobytes() == a.tobytes()  # флаг игнорируется
 
 def test_rgba_keeps_alpha():
     im = Image.new("RGBA", (20, 20), (100, 100, 100, 0)); im.paste((200, 0, 0, 255), (0, 0, 10, 10))

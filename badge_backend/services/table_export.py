@@ -97,7 +97,7 @@ def _export_db(con, path, ids, photo_dir):
                             "VALUES (?,?,?,?,?,?,?)", (fj, pp, r["photo_config"], r["print_mark"],
                                                        r["printed_at"], r["created_at"], r["updated_at"])).lastrowid
                 for v in _q(con, "SELECT field_name, params_json, updated_at FROM person_photo_views WHERE person_id=?", (r["id"],)):
-                    new.execute("INSERT INTO person_photo_views(person_id, field_name, params_json, updated_at) VALUES (?,?,?,?)",
+                    new.execute("INSERT OR REPLACE INTO person_photo_views(person_id, field_name, params_json, updated_at) VALUES (?,?,?,?)",
                                 (npid, v["field_name"], v["params_json"], v["updated_at"]))
             # этап 15: все шаблоны (элементы, фоны, стиль) и активный шаблон; в новой БД уже есть пустой «Основной»
             tmap, first = {}, new.execute("SELECT id FROM templates ORDER BY id LIMIT 1").fetchone()[0]

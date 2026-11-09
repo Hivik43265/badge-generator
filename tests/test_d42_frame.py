@@ -34,10 +34,13 @@ def test_frame_spec(tmp_path):
     assert pe.get_photo_frame_spec(con, "nope") is None
     api.upsert_field(con, "t", "Текст")
     assert pe.get_photo_frame_spec(con, "t") is None
-    assert pe.get_photo_frame_spec(con, None) is None                     # нет фото-элемента без поля
-    api.create_element(con, "photo", 0, 0, 413, 531)                      # 35×45 мм, photo_path
-    s0 = pe.get_photo_frame_spec(con)
+    s_first = pe.get_photo_frame_spec(con)                                # без field — первый фото активного шаблона
+    assert s_first["element_id"] == eid and s_first["aspect"] == s["aspect"]
+    eid2 = api.create_element(con, "photo", 0, 0, 413, 531)               # 35×45 мм; id больше eid → не первый
+    assert pe.get_photo_frame_spec(con)["element_id"] == eid               # без предпочтения поля «Фото»
+    s0 = pe.get_photo_frame_spec(con, element_id=eid2)
     assert (s0["width_mm"], s0["height_mm"]) == (34.97, 44.96) and (s0["width_px"], s0["height_px"]) == (413, 531)
+    assert s0["element_id"] == eid2
 
 def _check(img, crop, aspect):
     fx, fy, fw, fh = _haar(img)
@@ -79,3 +82,29 @@ def test_photo_edit_target(tmp_path):
     t = api.photo_edit_target(con, "pic")
     assert t == {**pe.get_photo_frame_spec(con, "pic"), "size": (413, 531)} and t["element_id"] == eid
     assert pe.photo_edit_target(con, "nope") is None
+
+
+def test_frame_spec_element_id(tmp_path):
+    con, eid = _prj(tmp_path, "e", 200, 100)
+    s = pe.get_photo_frame_spec(con, element_id=eid)
+    assert s["element_id"] == eid and abs(s["aspect"] - 2.0) < 1e-9
+    assert api.photo_edit_target(con, element_id=eid)["size"] == (s["width_px"], s["height_px"])
+    from badge_backend.services import templates as T
+    b = T.create_template(con, "Другой"); T.set_active_template(con, b)
+    with pytest.raises(ValueError, match="не на активном шаблоне"):
+        pe.get_photo_frame_spec(con, element_id=eid)
+    T.set_active_template(con, T.list_templates(con)[0]["id"])
+    text = api.create_element(con, "text", 0, 0, 10, 10, static_value="x")
+    with pytest.raises(ValueError, match="тип"):
+        pe.get_photo_frame_spec(con, element_id=text)
+    with pytest.raises(ValueError, match="нет элемента"):
+        pe.get_photo_frame_spec(con, element_id=999999)
+
+def test_frame_spec_no_foto_preference(tmp_path):
+    """Без element_id/field — первый фото-элемент (front, z_order, id), не поле «Фото»."""
+    con = api.connect(tmp_path / "pref.db")
+    api.upsert_field(con, "pic", "Снимок", data_type="image")
+    a = api.create_element(con, "photo", 0, 0, 80, 80, field_name="pic")     # первый по id
+    api.create_element(con, "photo", 0, 0, 200, 50)                          # авто-«Фото», больше id
+    s = pe.get_photo_frame_spec(con)
+    assert s["element_id"] == a and abs(s["aspect"] - 1.0) < 1e-9
