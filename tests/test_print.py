@@ -64,3 +64,44 @@ def test_print_progress_cancel_and_snapshot(app, demo_db, tmp_path):
     r = print_snapshot(snapshot(c, [ids[0]], "front"), _pdf(tmp_path, "one.pdf"), base_dir=d,
                        progress=lambda a, b: calls.append((a, b)))
     assert r == 1 and calls[-1] == (1, 1) and _boxes(tmp_path / "one.pdf")[0] == 1
+
+
+def test_print_overrides_a4_page_to_cr80(app, demo_db, tmp_path):
+    """После QPrintDialog принтер часто остаётся с A4 — print_cards должен выставить CR80."""
+    from PyQt6.QtCore import QMarginsF
+    from PyQt6.QtGui import QPageLayout, QPageSize
+    from badge_backend.services.print_service import pdf_pages_are_cr80, pdf_page_sizes_mm
+    c, ids, d = demo_db
+    pr = QPrinter(QPrinter.PrinterMode.HighResolution)
+    pr.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+    pr.setOutputFileName(str(tmp_path / "from_a4.pdf"))
+    pr.setResolution(300)
+    a4 = QPageSize(QPageSize.PageSizeId.A4)
+    pr.setPageLayout(QPageLayout(a4, QPageLayout.Orientation.Portrait,
+                                 QMarginsF(10, 10, 10, 10), QPageLayout.Unit.Millimeter))
+    pr.setFullPage(False)
+    assert print_cards(c, pr, ("front",), base_dir=d, allow_missing_photo=True) == 2
+    sizes = pdf_page_sizes_mm(tmp_path / "from_a4.pdf")
+    assert pdf_pages_are_cr80(tmp_path / "from_a4.pdf"), sizes
+    for w, h in sizes:
+        assert abs(w - 210) > 5 and abs(h - 297) > 5, (w, h)
+    assert pr.fullPage() and pr.pageLayout().margins().left() == 0
+
+def test_cr80_paint_rect_not_stretched_to_a4(app, tmp_path):
+    """Даже если страница принтера A4, область рисунка — 85.6×54 мм, не весь лист."""
+    from PyQt6.QtCore import QMarginsF
+    from PyQt6.QtGui import QPageLayout, QPageSize
+    from badge_backend.services.print_service import _cr80_paint_rect
+    pr = QPrinter(QPrinter.PrinterMode.HighResolution)
+    pr.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+    pr.setOutputFileName(str(tmp_path / "n.pdf"))
+    pr.setResolution(300)
+    a4 = QPageSize(QPageSize.PageSizeId.A4)
+    pr.setPageLayout(QPageLayout(a4, QPageLayout.Orientation.Portrait,
+                                 QMarginsF(0, 0, 0, 0), QPageLayout.Unit.Millimeter))
+    r = _cr80_paint_rect(pr)
+    paper = pr.paperRect(pr.Unit.DevicePixel)
+    assert r.width() < paper.width() * 0.6 and r.height() < paper.height() * 0.4
+    mm = pr.paperRect(pr.Unit.Millimeter)
+    assert abs(r.width() / paper.width() * mm.width() - 85.6) < 0.3
+    assert abs(r.height() / paper.height() * mm.height() - 54.0) < 0.3
