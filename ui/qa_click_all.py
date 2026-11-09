@@ -217,7 +217,8 @@ def scenario(tmp, chk, out, EXC):
                 a14.set_photo_edit_defaults({**a14.get_photo_edit_defaults(), "portrait": False})
                 res["defaults"] = bool(saved) and d.sp["brightness"].value() == 25 \
                     and a14.get_photo_edit_defaults()["brightness"] == 25
-                res["apply"] = d.apply(); res["path"] = d.result_path; res["status"] = d.status.text()
+                res["apply"] = d.apply(); res["path"] = d.result_path; res["view"] = d.view_params
+                res["src_path"] = pb.text(); res["status"] = d.status.text(); res["applied"] = d.applied
                 if d.isVisible(): d.reject()
             pe.editor_hook = _drive
             try: QTest.mouseDClick(pb.still, Qt.MouseButton.LeftButton); spin(50)
@@ -228,7 +229,8 @@ def scenario(tmp, chk, out, EXC):
             f2 = RecordForm(a14, pid, w2); f2.show(); spin(30); pb2 = f2.edits["foto"]
             def _sz(rel):
                 q = QImage(str(tmp / rel)) if rel else QImage(); return [q.width(), q.height()]
-            pe.editor_hook = lambda d: (r2.update(ok=d.apply(), path=d.result_path), r2.update(sz=_sz(d.result_path)), d.isVisible() and d.reject())
+            pe.editor_hook = lambda d: (r2.update(ok=d.apply(), path=d.result_path, view=d.view_params, applied=d.applied,
+                                                   form_path=pb2.text()), d.isVisible() and d.reject())
             try: tgt44 = a14.photo_edit_target("foto")
             except (LookupError, ValueError): tgt44 = None
             try: QTest.mouseDClick(pb2.still, Qt.MouseButton.LeftButton); spin(50)
@@ -242,8 +244,7 @@ def scenario(tmp, chk, out, EXC):
                     f3 = RecordForm(a14, pid, w2); b3 = f3.edits["foto"]; ok3 = b3.from_file(str(srcf)); cp = b3.text()
                     tracked = list(f3.photo_session.created); f3.reject(); spin(10)
                     ff.append((srcf.name, ok3 and cp != str(srcf) and tracked == [cp] and srcf.is_file() and not (tmp / cp).is_file(), cp))
-            db1 = a14.get_person(pid)["fields"].get("foto"); p2 = r2.get("path")
-            gone = p2 is not None and not (tmp / p2).is_file(); disc = getattr(f2, "discarded", None); a14.close()
+            db1 = a14.get_person(pid)["fields"].get("foto"); p2 = r2.get("path"); disc = getattr(f2, "discarded", None); a14.close()
             chk("DLG «Редактировать изображение» по двойному клику на фото формы записи (не открывается сам после файла)",
                 not auto and seen and seen[0][:2] == ("Редактировать изображение", True) and pb.act_edit in pb.still.actions() and len(EXC) == n,
                 seen or "не открылся")
@@ -258,18 +259,17 @@ def scenario(tmp, chk, out, EXC):
                     chk("DLG Редактор фото D41: «Портрет» сохраняется в умолчаниях, восстанавливается и при открытии ставит рамку по лицу",
                         res.get("sent_portrait") and res.get("portrait_restored") and res.get("portrait_reopen"), res)
                 chk("DLG Редактор фото: пропорции рамки = Backend photo_edit_target (поле image)", res.get("aspect") and res["aspect"][0] == res["aspect"][1], res.get("aspect"))
-                if tgt44:
-                    chk("DLG Редактор фото D44: «Применить» (target_field) → файл размера photo_edit_target['size']",
-                        r2.get("sz") == list(tgt44["size"]), (r2.get("sz"), tgt44.get("size")))
+                # D44 (файл размера target) снят: «Применить» больше не пишет JPEG (spec 6)
                 if real_d:
                     chk("DLG «Из файла…» + «Отмена»: копия сессии удалена, исходник цел (вне и внутри photos/)", len(ff) == 2 and all(x[1] for x in ff), ff)
-                    chk("DLG Редактор фото D43: «Отмена» формы → PhotoSession.discard() удаляет файл редактора без ссылок",
-                        disc == [p2] and gone and db1 == db0 and (tmp / db0).is_file(), (disc, p2, gone))
+                    # D43 для файла редактора снят (Apply не создаёт файл); discard копии «Из файла…» проверен выше
                 chk("DLG Редактор фото: умолчания проекта сохраняются и восстанавливаются (Backend)", res.get("defaults"), res)
-                chk("DLG Редактор фото: «Применить» → новый photos/… в поле image", res.get("apply") is True and str(res.get("path", "")).startswith("photos/")
-                    and val == res["path"] and (tmp / val).is_file() and ph.is_file() and db0 == fv, res)
-                chk("DLG Редактор фото: «Применить» + «Отмена» формы существующей записи — значение в БД не меняется",
-                    r2.get("ok") is True and form2 == r2.get("path") != db0 and mid == db0 == db1, {**r2, "db0": db0, "db1": db1})
+                chk("DLG Редактор фото: «Применить» → только вид (spec 6), путь исходника, без нового JPEG",
+                    res.get("apply") is True and res.get("applied") and res.get("path") is None and res.get("view")
+                    and val == res.get("src_path") and ph.is_file() and db0 == fv, res)
+                chk("DLG Редактор фото: «Применить» + «Отмена» формы существующей записи — путь в БД не меняется",
+                    r2.get("ok") is True and r2.get("applied") and form2 == db0 == mid == db1 and r2.get("path") is None,
+                    {**r2, "db0": db0, "db1": db1, "form2": form2})
         except Exception:  # noqa: BLE001
             chk("DLG Импорт/экспорт этапа 13 без исключений", False, traceback.format_exc()[-800:])
         finally:

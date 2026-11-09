@@ -922,7 +922,7 @@ if _ba14.photo_edit_available():
     ed14b = pe.PhotoEditor(str(tmp / "p14.jpg"), api14, None, field_name="foto"); assert ed14b.sp["brightness"].value() == 20; ed14b.reject()
     api14.set_photo_edit_defaults(dict(_ba14.PHOTO_EDIT_DEFAULTS)); ed14.load_defaults(); assert ed14.params(crop=False)["brightness"] == 0
     # ValueError → статус по-русски
-    ed14.frame.setRect(ed14.frame.rect().translated(100000, 100000)); assert ed14.apply() is False and "Фото не сохранено" in ed14.status.text()
+    ed14.frame.setRect(ed14.frame.rect().translated(100000, 100000)); assert ed14.apply() is False and "Вид не сохранён" in ed14.status.text()
     ed14.reset_frame()
     # Портрет: рамка по лицу (или «Лицо не найдено»)
     ed14.portrait.setChecked(True); spin(10)
@@ -958,23 +958,26 @@ if _ba14.photo_edit_available():
     finally: _ba14._api.load_photo_for_edit = _lp
     (tmp / "bad14.jpg").write_bytes(b"not an image"); edx = pe.PhotoEditor(str(tmp / "bad14.jpg"), api14, None, field_name="foto")
     assert edx.status.text().startswith("Не удалось открыть фото") and edx.apply() is False; edx.reject()
-    # Применить (новая запись → apply_and_save_photo без field_name; путь в поле формы → «Сохранить»)
-    assert ed14.apply() is True and ed14.result_path.startswith("photos/") and (tmp / ed14.result_path).is_file()
-    assert ie14.text() == ed14.result_path and (tmp / "p14.jpg").is_file(), (ie14.text(), ed14.result_path)
-    if _REAL_TARGET:   # D44: файл «Применить» ровно размера photo_edit_target(field)['size']
-        from PyQt6.QtGui import QImage
-        _q = QImage(str(tmp / ed14.result_path)); _t = api14.photo_edit_target("foto")
-        assert _t and [_q.width(), _q.height()] == list(_t["size"]), ((_q.width(), _q.height()), _t)
-    rf14.save(); pid14 = api14.list_persons()[-1]["id"]; assert api14.list_persons()[-1]["fields"]["foto"] == ed14.result_path
-    # существующая запись: «Применить» → путь только в форме; «Отмена» формы → значение в БД не меняется
+    # Применить (spec 6): только вид, путь формы = исходник, нового JPEG нет
+    src_before = ie14.text(); photos_before = set((tmp / "photos").glob("*")) if (tmp / "photos").exists() else set()
+    assert ed14.apply() is True and ed14.applied and ed14.result_path is None and ed14.view_params
+    assert ie14.text() == src_before and (tmp / "p14.jpg").is_file(), (ie14.text(), src_before)
+    photos_after = set((tmp / "photos").glob("*")) if (tmp / "photos").exists() else set()
+    assert photos_after == photos_before, (photos_before, photos_after)   # Apply не создал файл
+    # новая запись: set_photo_view при «Сохранить» формы
+    assert ie14.pending_view is not None
+    rf14.save(); pid14 = api14.list_persons()[-1]["id"]
+    assert api14.list_persons()[-1]["fields"]["foto"] == src_before
+    assert api14.get_photo_view(pid14, "foto")["brightness"] == ed14.view_params["brightness"]
+    # существующая запись: «Применить» → set_photo_view, путь не меняется; «Отмена» формы → путь в БД тот же
     rf14b = RecordForm(api14, pid14, w); ie14b = rf14b.edits["foto"]; old = api14.get_person(pid14)["fields"]["foto"]
     QTest.mouseDClick(ie14b.still, Qt.MouseButton.LeftButton); spin(30); ed14c = got14[-1]
-    assert ed14c.apply() is True and ed14c.result_path != old and ie14b.text() == ed14c.result_path
-    assert api14.get_person(pid14)["fields"]["foto"] == old                                  # до «Сохранить» БД не тронута
+    assert ed14c.apply() is True and ed14c.result_path is None and ie14b.text() == old
+    assert api14.get_person(pid14)["fields"]["foto"] == old and (tmp / old).is_file()
+    view_c = api14.get_photo_view(pid14, "foto")
+    assert view_c["brightness"] == ed14c.view_params["brightness"]
     rf14b.reject(); assert api14.get_person(pid14)["fields"]["foto"] == old and (tmp / old).is_file()
-    # D43: «Отмена» формы → discard_photo для каждого файла редактора этой сессии (UI сам не удаляет)
-    if _REAL_SESSION: assert rf14b.discarded == [ed14c.result_path] and not (tmp / ed14c.result_path).is_file(), rf14b.discarded
-    # «Из файла…» → PhotoSession.save_photo: копия учитывается и удаляется на «Отмена», исходник цел (и вне, и внутри photos/)
+    # D43: Apply больше не создаёт файл редактора; «Из файла…»+«Отмена» по-прежнему discard копии
     if _REAL_SESSION:
         (tmp / "photos").mkdir(exist_ok=True); shutil.copy(tmp / "p14.jpg", tmp / "photos" / "user_src14.jpg")
         for srcf in (tmp / "p14.jpg", tmp / "photos" / "user_src14.jpg"):
@@ -982,16 +985,17 @@ if _ba14.photo_edit_available():
             cp = ief.text(); assert cp.startswith("photos/") and (tmp / cp).resolve() != srcf.resolve() and (tmp / cp).is_file()
             assert rff.photo_session.created == [cp], rff.photo_session.created
             rff.reject(); assert srcf.is_file() and not (tmp / cp).is_file() and rff.discarded == [cp], (srcf, cp, rff.discarded)
-    # «Сохранить» → PhotoSession.commit(): файл, на который ссылается запись, остаётся
+    # «Сохранить» после Apply: путь исходника, вид в working copy
     rf14c = RecordForm(api14, pid14, w); ie14c = rf14c.edits["foto"]; QTest.mouseDClick(ie14c.still, Qt.MouseButton.LeftButton); spin(30)
-    ed14d = got14[-1]; assert ed14d.session is rf14c.photo_session and ed14d.apply() is True; rf14c.save()
-    assert api14.get_person(pid14)["fields"]["foto"] == ed14d.result_path and (tmp / ed14d.result_path).is_file()
+    ed14d = got14[-1]; assert ed14d.apply() is True and ed14d.result_path is None; rf14c.save()
+    assert api14.get_person(pid14)["fields"]["foto"] == old and (tmp / old).is_file()
+    assert api14.get_photo_view(pid14, "foto")["brightness"] == ed14d.view_params["brightness"]
 else:
     assert "apply_photo_edit" in ed14.status.text() and ed14.apply() is False
     assert ed14.find_face() is False and "Лицо не найдено" in ed14.status.text()
 pe.editor_hook = None
 api14.close()
-ok("этап 14: редактор фото — двойной клик/контекстное меню (один QAction), без автооткрытия, ползунки с полями, превью Backend, рамка с пропорциями (углы/перенос), Портрет (лицо), Автоэффект, умолчания проекта (Backend), ValueError в статусе, Применить → apply_and_save_photo → поле формы → «Сохранить»; «Отмена» формы не меняет БД, discard_photo (D43); D41 портрет в умолчаниях; D42 рамка видна; пропорции photo_edit_target")
+ok("этап 14/15: редактор фото — Применить → только set_photo_view (spec 6, без JPEG); путь исходника; D43 discard на «Из файла…»; D41/D42/пропорции")
 # расположение окна сохраняется автоматически в closeEvent
 _cfg2 = tempfile.mkdtemp(prefix="bg_ui_cfg2_")
 QSettings.setPath(QSettings.Format.NativeFormat, QSettings.Scope.UserScope, _cfg2)

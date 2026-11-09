@@ -5,7 +5,7 @@ backend_api; исходник только через load_photo_for_edit). Пу
 перетаскивание и изменение размера за углы с сохранением пропорций. Координаты рамки (crop) —
 в пикселях изображения после EXIF-поворота, масштаба и вращения (не пиксели исходного файла).
 «Портрет» — detect_face_crop / portrait_params Backend.
-«Применить» → save_photo → относительный путь (в значение поля типа image). Внизу только «Применить» / «Отмена».
+«Применить» → только set_photo_view (исходник не меняется, нового JPEG нет). Внизу только «Применить» / «Отмена».
 """
 import json
 from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF
@@ -13,8 +13,8 @@ from PyQt6.QtGui import QPen, QColor, QPixmap, QAction, QTransform, QPainterPath
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QSlider, QSpinBox, QCheckBox,
                              QPushButton, QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsPixmapItem, QFrame)
 from .backend_api import (pil_to_qimage, PHOTO_EDIT_DEFAULTS, photo_edit_available, face_detect_available,
-                          open_image, apply_photo_edit, apply_photo_view, detect_face_crop, image_png_bytes,
-                          apply_and_save_available, NO_TARGET_FN, NO_TARGET,
+                          open_image, apply_photo_edit, apply_photo_view, detect_face_crop,
+                          NO_TARGET_FN, NO_TARGET,
                           portrait_params, autoeffect_params)
 
 editor_hook = None   # тесты: editor_hook(dialog) вместо exec(); возвращает результат exec
@@ -122,6 +122,7 @@ class PhotoEditor(QDialog):
         get_photo_editor_state / photo_edit_target(..., element_id=) (третий позиционный аргумент не используется)."""
         super().__init__(parent); self.setWindowTitle("Редактировать изображение"); self.resize(520, 640)
         self.path, self.api, self.result_path = path, api, None
+        self.view_params, self.applied = None, False  # spec 6: Apply → только вид, без нового файла
         self.field_name, self.person_id, self.session = field_name, person_id, session   # session — Backend PhotoSession формы
         self.element_id, self._autoeffect_baked = element_id, False
         self.target, self.aspect, self.target_error, self._editor_state = None, None, None, None
@@ -399,28 +400,28 @@ class PhotoEditor(QDialog):
 
     # ---- применить ----
     def apply(self):
-        """«Применить» → Backend apply_and_save_photo БЕЗ person_id/field_name (новый файл, исходник не трогается).
-        Путь идёт в форму записи и попадает в БД только по «Сохранить»; при «Отмена» формы файл остаётся в photos/
-        без ссылки (согласовано с Backend). Нет apply_and_save_photo → apply_photo_edit + save_photo (байты)."""
+        """«Применить» (spec 6): только вид — set_photo_view; исходник и путь формы не меняются, JPEG не создаётся.
+        person_id есть → сразу в working copy (session.con). Новая запись → view_params в форму, set_photo_view при «Сохранить».
+        Карточка/печать по-прежнему через render_photo / apply_photo_view."""
         if self.src is None: self.status.setText(self.load_error or "Фото не загружено"); return False
         if not photo_edit_available():
             self.status.setText("Применить нельзя: в Backend нет apply_photo_edit"); return False
         if self.api is None:
             self.status.setText("Применить нельзя: нет открытого проекта"); return False
         p = self.params()
-        p_file = {**p, "autoeffect": False} if getattr(self, "_autoeffect_baked", False) else p
+        # проверка crop/параметров без записи файла (тот же apply_photo_edit, что превью)
         try:
-            if apply_and_save_available() and self.path:
-                kw = {"target_field": self.field_name} if self.field_name else {}   # D44: размер — только Backend
-                self.result_path = (self.session.apply_and_save_photo(self.path, p_file, **kw) if self.session is not None
-                                    else self.api.apply_and_save_photo(self.path, p_file, **kw))
-            else:
-                save = self.session.save_photo if self.session is not None else self.api.save_photo
-                self.result_path = save(image_png_bytes(apply_photo_edit(self.src, p_file)), person_id=None, ext="png")
-            if self.person_id is not None and hasattr(self.api, "set_photo_view"):
-                self.api.set_photo_view(self.person_id, p, self.field_name)
+            apply_photo_edit(self.src, {**p, "autoeffect": False} if getattr(self, "_autoeffect_baked", False) else p)
         except ValueError as e:
-            self.status.setText(f"Фото не сохранено: {e}"); return False
+            self.status.setText(f"Вид не сохранён: {e}"); return False
+        try:
+            if self.person_id is not None:
+                if not hasattr(self.api, "set_photo_view"):
+                    raise ValueError("в Backend нет set_photo_view")
+                self.api.set_photo_view(self.person_id, p, self.field_name)
+            self.view_params, self.applied, self.result_path = p, True, None
+        except ValueError as e:
+            self.status.setText(f"Вид не сохранён: {e}"); return False
         self.accept(); return True
 
 

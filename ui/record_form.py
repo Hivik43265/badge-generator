@@ -186,6 +186,18 @@ class RecordForm(QDialog):
             else:
                 self.person_id = self.api.create_person(fields, photo, None, 0)
             self.api.update_photo_config(self.person_id, self.config_string())   # только эта запись
+            # spec 6: вид с «Применить» до появления id — теперь в working copy
+            if hasattr(self.api, "set_photo_view"):
+                for n, e in self.image_edits.items():
+                    pv = getattr(e, "pending_view", None)
+                    if pv is not None:
+                        self.api.set_photo_view(self.person_id, pv, n); e.pending_view = None
+                pv = getattr(self.photo_block, "pending_view", None)
+                if pv is not None:
+                    self.api.set_photo_view(self.person_id, pv, None); self.photo_block.pending_view = None
+                # person_id у блоков (повторное открытие редактора в той же форме)
+                for blk in (self.photo_block, *self.image_edits.values()):
+                    blk.person_id = self.person_id
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "Ошибка сохранения", str(e)); return
         if self.photo_session is not None: self.committed = self.photo_session.commit(discard_unreferenced=True)  # промежуточные

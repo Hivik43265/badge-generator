@@ -57,6 +57,7 @@ class PhotoBlock(QWidget):
         # этап 14: один QAction «Редактировать изображение…» — двойной клик по фото и контекстное меню
         from .photo_editor import make_edit_action
         self.save_photo, self.editor, self.session = None, None, None   # session — Backend PhotoSession формы (D43)
+        self.pending_view = None   # spec 6: вид с «Применить» до появления person_id
         self.api, self.field_name, self.person_id = None, None, None     # задаёт RecordForm
         self.act_edit = make_edit_action(self, self.edit_photo)
         self.still.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu); self.still.addAction(self.act_edit)
@@ -168,12 +169,15 @@ class PhotoBlock(QWidget):
         return pe.editor_hook(d) if pe.editor_hook is not None else d.exec()
 
     def _edited(self, d):
-        if not d.result_path: return
+        """spec 6: «Применить» не подменяет путь — исходник остаётся; вид уже в set_photo_view или в pending_view."""
+        if not getattr(d, "applied", False): return
         if self.captured:
             try: os.remove(self.captured)
             except OSError: pass
-        self.captured, self.path = None, d.result_path
-        self._show_still(); self._update_buttons(); self.changed.emit(self.path)
+            self.captured = None
+        # новая запись: set_photo_view после create_person в RecordForm.save
+        self.pending_view = None if d.person_id is not None else getattr(d, "view_params", None)
+        self._show_still(); self._update_buttons()
 
     def _update_buttons(self):
         self.b_shot.setEnabled(self.has_camera and self.captured is None); self.b_retake.setEnabled(self.has_camera and self.captured is not None)
