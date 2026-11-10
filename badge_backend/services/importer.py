@@ -205,7 +205,41 @@ def import_file(con, path, mapping=None, photo_dir=None, validate=True, *, label
     return import_records(con, recs, labs, photo_dir, validate, labels=labels, require_photo=require_photo,
                           progress=progress)
 
-from .photos import resolve_photo_path, photo_file_issue  # noqa: E402
+from .photos import resolve_photo_path, photo_file_issue, abs_path, save_photo  # noqa: E402
+
+def photo_target(con, keys=()) -> str:
+    """D38: куда пишется фото строки: image-поле, на которое указывает mapping (есть в keys), иначе первое
+    image-поле проекта (sort_order), иначе 'photo_path' (headers.PHOTO_TARGET)."""
+    img = [r[0] for r in con.execute("SELECT name FROM person_fields WHERE data_type='image' ORDER BY sort_order, name")]
+    return next((k for k in img if k in set(keys)), img[0] if img else "photo_path")
+
+def _file_backed_base(con):
+    """Каталог проекта для photos/ (D39); БД в памяти → None (копирование не выполняется)."""
+    for _, name, file in con.execute("PRAGMA database_list"):
+        if name == "main": return Path(file).resolve().parent if file else None
+    return None
+
+class _PhotoStore:
+    """D38/D39: ЕДИНОЕ правило для всех источников фото импорта (колонка-путь, photo_dir, встроенные картинки xlsx,
+    image-поля): файл из photo_dir (или абсолютный) копируется в <проект>/photos/ через save_photo, в запись
+    пишется возвращённый относительный путь. Нет файла (PHOTO_MISSING) — значение остаётся как указано;
+    пустые/битые отсеяны раньше (PHOTO_EMPTY/BROKEN → значение очищено). БД в памяти — без копирования.
+    Один исходник → одна копия на импорт; при отмене/ошибке созданные копии удаляются."""
+    def __init__(self, con, photo_dir):
+        self.con, self.photo_dir, self.base = con, photo_dir, _file_backed_base(con)
+        self.cache, self.saved = {}, []
+    def store(self, value):
+        if value in (None, "") or self.base is None: return value
+        src = abs_path(value, self.photo_dir)
+        if photo_file_issue(src): return value
+        key = str(src.resolve())
+        if key not in self.cache:
+            rel = save_photo(self.con, src.read_bytes(), ext=src.suffix or "jpg", base_dir=self.base)
+            self.cache[key] = rel; self.saved.append(self.base / rel)
+        return self.cache[key]
+    def rollback(self):
+        for f in self.saved: f.unlink(missing_ok=True)
+        self.saved.clear(); self.cache.clear()
 
 def import_records(con, recs, labs, photo_dir=None, validate=True, *, labels=None, require_photo=False,
                    progress=None, cancel=None, extra=None) -> ImportReport:
@@ -313,6 +347,7 @@ def import_records(con, recs, labs, photo_dir=None, validate=True, *, labels=Non
                     if err: bad.append({"field": k, "code": "FIELD_TYPE", "details": err})
             if bad: verrs.setdefault(i, []).extend(bad)
     total = len(recs)
+    store = _PhotoStore(con, photo_dir)
     try:
         with con:
             for k, lab in (labels or {}).items():   # явные label — только для существующих полей
@@ -326,6 +361,8 @@ def import_records(con, recs, labs, photo_dir=None, validate=True, *, labels=Non
                     n = norm({k: v for k, v in r.items() if k != "_row"})
                     if idx in clear_photo: n["photo_path"] = None
                     for k in clear_img.get(idx, ()): n[k] = ""
+                    for k in ("photo_path", *image_f):   # D38/D39: одно правило для всех фото
+                        if n.get(k) not in (None, ""): n[k] = store.store(n[k])
                     fields = {}
                     for k, v in n.items():
                         if k in ("photo_path", "photo_config") or k not in ftypes or v in ("", None): continue
@@ -339,5 +376,8 @@ def import_records(con, recs, labs, photo_dir=None, validate=True, *, labels=Non
                     rep.added += 1; rep.ids.append(cur.lastrowid)
                 _tick(progress, idx + 1, total, cancel)
     except _Cancel:
+        store.rollback()
         return ImportReport(validator=rep.validator, cancelled=True)
+    except BaseException:
+        store.rollback(); raise
     return rep

@@ -309,18 +309,25 @@ def import_rows(con, sheet: Sheet, mapping: dict | None = None, *, header: bool 
             imgs, _ = _xlsx_images(sheet, photo_dir, 1)
             # номер строки Excel: строка данных r['_row'] совпадает, если заголовок — первая строка листа
             raw_first = next((i for i, r in enumerate(_raw(sheet)) if any(_cell(c) != "" for c in r)), 0)
+            from .importer import photo_target
+            tgt = photo_target(con, {k for r in recs for k in r})   # D38: image-поле из mapping / первое / photo_path
             for r in recs:
                 xl_row = r["_row"] + raw_first
-                if not r.get("photo_path") and xl_row in imgs: r["photo_path"] = imgs[xl_row]
+                if not r.get(tgt) and xl_row in imgs: r[tgt] = imgs[xl_row]
             extracted = set(imgs.values())
             rep = import_records(con, recs, labs, photo_dir, validate, labels=labels, require_photo=require_photo,
                                  progress=progress, cancel=cancel)
             bad = {i["file"] for i in rep.photo_issues}
-            for name in extracted:   # пустые/битые не остаются в photo_dir; при отмене — все извлечённые
-                if rep.cancelled or name in bad: (Path(photo_dir) / name).unlink(missing_ok=True)
+            copied = _file_backed_base_db(con)
+            for name in extracted:   # пустые/битые не остаются в photo_dir; при отмене — все; скопированные в photos/ — тоже
+                if rep.cancelled or name in bad or copied: (Path(photo_dir) / name).unlink(missing_ok=True)
             return rep
     return import_records(con, recs, labs, photo_dir, validate, labels=labels, require_photo=require_photo,
                           progress=progress, cancel=cancel)
+
+def _file_backed_base_db(con) -> bool:
+    from .importer import _file_backed_base
+    return _file_backed_base(con) is not None
 
 MAPPING_FORMAT = "badge-generator/mapping"
 

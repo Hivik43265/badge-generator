@@ -10,3 +10,5 @@ dist/
 .env
 *.key
 *.pem
+# эталоны чужого ПО (Архитектор, этап 13) — не в git
+reports/mockup/*.png
