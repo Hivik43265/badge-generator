@@ -276,6 +276,15 @@ def _bg_spec(st):
         return True, _color(st.get("fill"))
     return False, None
 
+def _code_bg(st):
+    """Фон штрихкода/QR: bg_fill (панель свойств, §9) приоритетнее; bg_fill=false — прозрачно (None).
+    Без bg_fill — как раньше: background/fill, по умолчанию белый."""
+    legacy = st.get("background", st.get("fill", "#FFFFFF"))
+    if "bg_fill" in st:
+        if not st.get("bg_fill"): return None
+        return _color(st.get("bg_color", legacy), (255, 255, 255, 255))
+    return _color(legacy)
+
 def _dashed_rect(d, x, y, w, h, bw, color, dash=8, gap=6):
     segs = [
         (x, y, x + w, y),
@@ -475,14 +484,14 @@ def render_card(person, elements, side: str = "front", background=None, base_dir
                 val = el.get("static_value") if not el.get("field_name") else _field_value(person, el["field_name"], el.get("default_value"))
                 if val in (None, "") and el.get("field_name") and el.get("static_value"): val = el["static_value"]
                 ph = render_barcode(el["w"], el["h"], val, st, _color(st.get("color"), (0, 0, 0, 255)),
-                                    _color(st.get("background", st.get("fill", "#FFFFFF"))), el.get("id"))
+                                    _code_bg(st), el.get("id"))
                 tile.paste(ph, (0, 0), ph)
             elif t == "qr":
                 from .qr import render_qr
                 val = _field_value(person, el["field_name"], el.get("default_value")) if el.get("field_name") else el.get("static_value")
                 if val in (None, "") and el.get("field_name") and el.get("static_value"): val = el["static_value"]
                 ph = render_qr(el["w"], el["h"], val, st, _color(st.get("color"), (0, 0, 0, 255)),
-                               _color(st.get("background", st.get("fill", "#FFFFFF"))), el.get("id"))
+                               _code_bg(st), el.get("id"))
                 tile.paste(ph, (0, 0), ph)
             else:
                 log.warning("неизвестный тип элемента %r пропущен", t); continue
