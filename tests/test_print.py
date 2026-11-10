@@ -105,3 +105,27 @@ def test_cr80_paint_rect_not_stretched_to_a4(app, tmp_path):
     mm = pr.paperRect(pr.Unit.Millimeter)
     assert abs(r.width() / paper.width() * mm.width() - 85.6) < 0.3
     assert abs(r.height() / paper.height() * mm.height() - 54.0) < 0.3
+
+
+def test_setup_printer_landscape_cr80_page(app, tmp_path):
+    """Страница после setup_printer — альбомная CR80 85.6×54, область рисунка не шире листа."""
+    from PyQt6.QtGui import QPageLayout
+    from badge_backend import CARD_W_MM, CARD_H_MM
+    from badge_backend.services.print_service import setup_printer, _cr80_paint_rect
+    pr = _pdf(tmp_path, "land.pdf")
+    setup_printer(pr)
+    lay = pr.pageLayout()
+    assert lay.orientation() == QPageLayout.Orientation.Landscape
+    assert lay.margins().left() == lay.margins().top() == 0 and pr.fullPage()
+    page = lay.fullRect(QPageLayout.Unit.Millimeter)
+    assert abs(page.width() - CARD_W_MM) < 0.3 and abs(page.height() - CARD_H_MM) < 0.3
+    assert page.width() > page.height()
+    mm = pr.paperRect(pr.Unit.Millimeter)
+    assert mm.width() > mm.height()
+    assert abs(mm.width() - 85.6) < 0.5 and abs(mm.height() - 54.0) < 0.5
+    r = _cr80_paint_rect(pr)
+    paper = pr.paperRect(pr.Unit.DevicePixel)
+    assert r.width() <= paper.width() + 1 and r.height() <= paper.height() + 1
+    assert abs(r.width() / paper.width() * mm.width() - 85.6) < 0.3
+    assert abs(r.height() / paper.height() * mm.height() - 54.0) < 0.3
+    assert r.width() > r.height()
