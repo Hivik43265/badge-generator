@@ -4,6 +4,7 @@ import pytest
 from badge_backend import api, db
 from badge_backend.fields import normalize_value, format_value, FieldValueWarning
 from badge_backend.render import render_card
+from tests.image_assert import assert_same_pixels
 from badge_backend.testing import create_legacy_db
 
 
@@ -68,7 +69,7 @@ def test_render_uses_format_value():
     pid = api.create_person(con, {"bd": "1990-03-05"})
     a = render_card(api.get_person(con, pid), [el])
     b = render_card({"fields": {"bd": "05.03.1990"}}, [{**el, "data_type": "text"}])
-    assert a.tobytes() == b.tobytes() and els
+    assert_same_pixels(a, b); assert els
 
 def test_import_does_not_create_fields_and_reports_skipped(tmp_path):
     p = _csv(tmp_path / "a.csv", "Фамилия;Имя;Цех;ДР\nИванов;Иван;7;05.03.1990\nПетров;Пётр;8;bad\n")

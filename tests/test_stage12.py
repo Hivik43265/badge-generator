@@ -1,7 +1,8 @@
 """Этап 12 (reports/stage-12-actions.md §3): v4, ellipse, default_value, поля/связи, query_persons, статусы, бэкап."""
 import sqlite3, pytest
 from PIL import ImageChops
-from badge_backend import api, db
+from badge_backend import api, db, units_to_px
+from tests.image_assert import assert_same_pixels
 from badge_backend.render import render_card, render_card_db
 from badge_backend.testing import create_legacy_db
 
@@ -33,28 +34,31 @@ def test_v4_idempotent_rerun():
 def test_legacy_helper_v4(tmp_path):
     raw = sqlite3.connect(create_legacy_db(tmp_path / "v4.db", version=4))
     assert api.get_schema_version(raw) == 4
-    with pytest.raises(ValueError): create_legacy_db(tmp_path / "v8.db", version=8)
+    with pytest.raises(ValueError): create_legacy_db(tmp_path / "too_new.db", version=db.LATEST + 1)
 
 # ---------- ellipse ----------
 def _el(**k): return {"id": 1, "type": "ellipse", "x": 100, "y": 100, "w": 400, "h": 200, **k}
 
 def test_ellipse_fill_stroke():
     im = render_card(None, [_el(style_json='{"fill":"#00FF00","stroke":"#FF0000","stroke_width":4}')])
-    assert im.getpixel((300, 200)) == (0, 255, 0)     # центр — заливка
-    assert im.getpixel((101, 101)) == (255, 255, 255)  # угол рамки — вне эллипса
-    assert im.getpixel((300, 101)) == (255, 0, 0)      # верх — обводка
+    cx, cy = units_to_px(300), units_to_px(200)
+    top = units_to_px(100)
+    assert im.getpixel((cx, cy)) == (0, 255, 0)     # центр — заливка
+    assert im.getpixel((top + 1, top + 1)) == (255, 255, 255)  # угол рамки — вне эллипса
+    assert im.getpixel((cx, top + 1)) == (255, 0, 0)      # верх — обводка
 
 def test_ellipse_empty_style_draws_nothing_and_ignores_radius():
     blank = render_card(None, [])
     assert ImageChops.difference(render_card(None, [_el()]), blank).getbbox() is None
     a = render_card(None, [_el(style_json='{"fill":"#123456"}')])
     b = render_card(None, [_el(style_json='{"fill":"#123456","radius":40}')])
-    assert a.tobytes() == b.tobytes()
+    assert_same_pixels(a, b)
 
 def test_ellipse_stroke_only_default_width_and_legacy_keys():
     a = render_card(None, [_el(style_json='{"stroke":"#000000"}')])
     b = render_card(None, [_el(style_json='{"border_color":"#000000","border_width":1}')])
-    assert a.tobytes() == b.tobytes() and a.getpixel((300, 200)) == (255, 255, 255)
+    assert_same_pixels(a, b)
+    assert a.getpixel((units_to_px(300), units_to_px(200))) == (255, 255, 255)
 
 def test_ellipse_via_db():
     con = api.connect(); api.create_element(con, "ellipse", 10, 10, 100, 100, style={"fill": "#0000FF"})
@@ -74,13 +78,13 @@ def test_default_value_substituted_when_empty():
     assert api.list_fields(con)[0]["default_value"] == "Гость"
     d_empty, d_none = render_card_db(con, pe), render_card_db(con, pn)
     assert ImageChops.difference(d_empty, blank).getbbox() is not None
-    assert d_empty.tobytes() == d_none.tobytes()
+    assert_same_pixels(d_empty, d_none)
     ref = render_card(None, [dict(type="text", x=50, y=50, w=600, h=120, static_value="Гость", style_json='{"font_size":40}')])
-    assert d_empty.tobytes() == ref.tobytes()
+    assert_same_pixels(d_empty, ref)
     v = render_card_db(con, pv)  # непустое значение — default не применяется
-    assert v.tobytes() != d_empty.tobytes()
+    assert v.tobytes() != d_empty.tobytes()  # noqa: image inequality, not dumped unless equal
     api.set_field_default(con, "dept", None)
-    assert render_card_db(con, pe).tobytes() == blank.tobytes()
+    assert_same_pixels(render_card_db(con, pe), blank)
 
 def test_default_value_in_export_snapshot(tmp_path):
     con = _db_with_field(); api.set_field_default(con, "dept", "Гость")

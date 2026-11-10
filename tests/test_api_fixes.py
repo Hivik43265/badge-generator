@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 from badge_backend import api, demo, db
+from tests.image_assert import assert_same_pixels
 from badge_backend.services.headers import map_headers
 
 def _csv(p, rows):
@@ -92,7 +93,7 @@ def test_person_formats(form):
     else:
         c = api.connect(); pid = api.create_person(c, {"last_name": "Ёжиков"})
         p = c.execute("SELECT * FROM persons WHERE id=?", (pid,)).fetchone(); assert isinstance(p, sqlite3.Row)
-    assert api.render_card(p, els).tobytes() == ref.tobytes()
+    assert_same_pixels(api.render_card(p, els), ref)
 
 def test_render_preview_with_draft_dict(demo_db):
     c, ids, d = demo_db

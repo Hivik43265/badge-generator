@@ -189,10 +189,9 @@ def _v7_templates(con):
         params_json TEXT NOT NULL CHECK (json_valid(params_json)),
         updated_at TEXT NOT NULL, PRIMARY KEY (person_id, field_name))""")
     con.execute("INSERT OR IGNORE INTO project_settings(key, value) VALUES (?, ?)", (ACTIVE_KEY, str(tid)))
-    # триггеры — до правок persons, чтобы старый persons_touch не переписал updated_at
+    # старый persons_touch снимаем до правок persons, новый ставим после копирования «Фото»
+    # и перевода времени — иначе UPDATE fields_json сдвинет updated_at на now
     con.execute("DROP TRIGGER IF EXISTS persons_touch")
-    con.execute(f"""CREATE TRIGGER persons_touch AFTER UPDATE ON persons WHEN NEW.updated_at = OLD.updated_at
-        BEGIN UPDATE persons SET updated_at = {LOCAL_NOW_SQL} WHERE id = NEW.id; END""")
     con.execute("DROP TRIGGER IF EXISTS persons_created_local")
     con.execute(f"""CREATE TRIGGER persons_created_local AFTER INSERT ON persons
         WHEN instr(NEW.created_at, 'T') = 0 OR instr(NEW.updated_at, 'T') = 0
@@ -217,6 +216,8 @@ def _v7_templates(con):
     for pid, c, u in rows:
         c2, u2 = _utc_to_local(c), _utc_to_local(u)
         if (c2, u2) != (c, u): con.execute("UPDATE persons SET created_at=?, updated_at=? WHERE id=?", (c2, u2, pid))
+    con.execute(f"""CREATE TRIGGER persons_touch AFTER UPDATE ON persons WHEN NEW.updated_at = OLD.updated_at
+        BEGIN UPDATE persons SET updated_at = {LOCAL_NOW_SQL} WHERE id = NEW.id; END""")
 
 def active_template_id(con) -> int:
     """id активного шаблона (project_settings['active_template_id']); битое/нет → первый шаблон

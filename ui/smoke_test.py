@@ -1238,9 +1238,8 @@ else:
 
 # --- открытие .csd как нового несохранённого проекта (без диалогов) ---
 _csd_cands = [
-    Path("/workspace/smartid_samples/license_to_firearms.csd"),
-    ROOT.parent / "smartid_samples" / "license_to_firearms.csd",
     ROOT / "badge_backend" / "assets" / "smartid" / "reference.csd",
+    ROOT.parent / "smartid_samples" / "license_to_firearms.csd",
 ]
 _csd = next((p for p in _csd_cands if p.is_file()), None)
 assert _csd is not None, f"нет demo reference.csd / license_to_firearms.csd, искали {_csd_cands}"

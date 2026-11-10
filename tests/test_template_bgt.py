@@ -7,6 +7,7 @@ from badge_backend import api, db
 from badge_backend.render import render_card_db
 from badge_backend.services import templates as T
 from badge_backend.services.template_file import export_template, import_template, preview_template_file
+from tests.image_assert import assert_same_pixels
 
 
 def _bg(path, color=(10, 20, 30)):
@@ -158,7 +159,7 @@ def test_export_import_identical_card(tmp_path):
     r = import_template(con, bgt)
     assert r["unlinked_objects"] == []
     after = render_card_db(con, pid, "front", str(tmp_path))
-    assert before.size == after.size and before.tobytes() == after.tobytes()
+    assert_same_pixels(before, after)
 
 
 def test_cyrillic_filename(tmp_path):

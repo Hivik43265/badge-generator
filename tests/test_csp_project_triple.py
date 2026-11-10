@@ -70,8 +70,8 @@ def test_csp_project_triple(tmp_path):
     finally:
         session2.discard()
 
-    sample = Path("/workspace/smartid_samples/license_to_firearms.csd")
-    assert sample.is_file()
+    sample = bundled_reference_csd()
+    assert sample is not None and sample.is_file()
     imported, imp = api.import_smartid_as_new_project(sample)
     try:
         assert imp["kind"] == "import"

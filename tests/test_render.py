@@ -65,11 +65,14 @@ def test_text_clipped_stays_in_box():
     assert bb and bb[0] >= xp and bb[1] >= yp and bb[2] <= xp + wp and bb[3] <= yp + hp
 
 def test_rect_border_radius():
+    from badge_backend import units_to_px
     el = dict(type="rect", x=100, y=100, w=200, h=200,
               style_json='{"fill":"#FF0000","border_color":"#000000","border_width":10,"radius_mm":3}')
     im = render_card(None, [el])
-    assert im.getpixel((200, 200)) == (255, 0, 0) and im.getpixel((200, 103)) == (0, 0, 0)
-    assert im.getpixel((101, 101)) == (255, 255, 255)  # скруглённый угол
+    cx, cy = units_to_px(200), units_to_px(200)
+    top = units_to_px(100)
+    assert im.getpixel((cx, cy)) == (255, 0, 0) and im.getpixel((cx, top + 8)) == (0, 0, 0)
+    assert im.getpixel((top + 1, top + 1)) == (255, 255, 255)  # скруглённый угол
 
 # --- трансформация фото на синтетике ---
 def test_photo_default_cover_fills_frame():

@@ -42,12 +42,12 @@ def setup_printer(printer) -> None:
     from PyQt6.QtCore import QSizeF, QMarginsF
     from PyQt6.QtGui import QPageSize, QPageLayout
     _require_gui_thread()
-    size = QPageSize(QSizeF(CARD_W_MM, CARD_H_MM), QPageSize.Unit.Millimeter, "CR80",
+    # QPageSize на части платформ (Windows CI) НЕ нормализует 85.6×53.98 в книжный вид.
+    # Тогда Landscape меняет стороны и страница выходит 53.98×85.6 (портрет).
+    # Явно задаём книжный размер 53.98×85.6 — Landscape даёт альбом 85.6×53.98 везде.
+    size = QPageSize(QSizeF(CARD_H_MM, CARD_W_MM), QPageSize.Unit.Millimeter, "CR80",
                      QPageSize.SizeMatchPolicy.FuzzyMatch)
     margins = QMarginsF(0, 0, 0, 0)
-    # QPageSize всегда хранит размер в книжном виде (меньшая сторона — ширина):
-    # 85.6×53.98 превращается в 53.98×85.6. Portrait оставил бы страницу вертикальной
-    # и обрезал правый край карточки. Карточка всегда горизонтальная — только Landscape.
     layout = QPageLayout(size, QPageLayout.Orientation.Landscape, margins,
                          QPageLayout.Unit.Millimeter, margins)
     if not printer.setPageLayout(layout):

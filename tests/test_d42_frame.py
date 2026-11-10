@@ -3,7 +3,7 @@ get_photo_frame_spec + detect_face_crop (голова ≈50 %, запас над
 from pathlib import Path
 import pytest
 from PIL import Image
-from badge_backend import api
+from badge_backend import api, units_to_px, units_to_mm
 from badge_backend.services import photo_edit as pe
 
 FIX = Path(__file__).parent / "fixtures" / "portrait_biden.jpg"
@@ -27,8 +27,9 @@ def test_frame_spec(tmp_path):
     con, eid = _prj(tmp_path, "a", 300, 400)
     s = pe.get_photo_frame_spec(con, "pic")
     assert s["element_id"] == eid and s["side"] == "front" and abs(s["aspect"] - 0.75) < 1e-9
-    assert s["width_mm"] == 25.4 and s["height_mm"] == pytest.approx(33.87, abs=0.01)
-    assert (s["width_px"], s["height_px"]) == (300, 400)
+    assert s["width_mm"] == pytest.approx(units_to_mm(300), abs=0.01)
+    assert s["height_mm"] == pytest.approx(units_to_mm(400), abs=0.01)
+    assert (s["width_px"], s["height_px"]) == (units_to_px(300), units_to_px(400))
     fid = con.execute("SELECT rowid FROM person_fields WHERE name='pic'").fetchone()[0]
     assert pe.get_photo_frame_spec(con, fid) == s
     assert pe.get_photo_frame_spec(con, "nope") is None
@@ -36,10 +37,12 @@ def test_frame_spec(tmp_path):
     assert pe.get_photo_frame_spec(con, "t") is None
     s_first = pe.get_photo_frame_spec(con)                                # без field — первый фото активного шаблона
     assert s_first["element_id"] == eid and s_first["aspect"] == s["aspect"]
-    eid2 = api.create_element(con, "photo", 0, 0, 413, 531)               # 35×45 мм; id больше eid → не первый
+    eid2 = api.create_element(con, "photo", 0, 0, 413, 531)               # id больше eid → не первый
     assert pe.get_photo_frame_spec(con)["element_id"] == eid               # без предпочтения поля «Фото»
     s0 = pe.get_photo_frame_spec(con, element_id=eid2)
-    assert (s0["width_mm"], s0["height_mm"]) == (34.97, 44.96) and (s0["width_px"], s0["height_px"]) == (413, 531)
+    assert (s0["width_mm"], s0["height_mm"]) == (
+        pytest.approx(units_to_mm(413), abs=0.01), pytest.approx(units_to_mm(531), abs=0.01)
+    ) and (s0["width_px"], s0["height_px"]) == (units_to_px(413), units_to_px(531))
     assert s0["element_id"] == eid2
 
 def _check(img, crop, aspect):
@@ -80,7 +83,8 @@ def test_shift_then_shrink():
 def test_photo_edit_target(tmp_path):
     con, eid = _prj(tmp_path, "t", 413, 531)
     t = api.photo_edit_target(con, "pic")
-    assert t == {**pe.get_photo_frame_spec(con, "pic"), "size": (413, 531)} and t["element_id"] == eid
+    spec = pe.get_photo_frame_spec(con, "pic")
+    assert t == {**spec, "size": (spec["width_px"], spec["height_px"])} and t["element_id"] == eid
     assert pe.photo_edit_target(con, "nope") is None
 
 

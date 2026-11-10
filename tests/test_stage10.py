@@ -3,7 +3,8 @@ import sqlite3, warnings
 from pathlib import Path
 import pytest
 from PIL import Image, ImageChops
-from badge_backend import api, db, testing
+from badge_backend import api, db, testing, units_to_px, px_to_units
+from tests.image_assert import assert_same_pixels
 from badge_backend.render import render_card
 from badge_backend.render.barcode import modules, layout, render_barcode, ean13_checksum
 from badge_backend.render.qr import matrix, render_qr
@@ -120,7 +121,8 @@ def test_barcode_value_from_field_and_static():
     e2 = [dict(id=1, type="barcode", x=100, y=100, w=500, h=200, static_value="5901234123457",
                style_json='{"format":"ean13"}')]
     a, b = render_card(p, e1), render_card(None, e2)
-    assert a.tobytes() == b.tobytes() and a.tobytes() != render_card(None, []).tobytes()
+    assert_same_pixels(a, b)
+    assert a.tobytes() != render_card(None, []).tobytes()
 
 @needs_decoder
 @pytest.mark.parametrize("fmt,val", [("code128", "EMP-000123"), ("ean13", "5901234123457")])
@@ -151,7 +153,7 @@ def test_qr_ec_levels_and_invalid():
 def test_qr_value_from_field_and_static():
     e1 = [dict(id=1, type="qr", x=10, y=10, w=300, h=300, field_name="emp")]
     e2 = [dict(id=1, type="qr", x=10, y=10, w=300, h=300, static_value="000777")]
-    assert render_card({"fields": {"emp": "000777"}}, e1).tobytes() == render_card(None, e2).tobytes()
+    assert_same_pixels(render_card({"fields": {"emp": "000777"}}, e1), render_card(None, e2))
 
 @needs_decoder
 @pytest.mark.parametrize("ec", "LMQH")
@@ -167,8 +169,9 @@ def test_line_negative_and_zero_extent():
     with pytest.raises(sqlite3.IntegrityError): api.create_element(c, "line", 1, 1, 0, 0)
     with pytest.raises(sqlite3.IntegrityError): api.create_element(c, "rect", 1, 1, -5, 5)
     im = api.render_card_db(c, None)
-    assert im.getpixel((400, 300)) == (255, 0, 0) and im.getpixel((100, 300)) == (0, 0, 255)
-    assert im.getpixel((600, 300)) == WHITE
+    assert im.getpixel((units_to_px(400), units_to_px(300))) == (255, 0, 0)
+    assert im.getpixel((units_to_px(100), units_to_px(300))) == (0, 0, 255)
+    assert im.getpixel((units_to_px(600), units_to_px(300))) == WHITE
 
 def test_line_diagonal():
     im = render_card(None, [dict(type="line", x=0, y=0, w=100, h=100, style_json='{"stroke_width":1}')])
@@ -186,7 +189,14 @@ def test_migration_v2_to_v3_with_data(tmp_path):
     before = raw.execute("SELECT * FROM template_elements ORDER BY id").fetchall(); raw.close()
     c = api.connect(p)
     assert api.get_schema_version(c) == db.LATEST  # v3→…→LATEST
-    assert [tuple(r)[:11] for r in c.execute("SELECT * FROM template_elements ORDER BY id")] == before   # + template_id (v7)
+    # v8: геометрия 300 DPI px → единицы 0,1 мм
+    def _v8_geom(row):
+        row = list(row)
+        row[2], row[3], row[4], row[5] = map(px_to_units, row[2:6])
+        return tuple(row)
+    assert [tuple(r)[:11] for r in c.execute("SELECT * FROM template_elements ORDER BY id")] == [
+        _v8_geom(r) for r in before
+    ]   # + template_id (v7)
     idx = {r[1] for r in c.execute("PRAGMA index_list(template_elements)")}
     assert "idx_te_side_z" in idx
     assert c.execute("SELECT count(*) FROM sqlite_master WHERE name='_te_old'").fetchone()[0] == 0
@@ -204,18 +214,21 @@ def test_legacy_v2_helper(tmp_path):
 def test_rect_all_four_keys():
     st = '{"stroke":"#FF0000","stroke_width":6,"fill":"#00FF00","radius":40}'
     im = render_card(None, [dict(type="rect", x=100, y=100, w=400, h=300, style_json=st)])
-    assert im.getpixel((300, 102)) == (255, 0, 0)          # stroke сверху
-    assert im.getpixel((300, 250)) == (0, 255, 0)          # fill внутри
-    assert im.getpixel((101, 101)) == WHITE                # скруглённый угол
+    cx, top = units_to_px(300), units_to_px(100)
+    assert im.getpixel((cx, top + 4)) == (255, 0, 0)          # stroke сверху
+    assert im.getpixel((units_to_px(300), units_to_px(250))) == (0, 255, 0)          # fill внутри
+    assert im.getpixel((top + 1, top + 1)) == WHITE                # скруглённый угол
     sq = render_card(None, [dict(type="rect", x=100, y=100, w=400, h=300, style_json=st.replace('"radius":40', '"radius":0'))])
-    assert sq.getpixel((101, 101)) == (255, 0, 0)
+    assert sq.getpixel((top + 1, top + 1)) == (255, 0, 0)
 
 def test_rect_stroke_only_and_legacy_keys():
     a = render_card(None, [dict(type="rect", x=10, y=10, w=100, h=100, style_json='{"stroke":"#000","stroke_width":3}')])
     b = render_card(None, [dict(type="rect", x=10, y=10, w=100, h=100, style_json='{"border_color":"#000","border_width":3}')])
-    assert a.tobytes() == b.tobytes() and a.getpixel((60, 60)) == WHITE and a.getpixel((60, 11)) == (0, 0, 0)
+    assert_same_pixels(a, b)
+    cx, top = units_to_px(60), units_to_px(10)
+    assert a.getpixel((cx, units_to_px(60))) == WHITE and a.getpixel((cx, top + 1)) == (0, 0, 0)
     one = render_card(None, [dict(type="rect", x=10, y=10, w=100, h=100, style_json='{"stroke":"#000"}')])
-    assert one.getpixel((60, 10)) == (0, 0, 0) and one.getpixel((60, 11)) == WHITE
+    assert one.getpixel((cx, top)) == (0, 0, 0) and one.getpixel((cx, top + 1)) == WHITE
 
 # ---------- golden ----------
 from tests_golden_cases import CASES  # noqa: E402
@@ -230,4 +243,4 @@ def test_stage10_golden(name):
 
 def test_symbology_alias():
     a = render_barcode(500, 150, "5901234123457", {"format": "ean13"})
-    assert a.tobytes() == render_barcode(500, 150, "5901234123457", {"symbology": "ean13"}).tobytes()
+    assert_same_pixels(a, render_barcode(500, 150, "5901234123457", {"symbology": "ean13"}))

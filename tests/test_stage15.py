@@ -5,6 +5,7 @@ from PIL import Image
 from badge_backend import api, db
 from badge_backend.services import templates as T, search as S, photo_edit as PE
 from badge_backend.render import render_card_db
+from tests.image_assert import assert_same_pixels
 
 
 def _v6(path):
@@ -154,6 +155,7 @@ BASE_COMMIT = "db5d65b"   # последняя v6-версия Backend
 _OLD_RENDER = r"""
 import sqlite3, sys
 from badge_backend.render import render_card_db
+from tests.image_assert import assert_same_pixels
 con = sqlite3.connect(sys.argv[1]); con.row_factory = sqlite3.Row
 for pid, in con.execute("SELECT id FROM persons").fetchall():
     for side in ("front", "back"):
@@ -176,7 +178,7 @@ def _compare_before_after(tmp, dbfile, base):
     for (pid,) in con.execute("SELECT id FROM persons").fetchall():
         for side in ("front", "back"):
             a = Image.open(out / f"{pid}_{side}.png"); b = render_card_db(con, pid, side, str(base))
-            assert a.mode == b.mode and a.size == b.size and a.tobytes() == b.tobytes(), (dbfile, pid, side); n += 1
+            assert_same_pixels(a, b); n += 1
     return n
 
 def test_photo_config_migrated_render_pixel_identical(tmp_path):
@@ -213,7 +215,7 @@ def test_render_photo_matches_card_zone_after_migrated_placement(tmp_path):
     # зона карточки = плитка поверх фона (#EEEEEE из v6); прозрачные углы после placement
     expected = Image.new("RGB", (w, h), (0xEE, 0xEE, 0xEE))
     expected.paste(preview.convert("RGB"), (0, 0), preview.getchannel("A"))
-    assert expected.size == zone.size and expected.tobytes() == zone.tobytes()
+    assert_same_pixels(expected, zone)
 
 
 def test_real_selftest_dbs_render_identical_after_migration(tmp_path):
@@ -271,7 +273,7 @@ def test_photo_editor_state_roundtrip(tmp_path):
     before = render_card_db(con, pid, "front", str(tmp_path))
     PE.set_photo_view(con, pid, st["params"], field_name=st["field_name"])
     after = render_card_db(con, pid, "front", str(tmp_path))
-    assert before.tobytes() == after.tobytes()
+    assert_same_pixels(before, after)
     raw = {"brightness": 5, "contrast": 0, "scale": 100, "rotate": 0.0, "crop": None, "autoeffect": False}
     PE.set_photo_view(con, pid, raw, field_name="Фото")
     assert api.get_photo_editor_state(con, pid, eid)["params"]["portrait"] is False   # ключ добавлен

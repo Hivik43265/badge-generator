@@ -22,7 +22,7 @@ def test_target_field_resizes(prj):
     img = pe.load_photo_for_edit(FIX)
     crop = pe.detect_face_crop(img, api.photo_edit_target(con, "pic")["aspect"])
     rel = pe.apply_and_save_photo(con, str(FIX), {"crop": crop}, target_field="pic")
-    assert _sz(d, rel) == (330, 413)
+    assert _sz(d, rel) == api.photo_edit_target(con, "pic")["size"]
 
 def test_size_kwarg_and_default(prj):
     con, d = prj
@@ -35,5 +35,5 @@ def test_size_kwarg_and_default(prj):
 def test_session_passes_through(prj):
     con, d = prj
     s = PhotoSession(con)
-    assert _sz(d, s.apply_and_save_photo(str(FIX), {}, target_field="pic")) == (330, 413)
+    assert _sz(d, s.apply_and_save_photo(str(FIX), {}, target_field="pic")) == api.photo_edit_target(con, "pic")["size"]
     assert _sz(d, s.apply_and_save_photo(str(FIX), {}, size=(20, 30))) == (20, 30)

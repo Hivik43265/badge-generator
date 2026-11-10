@@ -248,9 +248,12 @@ def _radius_px(st):
 def _border_spec(st):
     style = st.get("border_style")
     if style is None:
+        # legacy: stroke / stroke_width или border_color / border_width без border_style → solid
         if st.get("stroke_width") not in (None, "", 0, "0") or (
             st.get("stroke") not in (None, "", "none") and st.get("stroke_width") is None
             and st.get("border_width") is None
+        ) or st.get("border_width") not in (None, "", 0, "0") or (
+            st.get("border_color") not in (None, "") and st.get("border_width") is None
         ):
             style = "solid"
         else:
@@ -259,10 +262,10 @@ def _border_spec(st):
         return "none", 0, None
     if st.get("border_width") not in (None, ""):
         bw = units_to_px(st["border_width"], DPI)
+    elif st.get("stroke_width") not in (None, ""):
+        bw = units_to_px(st["stroke_width"], DPI)
     else:
-        bw = _px(st, "stroke_width")
-        if not bw and st.get("stroke") is not None:
-            bw = 1
+        bw = 1 if (st.get("stroke") is not None or st.get("border_color") is not None) else 0
     if not bw or bw <= 0:
         return "none", 0, None
     bw = max(1, int(round(bw)))
