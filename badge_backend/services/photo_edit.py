@@ -5,6 +5,8 @@ detect_face_crop(img, aspect) -> (x,y,w,h)|None    кадр по лицу (OpenC
 get_photo_edit_defaults(con) / set_photo_edit_defaults(con, params)   умолчания проекта (project_settings)
 apply_and_save_photo(con, source_path, params, *, person_id=None, field_name=None, base_dir=None) -> rel_path
 load_photo_for_edit(path, base_dir=None) -> Image   EXIF-поворот + режим (одно место для UI и сохранения)
+load_photo_for_preview(path, max_side=DETECT_MAX_SIDE, base_dir=None) -> Image
+    уменьшенная копия для превью редактора (длинная сторона ≤ max_side, без увеличения)
 
 Параметры (DEFAULT_PHOTO_EDIT; неизвестные ключи игнорируются, значения приводятся к типу и обрезаются в диапазон):
   brightness int  -50..50   0 — без изменений; множитель яркости 1 + b/100
@@ -269,6 +271,23 @@ def load_photo_for_edit(path, base_dir=None) -> Image.Image:
     if im.mode in ("RGB", "L", "RGBA"): return im
     has_alpha = im.mode in ("LA", "PA") or (im.mode == "P" and "transparency" in im.info)
     return im.convert("RGBA" if has_alpha else "L" if im.mode in ("1", "I", "I;16", "F") else "RGB")
+
+
+def load_photo_for_preview(path, max_side=DETECT_MAX_SIDE, base_dir=None) -> Image.Image:
+    """Уменьшенная копия для превью редактора: тот же путь, что load_photo_for_edit
+    (разрешение пути, open_photo_file / байты, EXIF-поворот, режим), затем длинная сторона
+    не больше max_side (LANCZOS). Не увеличивает. Всегда новая копия, не разделяет пиксели
+    с кэшем open_photo_file. max_side по умолчанию — DETECT_MAX_SIDE (800).
+    base_dir — как у load_photo_for_edit (относительный путь от base_dir, иначе cwd)."""
+    im = load_photo_for_edit(path, base_dir)
+    side = int(max_side)
+    if side <= 0:
+        raise ValueError("max_side должен быть > 0")
+    longest = max(im.width, im.height)
+    if longest > side:
+        k = side / longest
+        return im.resize((max(1, round(im.width * k)), max(1, round(im.height * k))), Image.LANCZOS)
+    return im.copy()
 
 # ---------- применить и сохранить ----------
 def apply_and_save_photo(con, source_path, params, *, person_id=None, field_name=None, base_dir=None,

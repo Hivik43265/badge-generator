@@ -4,7 +4,7 @@ project_base_dir(con) -> Path   каталог БД проекта (база о�
 save_photo(con, image_bytes, *, person_id=None, ext='jpg', base_dir=None) -> 'photos/<имя>'
 """
 from __future__ import annotations
-import io, re, uuid
+import io, re, threading, uuid
 from collections import OrderedDict
 from pathlib import Path
 
@@ -88,6 +88,7 @@ def _coerce_path_str(rel) -> str | None:
 
 _PHOTO_CACHE_MAX = 4
 _photo_cache: OrderedDict = OrderedDict()
+_photo_cache_lock = threading.Lock()
 
 def _photo_cache_key(path):
     """Ключ кэша декодированного фото: абсолютный путь + mtime + размер."""
@@ -104,9 +105,11 @@ def open_photo_file(path) -> "Image.Image":
     Декодированный и повёрнутый по EXIF снимок кэшируется (LRU, ключ путь+mtime+размер)."""
     from PIL import Image, ImageOps
     key = _photo_cache_key(path)
-    if key and key in _photo_cache:
-        _photo_cache.move_to_end(key)
-        return _photo_cache[key].copy()
+    if key:
+        with _photo_cache_lock:
+            if key in _photo_cache:
+                _photo_cache.move_to_end(key)
+                return _photo_cache[key].copy()
     data = Path(path).read_bytes()
     if not data:
         raise ValueError("пустой файл")
@@ -115,9 +118,10 @@ def open_photo_file(path) -> "Image.Image":
         im.load()
         out = im.copy()
     if key:
-        _photo_cache[key] = out
-        while len(_photo_cache) > _PHOTO_CACHE_MAX:
-            _photo_cache.popitem(last=False)
+        with _photo_cache_lock:
+            _photo_cache[key] = out
+            while len(_photo_cache) > _PHOTO_CACHE_MAX:
+                _photo_cache.popitem(last=False)
         return out.copy()
     return out
 
