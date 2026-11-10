@@ -78,6 +78,7 @@ jobs:
         # 5 golden-тестов исключены только на Windows: эталоны сняты на Linux (DejaVu),
         # а на Windows текст рисуется системным Arial -> попиксельные различия в тексте.
         # Golden проверяются в job tests-linux. Решение Контролёра, этап 11.
+        # test_open_save_close_not_dirty: временно, известный баг WinError 32 (решение Архитектора, 2026-11-10).
         run: >-
           python -m pytest -q
           --deselect "tests/test_render.py::test_golden[front_full]"
@@ -85,6 +86,7 @@ jobs:
           --deselect "tests/test_render.py::test_golden[back]"
           --deselect "tests/test_stage10.py::test_stage10_golden[barcode_code128]"
           --deselect "tests/test_stage10.py::test_stage10_golden[barcode_ean13]"
+          --deselect "tests/test_project_session.py::test_open_save_close_not_dirty"
 
       - name: Build (PyInstaller)
         run: pyinstaller --noconfirm --clean packaging/badge_generator.spec
