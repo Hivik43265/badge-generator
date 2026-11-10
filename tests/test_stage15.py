@@ -111,6 +111,7 @@ def test_p7_frame_spec_uses_active_template():
     assert spec and abs(spec["aspect"] - 3.0) < 0.01
 
 
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="time.tzset нет на Windows")
 @pytest.mark.parametrize("tz", ["Europe/Berlin", "Asia/Tokyo"])
 def test_timestamps_local_with_offset(tz, monkeypatch):
     monkeypatch.setenv("TZ", tz); time.tzset()
