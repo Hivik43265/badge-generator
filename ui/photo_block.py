@@ -130,9 +130,18 @@ class PhotoBlock(QWidget):
 
     def _show_still(self):
         from PyQt6.QtGui import QPixmap
-        pm = QPixmap(self._abs(self.path)) if self.path else QPixmap()
+        from .backend_api import open_image, pil_to_qimage
+        pm = QPixmap()
+        if self.path:
+            try:
+                img = open_image(self.path, base_dir=self.base_dir)
+                pm = QPixmap.fromImage(pil_to_qimage(img))
+            except Exception:  # noqa: BLE001
+                pm = QPixmap()
         if pm.isNull(): self.still.setPixmap(QPixmap()); self.still.setText("нет фото")
-        else: self.still.setPixmap(pm.scaled(220, 170, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        else:
+            self.still.setText("")
+            self.still.setPixmap(pm.scaled(220, 170, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         self.stack.setCurrentWidget(self.still)
 
     def eventFilter(self, obj, ev):

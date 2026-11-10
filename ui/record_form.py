@@ -75,7 +75,10 @@ class RecordForm(QDialog):
         self._new_fields = [{"name": n, "label": n, "sort_order": base + i} for i, n in enumerate(tmpl)]
         form = QFormLayout(); self.edits = {}
         for f in fields + self._new_fields:
-            e = make_editor(field_type(f), str(self.person["fields"].get(f["name"], "") or ""), api.base_dir)
+            raw = self.person["fields"].get(f["name"], "") or ""
+            kind = field_type(f)
+            # image: не превращать значение в текст (путь/байты как «кракозябры») — только картинка
+            e = make_editor(kind, raw if kind == "image" else str(raw), api.base_dir)
             new = f in self._new_fields
             if new: e.setToolTip("Поле есть в шаблоне, но нет в person_fields — будет создано при сохранении")
             self.edits[f["name"]] = e; form.addRow((f["label"] or f["name"]) + (" (новое)" if new else "") + ":", e)

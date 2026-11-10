@@ -1,5 +1,6 @@
 """Таблица записей: колонки из person_fields + чекбокс «Печать» (print_mark)."""
 import os
+from pathlib import Path
 from datetime import datetime
 from PyQt6.QtCore import pyqtSignal, Qt, QAbstractTableModel, QModelIndex, QSortFilterProxyModel, QSize
 from PyQt6.QtGui import QPixmap, QBrush, QColor
@@ -93,20 +94,46 @@ class PersonsModel(QAbstractTableModel):
             return self.cols[section][1]
         return super().headerData(section, orientation, role)
 
+    def _photo_src(self, person):
+        """Путь/значение для колонки «Фото»: persons.photo_path или первое непустое image-поле (не logo)."""
+        rp = self.api.resolve_photo_path(person, None)
+        if rp: return rp
+        for n, typ in self.types.items():
+            if typ != "image" or n == "logo":
+                continue
+            rp = self.api.resolve_photo_path(person, n)
+            if rp: return rp
+            v = (person.get("fields") or {}).get(n)
+            if v not in (None, ""):
+                return v
+        return person.get("photo_path") or None
+
     def _thumb(self, path):
-        if not path: return None
-        if path not in self._thumbs:
-            full = path if os.path.isabs(path) else os.path.join(self.api.base_dir or "", path)
-            pm = QPixmap(full)
-            self._thumbs[path] = None if pm.isNull() else pm.scaled(THUMB, THUMB, Qt.AspectRatioMode.KeepAspectRatio,
-                                                                    Qt.TransformationMode.SmoothTransformation)
-        return self._thumbs[path]
+        if path in (None, ""): return None
+        key = path if isinstance(path, (str, Path)) else ("blob", type(path), len(path) if hasattr(path, "__len__") else 0)
+        if key not in self._thumbs:
+            try:
+                from .backend_api import open_image, pil_to_qimage
+                img = open_image(path, base_dir=self.api.base_dir)
+                pm = QPixmap.fromImage(pil_to_qimage(img))
+                self._thumbs[key] = None if pm.isNull() else pm.scaled(THUMB, THUMB, Qt.AspectRatioMode.KeepAspectRatio,
+                                                                        Qt.TransformationMode.SmoothTransformation)
+            except Exception:  # noqa: BLE001
+                self._thumbs[key] = None
+        return self._thumbs[key]
 
     def text(self, row, c):
         p = self.rows[row]; kind, _l, n = self.cols[c]
-        if kind == "field": return display_value(self.types.get(n), p["fields"].get(n, ""))
+        if kind == "field":
+            if self.types.get(n) == "image":
+                return ""
+            return display_value(self.types.get(n), p["fields"].get(n, ""))
         if kind == "printed": return format_printed_at(p.get("printed_at"))
-        if kind == "photo": return os.path.basename(p.get("photo_path") or "")
+        if kind == "photo":
+            src = self._photo_src(p)
+            if isinstance(src, (str, Path)) and 0 < len(str(src)) < 512:
+                return os.path.basename(str(src))
+            return ""
         if kind == "logo": return os.path.basename(p["fields"].get("logo") or self.template_logo or "")
         return ""
 
@@ -128,15 +155,23 @@ class PersonsModel(QAbstractTableModel):
             if role == Qt.ItemDataRole.ToolTipRole: return raw or "не печаталось"
             return None
         if kind in ("photo", "logo"):
-            path = p.get("photo_path") if kind == "photo" else (p["fields"].get("logo") or self.template_logo)
+            path = self._photo_src(p) if kind == "photo" else (p["fields"].get("logo") or self.template_logo)
             if role == Qt.ItemDataRole.DecorationRole: return self._thumb(path)
-            if role == Qt.ItemDataRole.ToolTipRole: return path or ""
-            if role == Qt.ItemDataRole.UserRole: return path or ""
+            tip = path if isinstance(path, (str, Path)) and len(str(path)) < 512 else ""
+            if role == Qt.ItemDataRole.ToolTipRole: return str(tip) if tip else ""
+            if role == Qt.ItemDataRole.UserRole: return str(tip) if tip else ""
             if role == Qt.ItemDataRole.SizeHintRole: return QSize(THUMB + 8, THUMB + 4)
             return None
-        if kind == "field" and self.types.get(self.cols[c][2]) == "image" and role == Qt.ItemDataRole.DecorationRole:
-            rp = self.api.resolve_photo_path(p, self.cols[c][2])      # Backend 91b0208: значение image-поля
-            return self._thumb(str(rp)) if rp else None
+        if kind == "field" and self.types.get(self.cols[c][2]) == "image":
+            fn = self.cols[c][2]
+            if role == Qt.ItemDataRole.DisplayRole:
+                return ""
+            if role == Qt.ItemDataRole.DecorationRole:
+                rp = self.api.resolve_photo_path(p, fn)      # Backend 91b0208: значение image-поля, иначе photo_path
+                src = rp if rp else (p.get("fields") or {}).get(fn)
+                return self._thumb(src) if src not in (None, "") else None
+            if role == Qt.ItemDataRole.SizeHintRole:
+                return QSize(THUMB + 8, THUMB + 4)
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.UserRole):
             return self.text(index.row(), c)
         return None
