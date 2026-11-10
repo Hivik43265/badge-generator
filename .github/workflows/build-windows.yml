@@ -80,7 +80,8 @@ jobs:
         # Golden проверяются в job tests-linux. Решение Контролёра, этап 11.
         # test_open_save_close_not_dirty: временно, известный баг WinError 32 (решение Архитектора, 2026-11-10).
         run: >-
-          python -m pytest -q
+          python -m pytest -v -rA --durations=20
+          -o faulthandler_timeout=60
           --deselect "tests/test_render.py::test_golden[front_full]"
           --deselect "tests/test_render.py::test_golden[front_no_photo]"
           --deselect "tests/test_render.py::test_golden[back]"
