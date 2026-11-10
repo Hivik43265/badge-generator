@@ -6,6 +6,8 @@ print_cards(con, printer, sides=('front','back'), base_dir=None, ids=None) -> in
  - страница: QPageSize 85.6×53.98 мм (ISO ID-1 / CARD_H_MM, FuzzyMatch), поля 0, FullPage;
    рисуется в прямоугольник ровно CR80 мм (не растягивается под paperRect — у принтера
    он может остаться A4, если драйвер не принял custom size).
+QPrinter/QPainter нельзя уводить в QThread: setup_printer и print_snapshot работают
+только в главном потоке приложения (иначе RuntimeError вместо вылета на Windows).
 PyQt6 импортируется лениво: модуль можно импортировать без Qt.
 """
 from __future__ import annotations
@@ -20,6 +22,15 @@ def _qimage(pil_img):
     q.setDotsPerMeterX(round(300 / 0.0254)); q.setDotsPerMeterY(round(300 / 0.0254))
     return q
 
+
+def _require_gui_thread() -> None:
+    """QPrinter/QPainter нельзя уводить в QThread: только главный поток приложения."""
+    from PyQt6.QtCore import QCoreApplication, QThread
+    app = QCoreApplication.instance()
+    # is — как сравнение объекта потока; == нужен, если PyQt даёт разные обёртки одного QThread.
+    if app is None or (QThread.currentThread() is not app.thread() and QThread.currentThread() != app.thread()):
+        raise RuntimeError("печать на принтер возможна только из главного потока")
+
 def setup_printer(printer) -> None:
     """Выставить страницу CR80 85.6×54 мм (альбомная), нулевые поля, FullPage.
 
@@ -30,6 +41,7 @@ def setup_printer(printer) -> None:
     """
     from PyQt6.QtCore import QSizeF, QMarginsF
     from PyQt6.QtGui import QPageSize, QPageLayout
+    _require_gui_thread()
     size = QPageSize(QSizeF(CARD_W_MM, CARD_H_MM), QPageSize.Unit.Millimeter, "CR80",
                      QPageSize.SizeMatchPolicy.FuzzyMatch)
     margins = QMarginsF(0, 0, 0, 0)
@@ -100,6 +112,7 @@ def print_snapshot(snap, printer, base_dir=None, progress=None, allow_missing_ph
     setup_printer(printer)
     total = len(snap)
     if progress is not None and progress(0, total) is False: return _res(0, miss, True, tw)
+    _require_gui_thread()   # QPrinter/QPainter нельзя уводить в QThread
     p = QPainter()
     if not p.begin(printer): raise RuntimeError("QPainter.begin(printer) не удался")
     done, cancelled = 0, False

@@ -16,7 +16,7 @@ from .main_view import (PreviewPanel, PrintQueueDialog, PositionDialog, Settings
                         aligned_geometry)
 from .ribbon import Ribbon, glyph
 from . import stage15
-from .dialogs import ImportDialog, ExportDialog, confirm_missing_photos, run_snapshot_job, describe_result, show_result_warnings
+from .dialogs import ImportDialog, ExportDialog, confirm_missing_photos, run_print_job, describe_result, show_result_warnings
 from .backend_api import print_snapshot, setup_printer
 
 
@@ -813,7 +813,7 @@ class MainWindow(QMainWindow):
         ExportDialog(self.api, self.records.selected_ids(), self, filtered_ids=self.records.visible_ids()).exec()
 
     def do_print(self, _=False, printer=None, sides=("front", "back")):
-        """QPrintDialog → предпроверка фото → snapshot (GUI) → print_snapshot в рабочем потоке.
+        """QPrintDialog → предпроверка фото → snapshot (GUI) → print_snapshot в главном потоке.
         Печатаются только записи с print_mark=1. Возвращает (result, error)."""
         from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
         ids = [p["id"] for p in self.api.list_persons(only_marked=True)]
@@ -832,7 +832,7 @@ class MainWindow(QMainWindow):
         if not go:
             self.statusBar().showMessage("Печать отменена: есть записи без фото"); return None, None
         snap = self.api.snapshot(ids, sides)
-        res, err = run_snapshot_job(self, "Печать", print_snapshot, snap, printer, self.api.base_dir,
+        res, err = run_print_job(self, "Печать", print_snapshot, snap, printer, self.api.base_dir,
                                     allow_missing_photo=allow)
         msg = describe_result(res, err, "Печать")
         self.statusBar().showMessage(msg)

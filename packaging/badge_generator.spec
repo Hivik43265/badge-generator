@@ -43,14 +43,14 @@ import glob, sys
 REQUIRED_QT = [   # (подкаталог Qt6, шаблон файла)
     ("plugins/multimedia", "ffmpegmediaplugin.dll"), ("plugins/multimedia", "windowsmediaplugin.dll"),
     ("plugins/platforms", "qwindows.dll"), ("plugins/imageformats", "qjpeg.dll"),
-    ("bin", "Qt6PrintSupport.dll"),   # D49: PyQt6-Qt6 6.12 не поставляет plugins/printsupport
+    ("bin", "Qt6PrintSupport.dll"),
     ("bin", "Qt6Multimedia.dll"), ("bin", "Qt6MultimediaWidgets.dll"),
     ("bin", "avcodec*.dll"), ("bin", "avformat*.dll"), ("bin", "avutil*.dll"),
     ("bin", "swresample*.dll"), ("bin", "swscale*.dll"),
 ]
-OPTIONAL_QT = [   # D49: есть — кладём; нет — не ошибка (в отчёте OPTIONAL-MISSING, CI не падает)
-    ("plugins/printsupport", "windowsprintersupport.dll"),
-]
+# Печать Windows: в колёсах PyQt6-Qt6 (проверено 6.9.2 и 6.12.0, win_amd64) плагина
+# plugins/printsupport/windowsprintersupport.dll НЕТ — поддержка печати Windows встроена в bin/Qt6PrintSupport.dll.
+# Поэтому на Windows обязателен Qt6PrintSupport.dll; плагин кладём, только если найден.
 qt_binaries, _qt_report = [], []
 try:
     import PyQt6
@@ -61,10 +61,41 @@ for sub, pat in REQUIRED_QT:
     hits = sorted(glob.glob(os.path.join(QT6, *sub.split("/"), pat))) if QT6 else []
     for h in hits: qt_binaries.append((h, "PyQt6/Qt6/" + sub))
     _qt_report.append(("FOUND" if hits else "MISSING", f"{sub}/{pat}", [os.path.basename(h) for h in hits]))
-for sub, pat in OPTIONAL_QT:
-    hits = sorted(glob.glob(os.path.join(QT6, *sub.split("/"), pat))) if QT6 else []
-    for h in hits: qt_binaries.append((h, "PyQt6/Qt6/" + sub))
-    _qt_report.append(("OPTIONAL", f"{sub}/{pat}", [os.path.basename(h) for h in hits]))
+
+def _printsupport_roots():
+    roots = []
+    if QT6:
+        roots += [QT6, os.path.dirname(QT6)]
+    try:
+        import PySide6
+        ps = os.path.dirname(PySide6.__file__)
+        roots += [ps, os.path.join(ps, "Qt6"), os.path.join(ps, "Qt")]
+    except ImportError:
+        pass
+    return roots
+
+def _find_windowsprintersupport():
+    name, seen, hits = "windowsprintersupport.dll", set(), []
+    for root in _printsupport_roots():
+        for p in (
+            glob.glob(os.path.join(root, "plugins", "printsupport", name))
+            + glob.glob(os.path.join(root, "Qt6", "plugins", "printsupport", name))
+        ):
+            ap = os.path.abspath(p)
+            if os.path.isfile(ap) and ap not in seen:
+                seen.add(ap); hits.append(ap)
+    return hits
+
+_ps_hits = _find_windowsprintersupport()
+if _ps_hits:
+    for h in _ps_hits:
+        qt_binaries.append((h, "PyQt6/Qt6/plugins/printsupport"))
+    _qt_report.append(("FOUND", "plugins/printsupport/windowsprintersupport.dll",
+                       [os.path.basename(h) for h in _ps_hits]))
+else:
+    _qt_report.append(("OPTIONAL", "plugins/printsupport/windowsprintersupport.dll", []))
+if sys.platform == "win32" and not (QT6 and glob.glob(os.path.join(QT6, "bin", "Qt6PrintSupport.dll"))):
+    raise SystemExit("Qt6PrintSupport.dll не найден в PyQt6/Qt6/bin: печать в exe не будет работать; переустановите PyQt6-Qt6")
 _missing = [r[1] for r in _qt_report if r[0] == "MISSING"]
 if _missing:
     print("WARNING: Qt files not found in " + str(QT6) + ": " + ", ".join(_missing), file=sys.stderr)
