@@ -198,7 +198,7 @@ class MainWindow(QMainWindow):
             return mk
         self.act_font = FieldWidgetAction(self, "act_font", "Шрифт", _font, self._bind_font, "Шрифт шаблона")
         self.act_font_size = FieldWidgetAction(self, "act_font_size", "Размер", _spin(4, 200, 14, " pt"),
-            lambda e: e.editingFinished.connect(lambda e=e: le.current and (le.p_font.setValue(e.value()), le.apply_props())))
+            lambda e: e.valueChanged.connect(lambda *_e, e=e: le.current and le.p_font.setValue(e.value())))
         self.act_padding = FieldWidgetAction(self, "act_padding", "Отступы", _spin(0, 200, 0, " px"), self._bind_padding,
                                              "Отступы шаблона (0…200 px)")
         self.act_text_color = A("act_text_color", "Цвет текста…", lambda: self.pick_color("color"), "text", icon_text="Цвет\nтекста")
