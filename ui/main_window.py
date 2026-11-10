@@ -12,6 +12,7 @@ from .backend_api import (BackendAPI, DEFAULT_DB_PATH, TYPE_NAMES,
                           UnsavedChangesError, TemplateEditActiveError, recover)
 from .records_table import RecordsWidget, PRINTED_FILTERS
 from .layout_editor import LayoutEditor
+from .object_properties import ObjectPropertiesDock
 from .main_view import (PreviewPanel, PrintQueueDialog, PositionDialog, SettingsDialog, FieldManager, ALIGN,
                         aligned_geometry)
 from .ribbon import Ribbon, glyph
@@ -40,7 +41,8 @@ QHeaderView::section { background:#EEF2F1; padding:4px; border:0; border-right:1
 """
 HELP_TEXT = ("Лента: «Файл» — проект и данные; «Главная» — буфер и сторона; «Рисование» — объекты и стиль;\n"
              "«Редактировать» — история, объект, порядок; «Просмотр» — масштаб и сетка; «База данных» — записи,\n"
-             "фильтр, печать и метки. Правый клик по холсту, списку элементов или таблице — те же команды.")
+             "фильтр, печать и метки. Правый клик по холсту или таблице — те же команды. "
+             "Alt+клик по холсту выбирает следующий объект под курсором.")
 
 
 class StrokeWidthAction(QWidgetAction):
@@ -114,9 +116,13 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget(); self.stack.addWidget(le); self.stack.addWidget(self.db_page)
 
         self.ribbon = Ribbon()
-        central = QWidget(); cl = QVBoxLayout(central); cl.setContentsMargins(0, 0, 0, 0); cl.setSpacing(0)
-        cl.addWidget(self.ribbon); cl.addWidget(self.stack, 1)
-        self.setCentralWidget(central)
+        # Лента на всю ширину окна выше области доков: панель свойств
+        # начинается под лентой, а не рядом с ней до верха окна.
+        self.setMenuWidget(self.ribbon)
+        self.setCentralWidget(self.stack)
+        self.props_dock = ObjectPropertiesDock(le, self)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.props_dock)
+        le.object_props = self.props_dock.panel
         self.pos_label = QLabel("X: —  Y: — мм"); self.statusBar().addPermanentWidget(self.pos_label)
 
         self._build_actions(); self._build_ribbon(); self._build_context_menus()
@@ -197,8 +203,12 @@ class MainWindow(QMainWindow):
                 sp = QSpinBox(); sp.setRange(lo, hi); sp.setValue(v); sp.setSuffix(suf); return sp
             return mk
         self.act_font = FieldWidgetAction(self, "act_font", "Шрифт", _font, self._bind_font, "Шрифт шаблона")
+        def _bind_font_size(e):
+            timer = QTimer(e, singleShot=True, interval=300)
+            timer.timeout.connect(lambda e=e: le.current and le.set_props(font_size=e.value()))
+            e.valueChanged.connect(lambda *_e, timer=timer: timer.start())
         self.act_font_size = FieldWidgetAction(self, "act_font_size", "Размер", _spin(4, 200, 14, " pt"),
-            lambda e: e.valueChanged.connect(lambda *_e, e=e: le.current and le.p_font.setValue(e.value())))
+            _bind_font_size)
         self.act_padding = FieldWidgetAction(self, "act_padding", "Отступы", _spin(0, 200, 0, " px"), self._bind_padding,
                                              "Отступы шаблона (0…200 px)")
         self.act_text_color = A("act_text_color", "Цвет текста…", lambda: self.pick_color("color"), "text", icon_text="Цвет\nтекста")
@@ -300,17 +310,14 @@ class MainWindow(QMainWindow):
         le = self.layout_editor
         # клавиши, конфликтующие с вводом текста, действуют только в своём виджете (тот же QAction)
         for a, w in ((self.act_queue_toggle, self.records.view), (self.act_card_edit, self.records.view),
-                     (self.act_card_delete, self.records.view), (self.act_delete_element, le.view),
-                     (self.act_delete_element, le.el_list)):
+                     (self.act_card_delete, self.records.view), (self.act_delete_element, le.view)):
             self.removeAction(a); w.addAction(a); a.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.canvas_menu_actions = [self.act_cut, self.act_copy, self.act_paste, self.act_duplicate, None,
                                     self.act_delete_element, self.act_position, self.act_align, self.act_z_up, self.act_z_down,
                                     None, self.act_background]
-        self.list_menu_actions = [self.act_cut, self.act_copy, self.act_duplicate, None, self.act_delete_element,
-                                  self.act_position, self.act_z_up, self.act_z_down]
         self.table_menu_actions = [self.act_card_add, self.act_card_edit, self.act_card_delete, None, self.act_queue_toggle,
                                    self.act_mark_printed, self.act_mark_unprinted, None, self.act_print]
-        for w, acts in ((le.view, self.canvas_menu_actions), (le.el_list, self.list_menu_actions),
+        for w, acts in ((le.view, self.canvas_menu_actions),
                         (self.records.view, self.table_menu_actions)):
             w.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             w.customContextMenuRequested.connect(lambda pos, w=w, acts=acts: self._popup(w, acts, pos))
@@ -321,9 +328,6 @@ class MainWindow(QMainWindow):
         return m
 
     def _popup(self, w, acts, pos):
-        if w is self.layout_editor.el_list:
-            it = w.itemAt(pos)
-            if it: self.layout_editor.select(it.data(Qt.ItemDataRole.UserRole))
         self.context_menu(acts).popup(w.mapToGlobal(pos))
 
     def all_actions(self):
@@ -336,6 +340,8 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.db_page if db else self.layout_editor)
         if db: self.preview_panel.refresh()
         else: self.layout_editor.reload()
+        if hasattr(self, "props_dock"):
+            self.props_dock.setVisible(not db)
         self._sync_selection()
 
     def show_main(self):
@@ -425,14 +431,14 @@ class MainWindow(QMainWindow):
         r = self.api.redo(); self.layout_editor.reload(); self._sync_selection(); return r
 
     def edit_position(self):
+        """Одно место для X/Y/W/H — панель «Свойства объекта» (диалог PositionDialog больше не открывается)."""
         le = self.layout_editor
         if not le.current:
             self.statusBar().showMessage("Выберите объект на холсте"); return None
-        d = PositionDialog({**le.current.el, **le.current.geometry()}, self)
-        val = position_hook(d) if position_hook is not None else (d.value() if d.exec() else None)
-        if val:
-            le.set_props(**{k: val[k] for k in ("x", "y") if k in val})
-        return val
+        if hasattr(self, "props_dock"):
+            self.props_dock.show(); self.props_dock.raise_()
+            self.props_dock.panel.expand_all()
+        return None
 
     # --- расположение ---
     def save_layout(self):
