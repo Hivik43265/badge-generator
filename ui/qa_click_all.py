@@ -6,7 +6,7 @@ scenario(tmp, chk, out, EXC): нажать каждый QAction ленты (+act
 в конце — нет открытых модальных окон. chk(name, ok, evidence) пишет PASS/FAIL; EXC — список исключений из excepthook.
 """
 import traceback, datetime
-from PyQt6.QtCore import QTimer, QEventLoop, Qt
+from PyQt6.QtCore import QTimer, QEventLoop, QThreadPool, Qt
 from PyQt6.QtGui import QAction, QImage, QColor
 from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox, QMenu
 
@@ -20,12 +20,25 @@ def run(argv=None):
     return _run(list(argv or []))
 
 
+def wait_previews(app):
+    """Сбросить 0-ms таймер выбора и дождаться фонового рендера превью."""
+    pool = QThreadPool.globalInstance()
+    for _ in range(8):
+        app.processEvents()
+        if not pool.waitForDone(8000):
+            break
+        app.processEvents()
+        if pool.activeThreadCount() == 0:
+            break
+
+
 def scenario(tmp, chk, out, EXC):
     from badge_backend import api as B
     from .backend_api import BackendAPI
     from .main_window import MainWindow
     def spin(ms=30):
         l = QEventLoop(); QTimer.singleShot(ms, l.quit); l.exec()
+    app = QApplication.instance()
 
     OPENED, FILL, CAM = [], {}, []
 
@@ -279,12 +292,12 @@ def scenario(tmp, chk, out, EXC):
         for tag, wf in (("поля_есть", True), ("без_person_fields", False)):
             try:
                 d = tmp / f"add_{tag}.db"; make_db(d, wf)
-                w = MainWindow(BackendAPI(d)); w.show(); spin(100); w.ribbon.select("База данных"); spin(50)
-                w.records.select_id(None); w.records.view.clearSelection(); spin(50)
+                w = MainWindow(BackendAPI(d)); w.show(); wait_previews(app); w.ribbon.select("База данных"); wait_previews(app)
+                w.records.select_id(None); w.records.view.clearSelection(); wait_previews(app)
                 pp = w.preview_panel; empty = img_bytes(pp.pixmaps.get("front"))
                 vals = {"last_name": "Щёголева", "first_name": "Юлия", "faculty": "Химфак «Ё»"}
                 shot = QImage(320, 400, QImage.Format.Format_RGB32); shot.fill(QColor("#3A7BD5"))
-                FILL.update(vals); FILL["__photo__"] = shot; CAM.clear(); w.act_card_add.trigger(); spin(600)
+                FILL.update(vals); FILL["__photo__"] = shot; CAM.clear(); w.act_card_add.trigger(); wait_previews(app)
                 new = [p for p in w.api.list_persons() if p["fields"].get("last_name") == "Щёголева"]
                 chk(f"ADD[{tag}] запись сохранена", new and all(new[0]["fields"].get(k) == v for k, v in vals.items()), new[0]["fields"] if new else "нет записи")
                 import os
@@ -292,7 +305,7 @@ def scenario(tmp, chk, out, EXC):
                 chk(f"ADD[{tag}] фото с камеры (внутри «Добавить карту» → блок «Фото») сохранено в photos/, путь относительный",
                     ph.startswith("photos/") and os.path.isfile(os.path.join(w.api.base_dir, ph)),
                     f"photo_path={ph!r}; камера={'есть' if CAM and CAM[0] else 'нет — снимок подан в тот же слот imageCaptured'}")
-                spin(300); after = img_bytes(pp.pixmaps.get("front"))
+                wait_previews(app); after = img_bytes(pp.pixmaps.get("front"))
                 diff = None if (empty is None or after is None) else sum(x != y for x, y in zip(empty, after))
                 chk(f"ADD[{tag}] текст на превью (отличается от пустого шаблона)", after is not None and (empty is None or diff > 200), f"diff_bytes={diff}")
                 t = pp.fields; shown = [t.item(r, 1).text() if t.item(r, 1) else "" for r in range(t.rowCount())]
