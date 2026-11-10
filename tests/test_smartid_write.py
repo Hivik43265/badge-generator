@@ -122,6 +122,8 @@ def test_roundtrip_demo_fixture(tmp_path):
     parsed = smartid.parse_csd(FIXTURE)
     dest = tmp_path / "rewritten.csd"
     api.write_csd(parsed, dest)
+    assert dest.stat().st_size == FIXTURE.stat().st_size
+    assert dest.stat().st_size == 10421690
 
     con = api.connect(str(tmp_path / "p.db"))
     api.import_smartid(con, dest)

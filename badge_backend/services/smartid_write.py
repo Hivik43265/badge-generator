@@ -34,22 +34,29 @@ dict одного из двух видов (ключи можно смешива
 позиции (0.1 мм), сторона (сдвигом y), шрифт (имя и размер), цвет текста
 (COLORREF), выравнивание (0x10/0x11/0x12), рамки ER, фон лицевой стороны (PNG
 до первого объекта), фото (MI, привязанное к Photo/ФОТО), прочие картинки (MI),
-таблица полей CGFld и значения для повторной привязки.
+таблица полей CGFld и значения для повторной привязки. Неизвестные байты
+эталонного .csd копируются без изменений (см. ниже).
 
 Что записать нельзя (честный список, в отчёт dropped, без молчаливой потери)
 ---------------------------------------------------------------------------
 - начертание bold / italic / underline — в записи ET неизвестны смещения;
-- смысл угла поворота: пишем int32 сразу после h, как читает импортёр, но в
-  образцах это всегда 0, семантика (градусы или иное) не подтверждена;
+- угол поворота объекта не записывается: в int32 сразу после h остаётся
+  значение из эталонной записи того же типа (или 0, если эталона нет).
+  Ненулевой угол объекта попадает в dropped. Семантика этого поля
+  (градусы или иное) не подтверждена;
 - цвет и заливка рамки ER — импортёр всегда считает рамку чёрной, solid,
   без заливки; иное из style попадает в dropped;
 - фон оборотной стороны — импортёр принимает за фон только PNG до первого
   объекта (лицевая сторона);
 - объекты qr, barcode, line и прочие неизвестные типы — в .csd нет понятных
-  тегов, записи пропускаются;
-- неразобранные служебные байты оригинального Smart ID (длинный заголовок
-  до фона, хвост после таблицы полей) — не воспроизводятся; нашему импортёру
-  они не нужны.
+  тегов, записи пропускаются.
+
+Неизвестные байты (заголовок до фонового PNG, хвост после таблицы CGFld,
+неразобранные поля каждой записи) копируются как есть из эталонного .csd:
+исходник шаблона (template["source"] / import_source_paths), иначе демо
+tests/fixtures/license_to_firearms.csd; явно — параметр reference_csd.
+Известные поля (размер карточки, dpi, принтер, геометрия, шрифт, цвет,
+выравнивание, текст, PNG, имена полей) записываются поверх эталона.
 
 Защита исходников
 -----------------
@@ -279,6 +286,201 @@ def _note_dropped_style(obj: dict, st: dict, dropped: list, label: str) -> None:
             dropped.append(f"{label}: начертание «курсив» не записывается — смещение в записи ET неизвестно")
 
 
+
+def default_reference_csd() -> Path | None:
+    """Демо-эталон tests/fixtures/license_to_firearms.csd относительно репозитория/пакета."""
+    name = Path("tests") / "fixtures" / "license_to_firearms.csd"
+    here = Path(__file__).resolve()
+    seen: set[Path] = set()
+    cands = []
+    for parent in here.parents:
+        cands.append(parent / name)
+    cands.append(Path("/workspace/smartid_samples/license_to_firearms.csd"))
+    cands.append(Path.cwd() / name)
+    for c in cands:
+        try:
+            key = c.resolve() if c.exists() else c
+        except OSError:
+            key = c
+        if key in seen:
+            continue
+        seen.add(key)
+        if c.is_file():
+            return c
+    return None
+
+
+def _resolve_reference(template, reference_csd, import_source_paths) -> Path | None:
+    if reference_csd is not None:
+        p = Path(reference_csd)
+        if not p.is_file():
+            raise FileNotFoundError(p)
+        return p
+    paths = []
+    if isinstance(template, dict):
+        paths.append(template.get("source") or template.get("source_path"))
+        paths.extend(template.get("import_source_paths") or [])
+    paths.extend(import_source_paths or [])
+    for raw in paths:
+        q = _as_path(raw)
+        if q is None:
+            continue
+        if q.is_file() and q.suffix.lower() == ".csd":
+            return q
+        if q.is_file() and q.suffix.lower() == ".csp":
+            try:
+                info = smartid.parse_csp(q)
+                csd = smartid.resolve_csp_csd(info)
+            except (OSError, ValueError, FileNotFoundError):
+                continue
+            if csd.is_file():
+                return csd
+    return default_reference_csd()
+
+
+def _load_reference(path) -> dict | None:
+    if path is None:
+        return None
+    p = Path(path)
+    if not p.is_file():
+        return None
+    data = p.read_bytes()
+    if not data.startswith(b"CSD"):
+        return None
+    starts = smartid._scan_objects(data)
+    first_obj = starts[0] if starts else len(data)
+    png_at = data.find(PNG_MAGIC)
+    header_end = png_at if 0 <= png_at < first_obj else first_obj
+    j = data.find(b"CGFld")
+    prefix_off = j - 8 if j >= 8 else None
+    if starts:
+        ends = list(starts[1:])
+        last_end = prefix_off if prefix_off is not None and prefix_off > starts[-1] else len(data)
+        ends.append(last_end)
+    else:
+        ends = []
+    by_tag: dict[str, list[bytes]] = {}
+    objects = []
+    for start, end in zip(starts, ends):
+        if end < start:
+            end = len(data)
+        blob = data[start:end]
+        if len(blob) < 8:
+            continue
+        tag = blob[6:8].decode("ascii", errors="replace")
+        objects.append({"tag": tag, "start": start, "end": end, "blob": blob})
+        by_tag.setdefault(tag, []).append(blob)
+    field_prefix = b""
+    field_recs: list[bytes] = []
+    tail = b""
+    if j >= 8:
+        field_prefix = data[j - 8:j]
+        count = smartid._u16_at(data, j - 8) or 0
+        if count < 1 or count > 256:
+            count = max(1, len(data[j:]) // FIELD_REC_SIZE)
+        for i in range(count):
+            rec = data[j + i * FIELD_REC_SIZE:j + (i + 1) * FIELD_REC_SIZE]
+            if len(rec) < FIELD_REC_SIZE:
+                break
+            field_recs.append(rec)
+        tail = data[j + len(field_recs) * FIELD_REC_SIZE:]
+    size_off = smartid._read_card_size(data)[2]
+    return {
+        "path": p,
+        "header": data[:header_end],
+        "size_off": size_off,
+        "by_tag": by_tag,
+        "objects": objects,
+        "field_prefix": field_prefix,
+        "field_recs": field_recs,
+        "tail": tail,
+    }
+
+
+def _take_skeleton(ref: dict | None, counters: dict, tag: str) -> bytes | None:
+    if not ref:
+        return None
+    arr = ref.get("by_tag", {}).get(tag) or []
+    if not arr:
+        return None
+    i = counters.get(tag, 0)
+    counters[tag] = i + 1
+    return arr[i] if i < len(arr) else arr[-1]
+
+
+def _overlay_printer(buf: bytearray, printer: str, size_off: int | None) -> None:
+    current = smartid._read_printer(bytes(buf))
+    if (printer or "") == (current or ""):
+        return
+    j = bytes(buf).find(b"PRN\x00")
+    if j < 0:
+        return
+    region_off = j + 4
+    start = None
+    region = bytes(buf[region_off:region_off + 200])
+    for off in range(0, min(12, max(0, len(region) - 4)), 2):
+        s = smartid._utf16z(region, off, 64)
+        if len(s) >= 3 and any(c.isalpha() for c in s):
+            start = region_off + off
+            break
+    if start is None:
+        start = region_off + 4
+    limit = size_off if size_off is not None else len(buf)
+    # не заходим на байты размера карточки и нетривиальный хвост заголовка
+    end = start
+    while end + 2 <= limit and end + 2 <= len(buf):
+        ch = struct.unpack_from("<H", buf, end)[0]
+        end += 2
+        if ch == 0:
+            while end + 2 <= limit and end + 2 <= len(buf) and struct.unpack_from("<H", buf, end)[0] == 0:
+                end += 2
+            break
+    room = end - start
+    raw = (printer or "").encode("utf-16le") + b"\x00\x00"
+    raw = raw[: room - (room % 2)]
+    buf[start:start + len(raw)] = raw
+    if len(raw) < room:
+        buf[start + len(raw):end] = b"\x00" * (end - start - len(raw))
+
+
+def _header_from_ref(ref: dict, card_w, card_h, dpi, printer: str) -> bytes:
+    buf = bytearray(ref["header"])
+    size_off = ref.get("size_off")
+    if size_off is not None and size_off + 4 <= len(buf):
+        buf[size_off:size_off + 2] = _u16(card_w)
+        buf[size_off + 2:size_off + 4] = _u16(card_h)
+        for extra in (10, 8, 12, 6, 14, 4):
+            off = size_off + 4 + extra
+            if off + 2 <= len(buf):
+                cur = struct.unpack_from("<H", buf, off)[0]
+                if cur in (200, 300, 600):
+                    buf[off:off + 2] = _u16(dpi)
+    _overlay_printer(buf, printer, size_off)
+    return bytes(buf)
+
+
+def _note_angle(obj: dict, st: dict, dropped: list, label: str) -> None:
+    rot = int(obj.get("rotation") or st.get("rotation") or 0)
+    if rot:
+        dropped.append(
+            f"{label}: угол {rot} не записывается — в int32 после h оставлено "
+            "значение эталонной записи (или 0)"
+        )
+
+
+def _overlay_xywh(rec: bytearray, obj: dict, st: dict) -> None:
+    if len(rec) < 28:
+        rec.extend(b"\x00" * (28 - len(rec)))
+    flags = obj.get("flags")
+    if flags is None:
+        flags = st.get("flags")
+    if flags is not None:
+        rec[8:12] = _i32(int(flags))
+    rec[12:28] = (_i32(int(obj["x"])) + _i32(int(obj["y"]))
+                  + _i32(int(obj["w"])) + _i32(int(obj["h"])))
+
+
+
 def _header(card_w, card_h, dpi, printer: str) -> bytes:
     buf = bytearray()
     buf += b"CSD\x00\x0d\x00\x00\x00\x00"
@@ -299,23 +501,94 @@ def _header(card_w, card_h, dpi, printer: str) -> bytes:
     return bytes(buf)
 
 
-def _build_et(obj: dict, st: dict, text: str, dropped: list, label: str) -> bytes:
+
+def _existing_font(blob: bytes) -> tuple[int | None, str, str]:
+    """Как parse_csd: первое подходящее имя в окне 0x94..0xA4."""
+    if len(blob) < 0x96:
+        return None, "", ""
+    best = None
+    for off in range(0x94, min(len(blob) - 4, 0xA4)):
+        raw = smartid._utf16z(blob, off, 32)
+        fam = raw.lstrip("@").strip()
+        if not fam or not ("A" <= fam[0] <= "Z" or "a" <= fam[0] <= "z"):
+            continue
+        if not fam.replace(" ", "").isascii():
+            continue
+        score = sum(c.isalpha() for c in fam)
+        if score >= 2 and (best is None or score > best[0]):
+            best = (score, off, raw, fam)
+    if not best:
+        return None, "", ""
+    return best[1], best[2], best[3]
+
+
+def _write_font_name(rec: bytearray, family: str, dropped: list, label: str) -> None:
+    off, raw, fam = _existing_font(bytes(rec))
+    if fam == family:
+        return
+    if off is None:
+        off = 0x97
+        payload = ("@" + family).encode("utf-16le")
+    else:
+        prefix = "@" if raw.startswith("@") else ""
+        payload = (prefix + family).encode("utf-16le")
+    room = 0xDD - off
+    if room < 2:
+        return
+    if len(payload) > room:
+        payload = payload[: room - (room % 2)]
+        dropped.append(f"{label}: имя шрифта обрезано до {len(payload) // 2} символов")
+    rec[off:off + len(payload)] = payload
+    end = off + len(payload)
+    if end + 2 <= 0xDD:
+        rec[end:end + 2] = b"\x00\x00"
+    if not family.replace(" ", "").isascii():
+        dropped.append(
+            f"{label}: имя шрифта {family!r} не ASCII — наш импортёр его при чтении пропустит"
+        )
+
+
+def _build_et(obj: dict, st: dict, text: str, dropped: list, label: str,
+              skeleton: bytes | None = None) -> bytes:
+    _note_dropped_style(obj, st, dropped, label)
+    _note_angle(obj, st, dropped, label)
+    family = (st.get("font_family") or obj.get("font_family") or "").strip()
+    rgb = _parse_color(st.get("color") or obj.get("color"))
+    align_src = st.get("align") if st.get("align") is not None else (
+        obj.get("align") if obj.get("align") is not None else obj.get("alignment"))
+    size = st.get("font_size") if st.get("font_size") is not None else obj.get("font_size")
+    if skeleton:
+        rec = bytearray(skeleton)
+        if len(rec) < 0xE1:
+            rec.extend(b"\x00" * (0xE1 - len(rec)))
+        _overlay_xywh(rec, obj, st)
+        if rgb is not None and len(rec) >= 0x2F:
+            rec[0x2C:0x2F] = bytes(rgb)
+        if align_src is not None and len(rec) > 0x8B:
+            rec[0x8B] = _align_byte(align_src)
+        if size is not None:
+            rec[0x90:0x94] = _i32(int(size))
+        if family:
+            _write_font_name(rec, family, dropped, label)
+        old_n = struct.unpack_from("<i", rec, 0xDD)[0]
+        if old_n < 0 or old_n > 10000:
+            old_n = 0
+        old_end = min(len(rec), 0xE1 + old_n * 2)
+        tail = bytes(rec[old_end:])
+        n, raw = _utf16_payload(text or "")
+        return bytes(rec[:0xDD]) + _i32(n) + raw + tail
+
     rec = bytearray(0xDD)
     rec[0:8] = bytes.fromhex("01 80 05 00 00 00") + b"ET"
     flags = int(obj.get("flags") or st.get("flags") or 0x01000000)
-    x, y, w, h = (int(obj["x"]), int(obj["y"]), int(obj["w"]), int(obj["h"]))
-    rot = int(obj.get("rotation") or st.get("rotation") or 0)
-    rec[8:28] = _i32(flags) + _i32(x) + _i32(y) + _i32(w) + _i32(h)
-    rec[28:32] = _i32(rot)
+    rec[8:28] = _i32(flags) + _i32(int(obj["x"])) + _i32(int(obj["y"])) + _i32(int(obj["w"])) + _i32(int(obj["h"]))
+    rec[28:32] = _i32(0)
     rec[0x20:0x2C] = bytes.fromhex("ff 00 01 00 00 00 00 00 00 00 00 00")
-    rgb = _parse_color(st.get("color") or obj.get("color")) or (0, 0, 0)
-    rec[0x2C:0x30] = bytes(rgb) + b"\x00"
-    rec[0x8B] = _align_byte(st.get("align") or obj.get("align") or obj.get("alignment"))
-    size = st.get("font_size") if st.get("font_size") is not None else obj.get("font_size")
+    rec[0x2C:0x30] = bytes(rgb or (0, 0, 0)) + b"\x00"
+    rec[0x8B] = _align_byte(align_src)
     if size is not None:
         rec[0x90:0x94] = _i32(int(size))
     rec[0x94:0x97] = bytes.fromhex("01 80 00")
-    family = (st.get("font_family") or obj.get("font_family") or "").strip()
     if family:
         face = ("@" + family).encode("utf-16le")
         room = 0xDD - 0x97
@@ -329,37 +602,67 @@ def _build_et(obj: dict, st: dict, text: str, dropped: list, label: str) -> byte
             )
     n, raw = _utf16_payload(text or "")
     rec += _i32(n) + raw
-    _note_dropped_style(obj, st, dropped, label)
     return bytes(rec)
 
 
+def _mi_filename_offset(blob: bytes) -> int | None:
+    name = smartid._find_filename(blob)
+    if name:
+        n, raw = _utf16_payload(name)
+        needle = _i32(n) + raw
+        pos = blob.find(needle)
+        if pos >= 0:
+            return pos
+    png_at = blob.find(PNG_MAGIC)
+    if png_at >= 8:
+        # типичная раскладка: [имя][int32 размер PNG][PNG]
+        return None
+    return 195 if len(blob) >= 199 else None
+
+
 def _build_mi(obj: dict, st: dict, png: bytes | None, filename: str | None,
-              dropped: list, label: str) -> bytes:
+              dropped: list, label: str, skeleton: bytes | None = None) -> bytes:
+    _note_angle(obj, st, dropped, label)
+    name = filename or obj.get("filename") or st.get("filename") or "image.png"
+    blob = png or _PLACEHOLDER_PNG
+    if png is None:
+        dropped.append(f"{label}: нет пикселей изображения, записана заглушка 1×1 PNG")
+    n, raw = _utf16_payload(name)
+    payload = _i32(n) + raw + _i32(len(blob)) + blob
+    if skeleton:
+        rec = bytearray(skeleton)
+        _overlay_xywh(rec, obj, st)
+        fn_off = _mi_filename_offset(bytes(skeleton))
+        png_at = skeleton.find(PNG_MAGIC)
+        if png_at < 0:
+            tail = b""
+            cut = fn_off if fn_off is not None else min(195, len(rec))
+        else:
+            extracted, _, png_end = smartid._extract_png(skeleton, png_at)
+            cut_end = png_end if png_end and png_end > 0 else png_at
+            tail = bytes(rec[cut_end:])
+            cut = fn_off if fn_off is not None else (png_at - 4 if png_at >= 4 else png_at)
+            # если нашли имя, режем с его префикса длины
+            if fn_off is not None:
+                cut = fn_off
+        if cut < 0:
+            cut = 0
+        return bytes(rec[:cut]) + payload + tail
+
     rec = bytearray(195)
     rec[0:8] = bytes.fromhex("01 80 04 00 00 00") + b"MI"
     flags = int(obj.get("flags") or st.get("flags") or 0x01000000)
     rec[8:28] = (_i32(flags) + _i32(int(obj["x"])) + _i32(int(obj["y"]))
                  + _i32(int(obj["w"])) + _i32(int(obj["h"])))
-    rec[28:32] = _i32(int(obj.get("rotation") or st.get("rotation") or 0))
+    rec[28:32] = _i32(0)
     rec[0x20:0x2C] = bytes.fromhex("ff 00 01 00 00 00 00 00 00 00 00 00")
-    name = filename or obj.get("filename") or st.get("filename") or "image.png"
-    n, raw = _utf16_payload(name)
-    rec += _i32(n) + raw
-    blob = png or _PLACEHOLDER_PNG
-    if png is None:
-        dropped.append(f"{label}: нет пикселей изображения, записана заглушка 1×1 PNG")
-    rec += _i32(len(blob)) + blob
+    rec += payload
     return bytes(rec)
 
 
-def _build_er(obj: dict, st: dict, dropped: list, label: str) -> bytes:
-    rec = bytearray(131)
-    rec[0:8] = bytes.fromhex("01 80 00 00 00 00") + b"ER"
-    flags = int(obj.get("flags") or st.get("flags") or 0x01000000)
-    rec[8:28] = (_i32(flags) + _i32(int(obj["x"])) + _i32(int(obj["y"]))
-                 + _i32(int(obj["w"])) + _i32(int(obj["h"])))
-    rec[32:40] = bytes.fromhex("00 00 01 00 00 00 00 00")
-    rec[40:44] = bytes.fromhex("01 00 00 00")
+def _build_er(obj: dict, st: dict, dropped: list, label: str,
+              skeleton: bytes | None = None) -> bytes:
+    _note_angle(obj, st, dropped, label)
     color = st.get("border_color") or st.get("stroke") or obj.get("border_color")
     parsed = _parse_color(color) if color else None
     if parsed is not None and parsed != (0, 0, 0):
@@ -371,31 +674,65 @@ def _build_er(obj: dict, st: dict, dropped: list, label: str) -> bytes:
     bw = st.get("border_width") or st.get("stroke_width")
     if bw not in (None, "", 1, 1.0, "1"):
         dropped.append(f"{label}: толщина рамки {bw!r} не записывается")
+    if skeleton:
+        rec = bytearray(skeleton)
+        _overlay_xywh(rec, obj, st)
+        return bytes(rec)
+    rec = bytearray(131)
+    rec[0:8] = bytes.fromhex("01 80 00 00 00 00") + b"ER"
+    flags = int(obj.get("flags") or st.get("flags") or 0x01000000)
+    rec[8:28] = (_i32(flags) + _i32(int(obj["x"])) + _i32(int(obj["y"]))
+                 + _i32(int(obj["w"])) + _i32(int(obj["h"])))
+    rec[32:40] = bytes.fromhex("00 00 01 00 00 00 00 00")
+    rec[40:44] = bytes.fromhex("01 00 00 00")
     return bytes(rec)
 
 
-def _build_fields_table(pairs: list[tuple[str, str]]) -> bytes:
+def _overlay_field_rec(base: bytes, i: int, name: str, value: str) -> bytes:
+    rec = bytearray(base)
+    if len(rec) < FIELD_REC_SIZE:
+        rec.extend(b"\x00" * (FIELD_REC_SIZE - len(rec)))
+    if i == 0:
+        rec[0:5] = b"CGFld"
+    else:
+        rec[3] = 0x0E
+        rec[4] = 0x80
+        rec[5] = i & 0xFF
+    n_name, raw_name = _utf16_payload(name)
+    raw_name = raw_name[:62]
+    rec[9:9 + len(raw_name)] = raw_name
+    # нуль после имени, если дальше ещё есть место (для более короткого имени)
+    end = 9 + len(raw_name)
+    if end + 2 <= 73:
+        rec[end:end + 2] = b"\x00\x00"
+    n_val, raw_val = _utf16_payload(value)
+    max_val = FIELD_REC_SIZE - 77
+    raw_val = raw_val[: max_val - (max_val % 2)]
+    n_val = len(raw_val) // 2
+    rec[73:77] = _i32(n_val)
+    rec[77:77 + len(raw_val)] = raw_val
+    return bytes(rec[:FIELD_REC_SIZE])
+
+
+def _build_fields_table(pairs: list[tuple[str, str]], ref: dict | None = None) -> bytes:
     if not pairs:
         return b""
     out = bytearray()
-    out += _u16(len(pairs)) + bytes.fromhex("ff ff 00 00 05 00")
+    if ref and ref.get("field_prefix"):
+        prefix = bytearray(ref["field_prefix"])
+        if len(prefix) >= 2:
+            prefix[0:2] = _u16(len(pairs))
+        out += prefix
+    else:
+        out += _u16(len(pairs)) + bytes.fromhex("ff ff 00 00 05 00")
+    ref_recs = (ref or {}).get("field_recs") or []
     for i, (name, value) in enumerate(pairs):
-        rec = bytearray(FIELD_REC_SIZE)
-        if i == 0:
-            rec[0:5] = b"CGFld"
+        if ref_recs:
+            base = ref_recs[i] if i < len(ref_recs) else ref_recs[-1]
+            out += _overlay_field_rec(base, i, name, value)
         else:
-            rec[3] = 0x0E
-            rec[4] = 0x80
-            rec[5] = i & 0xFF
-        n_name, raw_name = _utf16_payload(name)
-        rec[9:9 + min(len(raw_name), 62)] = raw_name[:62]
-        n_val, raw_val = _utf16_payload(value)
-        max_val = FIELD_REC_SIZE - 77
-        raw_val = raw_val[: max_val - (max_val % 2)]
-        n_val = len(raw_val) // 2
-        rec[73:77] = _i32(n_val)
-        rec[77:77 + len(raw_val)] = raw_val
-        out += rec
+            rec = bytearray(FIELD_REC_SIZE)
+            out += _overlay_field_rec(bytes(rec), i, name, value)
     return bytes(out)
 
 
@@ -438,7 +775,8 @@ def _csd_xy(obj: dict) -> tuple[int, int, int, int]:
     return x, y, w, h
 
 
-def build_csd_bytes(template: dict, *, base_dir=None) -> tuple[bytes, list[str]]:
+def build_csd_bytes(template: dict, *, base_dir=None, reference_csd=None,
+                    import_source_paths=None) -> tuple[bytes, list[str]]:
     """Собрать байты .csd и список неучтённых свойств. Файл не пишет."""
     if not isinstance(template, dict):
         raise TypeError("template должен быть dict (результат parse_csd или снимок элементов)")
@@ -447,7 +785,12 @@ def build_csd_bytes(template: dict, *, base_dir=None) -> tuple[bytes, list[str]]
     card_h = int(template.get("card_h") or DEFAULT_CARD_H)
     dpi = int(template.get("dpi") or DEFAULT_DPI)
     printer = template.get("printer") or ""
-    parts = [_header(card_w, card_h, dpi, printer)]
+    ref_path = _resolve_reference(template, reference_csd, import_source_paths)
+    ref = _load_reference(ref_path)
+    if ref:
+        parts = [_header_from_ref(ref, card_w, card_h, dpi, printer)]
+    else:
+        parts = [_header(card_w, card_h, dpi, printer)]
 
     bg = template.get("background_png")
     if bg is None:
@@ -463,6 +806,7 @@ def build_csd_bytes(template: dict, *, base_dir=None) -> tuple[bytes, list[str]]
         parts.append(bg_png)
 
     used_fields: list[tuple[str, str]] = []
+    counters: dict[str, int] = {}
     for idx, raw in enumerate(_objects_of(template)):
         obj = dict(raw)
         st = _style_of(obj)
@@ -475,6 +819,8 @@ def build_csd_bytes(template: dict, *, base_dir=None) -> tuple[bytes, list[str]]
             continue
         x, y, w, h = _csd_xy(obj)
         rec_obj = {**obj, "x": x, "y": y, "w": max(1, w), "h": max(1, h)}
+        tag = WRITABLE_TYPES[typ]
+        skel = _take_skeleton(ref, counters, tag)
         if typ in ("text", "field"):
             text = obj.get("text")
             if text is None:
@@ -484,7 +830,8 @@ def build_csd_bytes(template: dict, *, base_dir=None) -> tuple[bytes, list[str]]
                 if text is None or text == "":
                     text = _field_value_for(template, fname) or fname
                 used_fields.append((fname, str(text)))
-            parts.append(_build_et(rec_obj, st, "" if text is None else str(text), dropped, label))
+            parts.append(_build_et(rec_obj, st, "" if text is None else str(text),
+                                   dropped, label, skel))
         elif typ in ("photo", "image"):
             png = obj.get("png")
             if isinstance(png, (bytes, bytearray, memoryview)):
@@ -510,11 +857,13 @@ def build_csd_bytes(template: dict, *, base_dir=None) -> tuple[bytes, list[str]]
                 sv = obj.get("static_value")
                 if isinstance(sv, str) and sv:
                     filename = Path(sv).name
-            parts.append(_build_mi(rec_obj, st, png, filename, dropped, label))
+            parts.append(_build_mi(rec_obj, st, png, filename, dropped, label, skel))
         else:
-            parts.append(_build_er(rec_obj, st, dropped, label))
+            parts.append(_build_er(rec_obj, st, dropped, label, skel))
 
-    parts.append(_build_fields_table(_field_pairs(template, used_fields)))
+    parts.append(_build_fields_table(_field_pairs(template, used_fields), ref))
+    if ref and ref.get("tail"):
+        parts.append(ref["tail"])
     return b"".join(parts), dropped
 
 
@@ -528,18 +877,23 @@ def _field_value_for(template: dict, name: str) -> str | None:
 
 
 def write_csd(template, path, *, overwrite: bool = False, import_source_paths=None,
-              base_dir=None) -> dict:
+              base_dir=None, reference_csd=None) -> dict:
     """Записать .csd. Возвращает {"path": Path, "dropped": [str, ...]}.
 
     overwrite=False (по умолчанию) — не трогать существующий файл.
     overwrite=True разрешает заменить файл, но не исходник Smart ID
     (см. import_source_paths и template["source"] в docstring модуля).
+    reference_csd — явный эталон неизвестных байтов; иначе исходник шаблона
+    или tests/fixtures/license_to_firearms.csd.
     """
     dest = _check_target(path, overwrite=overwrite, template=template,
                          import_source_paths=import_source_paths)
     if base_dir is None and isinstance(template, dict):
         base_dir = template.get("base_dir")
-    data, dropped = build_csd_bytes(template, base_dir=base_dir)
+    data, dropped = build_csd_bytes(
+        template, base_dir=base_dir, reference_csd=reference_csd,
+        import_source_paths=import_source_paths,
+    )
     if not data.startswith(b"CSD"):
         raise ValueError("внутренняя ошибка: собранный файл не начинается с сигнатуры CSD")
     _atomic_write(dest, data)
