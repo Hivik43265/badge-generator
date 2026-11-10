@@ -336,7 +336,9 @@ class PhotoEditor(QDialog):
             pp = self.params(crop=False)
             if getattr(self, "_autoeffect_baked", False): pp = {**pp, "autoeffect": False}
             # crop не вшиваем в пиксели — иначе рамка становится декоративной ~80% поверх уже обрезанного кадра
-            self.img, self._prev_k = preview_photo_edit(self.src, {**pp, "crop": None})
+            self.img, self._prev_k = preview_photo_edit(
+                self.src, {**pp, "crop": None},
+                path=self.path, base_dir=getattr(self.api, "base_dir", None))
         except ValueError as e:
             self.status.setText(f"Ошибка правки: {e}"); return False
         if self.status.text().startswith("Ошибка правки") or self.target_error == _FREE_FRAME:

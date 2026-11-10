@@ -392,40 +392,30 @@ def render_card_mem(person, elements, side="front", background=None, base_dir=No
     return _api.render_card(person, elements, side, background, base_dir)
 
 
-# как DETECT_MAX_SIDE в badge_backend.services.photo_edit (1480e2c)
-try:
-    from badge_backend.services.photo_edit import DETECT_MAX_SIDE as PREVIEW_MAX_SIDE
-except ImportError:
-    PREVIEW_MAX_SIDE = 800
+PREVIEW_MAX_SIDE = 800
 
 
-def preview_photo_edit(img, params, max_side=None):
+def preview_photo_edit(img, params, max_side=None, *, path=None, base_dir=None):
     """Превью редактора: apply_photo_edit по уменьшенной копии (макс. сторона max_side).
 
     Возвращает (image, k), где координаты crop на превью = crop полного кадра * k.
-    Уменьшение — через _src_for_frame из 1480e2c (исходник заранее в размер выхода);
-    если её нет — через уменьшенный scale в apply_photo_edit (без Pillow в UI).
+    Уменьшение — Backend load_photo_for_preview(path, max_side, base_dir);
+    нет функции — уменьшенный scale в apply_photo_edit (без Pillow в UI).
     """
     max_side = int(max_side or PREVIEW_MAX_SIDE)
     params = {**dict(params or {}), "crop": None}
+    fn = getattr(_api, "load_photo_for_preview", None)
+    src_w = getattr(img, "width", 0) or 0
+    if fn is not None and path:
+        work = fn(path, max_side=max_side, base_dir=base_dir)
+        out = apply_photo_edit(work, params)
+        k = work.width / src_w if src_w else 1.0
+        return out, (k if k > 0 else 1.0)
     src_max = max(img.width, img.height) or 1
     sc = float(params.get("scale") or 100)
     out_max = src_max * sc / 100.0
     if out_max <= max_side:
         return apply_photo_edit(img, params), 1.0
-    tw = max(1, round(img.width * sc / 100.0 * max_side / out_max))
-    th = max(1, round(img.height * sc / 100.0 * max_side / out_max))
-    src_fn = None
-    try:
-        from badge_backend.services.photo_edit import _src_for_frame, normalize_params
-        src_fn = _src_for_frame
-    except ImportError:
-        src_fn = None
-    if src_fn is not None:
-        work, p = src_fn(img, normalize_params(params), tw, th)
-        out = apply_photo_edit(work, {**p, "crop": None})
-        k = work.width / img.width if img.width else 1.0
-        return out, (k if k > 0 else 1.0)
     preview_scale = max(10, min(400, round(max_side / src_max * 100)))
     k = (preview_scale / sc) if sc else 1.0
     return apply_photo_edit(img, {**params, "scale": int(preview_scale)}), k
