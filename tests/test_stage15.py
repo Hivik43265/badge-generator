@@ -28,7 +28,7 @@ def _v6(path):
 
 def test_migration_v6_realistic_no_loss(tmp_path):
     p = tmp_path / "v6.db"; _v6(p)
-    con = db.connect(str(p)); assert db.get_schema_version(con) == 7
+    con = db.connect(str(p)); assert db.get_schema_version(con) == db.LATEST
     ps = {r["id"]: api.get_person(con, r["id"]) for r in con.execute("SELECT id FROM persons")}
     assert ps[1]["fields"]["fio"] == "Иванов" and ps[1]["fields"]["Фото"] == "p/1.jpg" and ps[1]["photo_path"] == "p/1.jpg"
     assert "Фото" not in ps[2]["fields"] or not ps[2]["fields"]["Фото"]
@@ -48,7 +48,7 @@ def test_migration_on_copy_of_real_dbs(tmp_path):
         dst = tmp_path / os.path.basename(s); shutil.copy(s, dst)
         o = sqlite3.connect(s); np, ne = o.execute("SELECT count(*) FROM persons").fetchone()[0], o.execute("SELECT count(*) FROM template_elements").fetchone()[0]; o.close()
         con = db.connect(str(dst))
-        assert db.get_schema_version(con) == 7
+        assert db.get_schema_version(con) == db.LATEST
         assert con.execute("SELECT count(*) FROM persons").fetchone()[0] == np
         assert con.execute("SELECT count(*) FROM template_elements").fetchone()[0] == ne
         assert sqlite3.connect(s).execute("PRAGMA user_version").fetchone()[0] == 6   # оригинал не тронут
@@ -250,7 +250,7 @@ def test_already_v7_without_views_backfills_photo_config(tmp_path):
     con.commit(); con.close()
     con = db.connect(str(p))
     assert PE.get_photo_view(con, 1)["placement"] == "12;-7;1.3;5;9;15"
-    assert db.get_schema_version(con) == 7
+    assert db.get_schema_version(con) == db.LATEST
 
 
 def test_photo_editor_state_roundtrip(tmp_path):

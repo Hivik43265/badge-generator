@@ -164,10 +164,10 @@ def detect_face_crop(img: Image.Image, aspect: float):
 
 # ---------- рамка из шаблона ----------
 def _frame_spec(eid, w, h, side):
-    from .. import DPI
-    wmm, hmm = w * 25.4 / DPI, h * 25.4 / DPI
+    from .. import units_to_mm, units_to_px
+    wmm, hmm = units_to_mm(w), units_to_mm(h)
     return {"aspect": w / h, "width_mm": round(wmm, 2), "height_mm": round(hmm, 2),
-            "width_px": int(round(wmm / 25.4 * DPI)), "height_px": int(round(hmm / 25.4 * DPI)),
+            "width_px": units_to_px(w), "height_px": units_to_px(h),
             "element_id": eid, "side": side}
 
 def get_photo_frame_spec(con, field=None, *, element_id=None, field_name=None):
@@ -181,7 +181,7 @@ def get_photo_frame_spec(con, field=None, *, element_id=None, field_name=None):
     без них     первый фото-элемент активного шаблона: side='front' раньше оборота,
                 затем z_order, id. Предпочтения поля «Фото» нет. Нет фото-элементов → None.
 
-    Размеры элемента в px холста 300 DPI → мм = px·25.4/300.
+    Размеры элемента в единицах 0,1 мм → мм = units×0,1; width_px/height_px @ 300 DPI.
     → {'aspect': w/h, 'width_mm', 'height_mm', 'width_px', 'height_px' (300 DPI, округл.), 'element_id', 'side'}
     """
     from ..db import active_template_id

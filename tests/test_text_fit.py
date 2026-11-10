@@ -68,7 +68,7 @@ def test_demo_layout_no_overlaps(side):
             bad.append((a["id"], a["type"], b["id"], b["type"]))
     assert bad == []
     for e in els:
-        assert e["x"] >= 0 and e["y"] >= 0 and e["x"] + e["w"] <= 1011 and e["y"] + e["h"] <= 638, e
+        assert e["x"] >= 0 and e["y"] >= 0 and e["x"] + e["w"] <= 856 and e["y"] + e["h"] <= 540, e
 
 def test_demo_texts_fit_without_clipping(tmp_path):
     con = api.connect(); demo.build_demo(con); demo.make_logo(tmp_path / "demo_logo.png")

@@ -84,7 +84,7 @@ def test_export_progress_and_cancel(demo_db, tmp_path):
 # 7
 @pytest.mark.parametrize("form", ["json_str", "json_dict", "fields", "row"])
 def test_person_formats(form):
-    els = [dict(type="field", x=0, y=0, w=1011, h=638, field_name="last_name", style_json='{"font_size":40}')]
+    els = [dict(type="field", x=0, y=0, w=856, h=540, field_name="last_name", style_json='{"font_size":40}')]
     ref = api.render_card({"fields_json": '{"last_name":"Ёжиков"}'}, els)
     if form == "json_str": p = {"fields_json": '{"last_name":"Ёжиков"}'}
     elif form == "json_dict": p = {"fields_json": {"last_name": "Ёжиков"}}

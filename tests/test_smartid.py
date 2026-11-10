@@ -121,13 +121,13 @@ def _build_csd(*, title="LICENSE TO FIREARMS", veteran="VETERAN", name="Adward,J
 
 
 def test_to_storage_units_isolated():
-    assert smartid._to_storage_units(856) == 1011
-    assert smartid._to_storage_units(538) == 635
-    assert smartid._to_storage_units(540) == 638
-    assert smartid._to_storage_units(664) == 784
-    assert smartid._to_storage_units(120) == 142
-    assert smartid._to_storage_units(169) == 200
-    assert smartid._to_storage_units(41) == 48
+    assert smartid._to_storage_units(856) == 856
+    assert smartid._to_storage_units(538) == 538
+    assert smartid._to_storage_units(540) == 540
+    assert smartid._to_storage_units(664) == 664
+    assert smartid._to_storage_units(120) == 120
+    assert smartid._to_storage_units(169) == 169
+    assert smartid._to_storage_units(41) == 41
 
 
 def test_parse_csd_card_size_and_known_et():
@@ -141,7 +141,7 @@ def test_parse_csd_card_size_and_known_et():
     assert len(mis) == 2
     vet = next(o for o in ets if o["text"] == "VETERAN")
     assert (vet["x"], vet["y"], vet["w"], vet["h"]) == (664, 120, 169, 41)
-    assert smartid._to_storage_units(vet["x"]) == 784
+    assert smartid._to_storage_units(vet["x"]) == 664
 
 
 def test_type_mapping_field_text_photo_image():
@@ -195,7 +195,7 @@ def test_import_csd_replaces_active_template(tmp_path):
     assert "Cardtype" in (out["report"].get("created_fields") or [])
     assert "Photo" in out["report"]["created_fields"]
     vet = next(e for e in els if e.get("static_value") == "VETERAN")
-    assert (vet["x"], vet["y"], vet["w"], vet["h"]) == (784, 142, 200, 48)
+    assert (vet["x"], vet["y"], vet["w"], vet["h"]) == (664, 120, 169, 41)
     name_el = next(e for e in els if e.get("field_name") == "Name")
     assert name_el["type"] == "field"
     photo = next(e for e in els if e["type"] == "photo")

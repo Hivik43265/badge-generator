@@ -11,7 +11,7 @@ def _csv(p, text): p.write_text(text, encoding="utf-8"); return p
 
 def test_new_db_has_no_fields():
     con = api.connect()
-    assert api.list_fields(con) == [] and api.get_schema_version(con) == 7 == db.LATEST
+    assert api.list_fields(con) == [] and api.get_schema_version(con) == db.LATEST
 
 def test_v4_to_v5_existing_fields_become_text(tmp_path):
     p = create_legacy_db(tmp_path / "v4.db", version=4); raw = sqlite3.connect(p)

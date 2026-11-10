@@ -1,12 +1,17 @@
 """Фасад backend для Frontend. Все функции принимают открытое соединение con (db.connect).
 
-Координаты элементов — целые px холста 1011×638. Данные записей — только в persons.fields_json.
+Координаты элементов — целые единицы 0,1 мм (холст 856×540). Выход рендера — 1011×638 px @ 300 DPI.
+Данные записей — только в persons.fields_json.
 """
 from __future__ import annotations
 import json
 from .fields import FIELD_TYPES, FieldValueWarning, check_type, normalize_value, format_value  # noqa: F401
-from .db import connect, DEFAULT_DB_PATH, default_db_path, get_schema_version, active_template_id  # noqa: F401  (реэкспорт)
+from .db import connect, DEFAULT_DB_PATH, default_db_path, get_schema_version, active_template_id, MigrationError  # noqa: F401  (реэкспорт)
 from . import db as _db
+from . import (  # noqa: F401
+    CARD_W_MM, CARD_H_MM, DPI, CARD_W_PX, CARD_H_PX,
+    GRID_DPI, UNIT_MM, CARD_W_UNITS, CARD_H_UNITS,
+    units_to_px, px_to_units, units_to_mm, mm_to_units, px_to_mm, mm_to_px)
 from .photo_config import PhotoConfig, normalize, DEFAULT as PHOTO_CONFIG_DEFAULT  # noqa
 from .render import render_card, render_card_db, render_preview  # noqa
 from .services.importer import import_file  # noqa
@@ -158,15 +163,35 @@ def create_element(con, type: str, x: int, y: int, w: int, h: int, side: str = "
         return con.execute(f"INSERT INTO template_elements({','.join(v)}) VALUES ({','.join('?'*len(v))})",
                            tuple(v.values())).lastrowid
 
+def _element_style(con, element_id: int) -> dict:
+    r = con.execute("SELECT style_json FROM template_elements WHERE id=?", (element_id,)).fetchone()
+    if r is None: return {}
+    try: return json.loads(r[0] or "{}")
+    except (TypeError, ValueError): return {}
+
 def update_element(con, element_id: int, **changes) -> bool:
-    """Изменить поля элемента (x, y, w, h, style={...}, z_order, ...)."""
+    """Изменить поля элемента (x, y, w, h, style={...}, z_order, ...).
+    style.locked — нельзя менять x,y,w,h,side и rotation (ValueError)."""
     v = _el_vals(changes)
     if not v: return True
+    st = _element_style(con, element_id)
+    if st.get("locked"):
+        if any(k in v for k in ("x", "y", "w", "h", "side")):
+            raise ValueError("элемент зафиксирован")
+        if "style_json" in v:
+            try: new_st = json.loads(v["style_json"]) if isinstance(v["style_json"], str) else (v["style_json"] or {})
+            except (TypeError, ValueError): new_st = {}
+            if (new_st.get("rotation") or 0) != (st.get("rotation") or 0):
+                raise ValueError("элемент зафиксирован")
     with con:
         return con.execute(f"UPDATE template_elements SET {','.join(k+'=?' for k in v)} WHERE id=?",
                            (*v.values(), element_id)).rowcount > 0
 
 def delete_element(con, element_id: int) -> bool:
+    """Удалить элемент. style.locked → ValueError."""
+    st = _element_style(con, element_id)
+    if st.get("locked"):
+        raise ValueError("элемент зафиксирован")
     with con: return con.execute("DELETE FROM template_elements WHERE id=?", (element_id,)).rowcount > 0
 
 def set_background(con, side: str, color: str = "#FFFFFF", image_path: str | None = None, *, template_id: int | None = None) -> None:
@@ -225,7 +250,7 @@ def list_field_links(con) -> dict[str, list[dict]]:
 
 _LINKABLE = ("text", "field", "barcode", "qr", "photo")
 
-DEFAULT_LINK_GEOMETRY = {"photo": (40, 120, 236, 295), "field": (320, 120, 600, 80)}   # px холста; 236×295 ≈ 20×25 мм
+DEFAULT_LINK_GEOMETRY = {"photo": (34, 102, 200, 250), "field": (271, 102, 508, 68)}   # единицы 0,1 мм; фото ≈ 20×25 мм
 
 def link_field(con, element_id: int | None, field_name: str, *, side: str = "front",
                template_id: int | None = None) -> bool | int:

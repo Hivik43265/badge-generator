@@ -20,7 +20,7 @@ def test_open_save_close_not_dirty(tmp_path):
     """open → save → close без вопроса (не dirty)."""
     s = api.create_project(tmp_path / "p.db")
     assert s.source_path.is_file()
-    assert db.get_schema_version(sqlite3.connect(s.source_path)) == 7
+    assert db.get_schema_version(sqlite3.connect(s.source_path)) == db.LATEST
     assert s.is_dirty() is False
     s.save()
     assert s.is_dirty() is False
@@ -240,7 +240,7 @@ def test_new_project_empty_v7(tmp_path):
     s = api.create_project(dest)
     assert dest.is_file()
     raw = sqlite3.connect(dest)
-    assert raw.execute("PRAGMA user_version").fetchone()[0] == 7
+    assert raw.execute("PRAGMA user_version").fetchone()[0] == db.LATEST
     raw.close()
     assert s.work_path.is_file() and s.con is not None
     assert s.is_dirty() is False

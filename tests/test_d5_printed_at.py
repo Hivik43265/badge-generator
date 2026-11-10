@@ -17,7 +17,7 @@ def test_migrate_old_v1_db(tmp_path):
     before = [tuple(r) for r in old.execute("SELECT * FROM persons ORDER BY id")]; old.close()
     assert "printed_at" not in db._cols(sqlite3.connect(str(p)), "persons")
     con = api.connect(p)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 7 == db.LATEST
+    assert con.execute("PRAGMA user_version").fetchone()[0] == db.LATEST
     assert "printed_at" in db._cols(con, "persons")
     after = [tuple(r) for r in con.execute("SELECT * FROM persons ORDER BY id")]
     # v7: photo_path копируется в новое поле «Фото», created_at/updated_at (UTC) → локальное время со смещением

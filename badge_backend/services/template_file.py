@@ -12,8 +12,8 @@ from .photos import project_base_dir
 from .templates import get_template_edit_state, _name as _tpl_name
 
 FORMAT = "badge-generator-template"
-FORMAT_VERSION = 1
-SCHEMA_MIN = 7
+FORMAT_VERSION = 2
+SCHEMA_MIN = 8
 EL_TYPES = {"text", "field", "photo", "image", "rect", "qr", "barcode", "line", "ellipse"}
 SIDES = {"front", "back"}
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -69,9 +69,10 @@ def _read_template_json(zf: zipfile.ZipFile) -> dict:
     if data.get("format") != FORMAT:
         raise ValueError("это не файл шаблона Badge Generator")
     ver = data.get("format_version")
-    if ver != FORMAT_VERSION:
-        raise ValueError("неподдерживаемая версия шаблона" if isinstance(ver, int) and ver > FORMAT_VERSION
-                         else "неподдерживаемая версия шаблона")
+    if not isinstance(ver, int) or ver < 1:
+        raise ValueError("неподдерживаемая версия шаблона")
+    if ver > FORMAT_VERSION:
+        raise ValueError("неподдерживаемая версия шаблона")
     tpl = data.get("template") or {}
     if not isinstance(tpl, dict) or not str(tpl.get("name") or "").strip():
         raise ValueError("в шаблоне нет имени")
@@ -93,10 +94,46 @@ def _read_template_json(zf: zipfile.ZipFile) -> dict:
         st = e.get("style")
         if st is None: e["style"] = {}
         elif not isinstance(st, dict): raise ValueError("style должен быть объектом")
+    if ver == 1:
+        _convert_bgt_v1(data)
     bgs = data.get("backgrounds") or []
     if not isinstance(bgs, list): raise ValueError("backgrounds должен быть списком")
     data["_members"] = names
     return data
+
+
+def _convert_bgt_v1(data: dict) -> None:
+    """Геометрия и отступы .bgt v1 были в px @ 300 DPI."""
+    from .. import px_to_units
+    def conv_style(st):
+        if not isinstance(st, dict):
+            return
+        for k in ("padding", "radius"):
+            if st.get(k) is not None:
+                try: st[k] = px_to_units(st[k])
+                except (TypeError, ValueError): pass
+        src = st.get("stroke_width")
+        if src is None and "border_width" in st and "border_style" not in st:
+            src = st.get("border_width")
+        if src not in (None, ""):
+            try:
+                bw = px_to_units(src)
+            except (TypeError, ValueError):
+                bw = None
+            if bw is not None:
+                st["border_width"] = bw
+                if bw > 0 and "border_style" not in st:
+                    st["border_style"] = "solid"
+    tpl = data.get("template") or {}
+    conv_style(tpl.get("style") if isinstance(tpl.get("style"), dict) else None)
+    for e in data.get("elements") or []:
+        if not isinstance(e, dict):
+            continue
+        for k in ("x", "y", "w", "h"):
+            if k in e:
+                try: e[k] = px_to_units(e[k])
+                except (TypeError, ValueError): pass
+        conv_style(e.get("style"))
 
 
 def _verify_image(data: bytes, name: str):
@@ -230,7 +267,7 @@ def export_template(con, dest_path, template_id: int | None = None, *, overwrite
                 files[img] = src.read_bytes()
         bgs.append({"side": r["side"], "color": r["color"] or "#FFFFFF", "image": img})
     payload = {"format": FORMAT, "format_version": FORMAT_VERSION, "schema_min": SCHEMA_MIN,
-               "exported_at": now_iso(),
+               "units": "0.1mm", "exported_at": now_iso(),
                "template": {"name": t["name"], "style": json.loads(t["style_json"] or "{}")},
                "elements": els, "backgrounds": bgs}
     dest.parent.mkdir(parents=True, exist_ok=True)

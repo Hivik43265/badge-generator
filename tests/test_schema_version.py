@@ -5,7 +5,7 @@ def test_get_schema_version_fresh_and_migrated():
     raw = sqlite3.connect(":memory:")
     assert api.get_schema_version(raw) == 0
     db.migrate(raw)
-    assert api.get_schema_version(raw) == len(db.MIGRATIONS) == 7
+    assert api.get_schema_version(raw) == len(db.MIGRATIONS) == db.LATEST
 
 def test_get_schema_version_connect():
     con = api.connect()

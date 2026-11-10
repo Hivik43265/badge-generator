@@ -25,12 +25,28 @@ def apply_layout(con, layout) -> list[int]:
     """Применить макет {"backgrounds": {side: {color, image_path}}, "elements": [{type,x,y,w,h,side,...,style}]}
     (dict или путь к JSON) через публичное API. → id созданных элементов. Существующие элементы не удаляются."""
     if not isinstance(layout, dict): layout = json.loads(Path(layout).read_text(encoding="utf-8"))
+    from . import px_to_units
+    convert = layout.get("units") in (None, "px")
     for side, bg in (layout.get("backgrounds") or {}).items():
         api.set_background(con, side, bg.get("color") or "#FFFFFF", bg.get("image_path"))
     ids = []
     for e in layout.get("elements") or []:
-        e = dict(e); t = e.pop("type")
-        ids.append(api.create_element(con, t, e.pop("x"), e.pop("y"), e.pop("w"), e.pop("h"), **e))
+        e = dict(e); typ = e.pop("type")
+        x, y, w, h = e.pop("x"), e.pop("y"), e.pop("w"), e.pop("h")
+        if convert:
+            x, y, w, h = px_to_units(x), px_to_units(y), px_to_units(w), px_to_units(h)
+            st = e.get("style")
+            if isinstance(st, dict):
+                st = dict(st)
+                for k in ("padding", "radius"):
+                    if st.get(k) is not None:
+                        st[k] = px_to_units(st[k])
+                if st.get("border_width") is not None and "border_style" not in st:
+                    st["border_width"] = px_to_units(st["border_width"])
+                    if st["border_width"] > 0:
+                        st["border_style"] = "solid"
+                e["style"] = st
+        ids.append(api.create_element(con, typ, x, y, w, h, **e))
     return ids
 
 def build_demo(con, layout=None):

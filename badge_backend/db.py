@@ -3,9 +3,14 @@
 Версия 1 = schema.sql. Новые версии добавляются в MIGRATIONS как ALTER-скрипты
 и применяются по порядку и к новым, и к существующим БД.
 """
-import sqlite3
+import json, logging, sqlite3
 from pathlib import Path
 DEFAULT_DB_PATH = "project.db"   # имя файла БД проекта; относительный путь — от каталога проекта (по умолчанию cwd)
+log = logging.getLogger(__name__)
+
+
+class MigrationError(RuntimeError):
+    """Миграция схемы не применилась; транзакция шага откачена, файл не изменён."""
 
 def _frozen_data_dir() -> Path:
     """Каталог данных для собранного exe (PyInstaller): %APPDATA%\\BadgeGenerator (иначе ~/.BadgeGenerator)."""
@@ -230,7 +235,138 @@ def active_template_id(con) -> int:
                     (ACTIVE_KEY, str(tid)))
     return tid
 
-MIGRATIONS = [SCHEMA, _v2_printed_at, _v3_line, _v4_ellipse_defaults, _v5_field_types, _V6_SETTINGS, _v7_templates]   # индекс + 1 = user_version; str — SQL-скрипт, callable — шаг на Python
+
+def _pxu(v):
+    """px @ 300 DPI → единицы 0,1 мм (как px_to_units)."""
+    return int(round(float(v) * 254.0 / 300))
+
+
+def _style_border_v8(st: dict) -> dict:
+    """Записать border_width в единицах из старого stroke_width/border_width (px). Не трогает padding/radius."""
+    if not isinstance(st, dict):
+        return st
+    out = dict(st)
+    if "border_style" in out and "border_width" in out and "stroke_width" not in out:
+        return out
+    src = out.get("stroke_width")
+    if src is None and "border_width" in out and "border_style" not in out:
+        src = out.get("border_width")
+    if src not in (None, ""):
+        try:
+            bw = _pxu(src)
+        except (TypeError, ValueError):
+            return out
+        out["border_width"] = bw
+        if bw > 0 and "border_style" not in out:
+            out["border_style"] = "solid"
+    return out
+
+
+def _geom_v8_obj(obj: dict) -> dict:
+    if not isinstance(obj, dict):
+        return obj
+    o = dict(obj)
+    for k in ("x", "y", "w", "h"):
+        if k in o and o[k] is not None:
+            try:
+                o[k] = _pxu(o[k])
+            except (TypeError, ValueError):
+                pass
+    st = o.get("style") if isinstance(o.get("style"), dict) else None
+    raw = o.get("style_json")
+    if st is None and raw:
+        try:
+            st = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, ValueError):
+            st = None
+    if isinstance(st, dict):
+        st = dict(st)
+        for k in ("padding", "radius"):
+            if st.get(k) is not None:
+                try:
+                    st[k] = _pxu(st[k])
+                except (TypeError, ValueError):
+                    pass
+        st = _style_border_v8(st)
+        if "style" in o and isinstance(o["style"], dict):
+            o["style"] = st
+        if "style_json" in o:
+            o["style_json"] = json.dumps(st, ensure_ascii=False)
+    return o
+
+
+def _v8_units(con):
+    """v8: геометрия шаблона в единицах 0,1 мм (сетка 254 DPI). Идемпотентность — только user_version."""
+    con.execute("""
+        UPDATE template_elements SET
+          x = CAST(round(x * 254.0 / 300) AS INTEGER),
+          y = CAST(round(y * 254.0 / 300) AS INTEGER),
+          w = CAST(round(w * 254.0 / 300) AS INTEGER),
+          h = CAST(round(h * 254.0 / 300) AS INTEGER)
+    """)
+    con.execute("""
+        UPDATE template_elements
+           SET w = CASE WHEN w = 0 AND h = 0 THEN 1 ELSE w END
+         WHERE type = 'line' AND w = 0 AND h = 0
+    """)
+    con.execute("""
+        UPDATE template_elements
+           SET style_json = json_set(style_json, '$.padding',
+               CAST(round(json_extract(style_json, '$.padding') * 254.0 / 300) AS INTEGER))
+         WHERE json_extract(style_json, '$.padding') IS NOT NULL
+    """)
+    con.execute("""
+        UPDATE template_elements
+           SET style_json = json_set(style_json, '$.radius',
+               CAST(round(json_extract(style_json, '$.radius') * 254.0 / 300) AS INTEGER))
+         WHERE json_extract(style_json, '$.radius') IS NOT NULL
+    """)
+    for r in con.execute("SELECT id, style_json FROM templates"):
+        try:
+            st = json.loads(r[1] or "{}")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(st, dict) or st.get("padding") is None:
+            continue
+        try:
+            st = dict(st); st["padding"] = _pxu(st["padding"])
+        except (TypeError, ValueError):
+            continue
+        con.execute("UPDATE templates SET style_json=? WHERE id=?", (json.dumps(st, ensure_ascii=False), r[0]))
+    for r in con.execute("SELECT id, style_json FROM template_elements"):
+        try:
+            st = json.loads(r[1] or "{}")
+        except (TypeError, ValueError):
+            continue
+        new = _style_border_v8(st)
+        if new != st:
+            con.execute("UPDATE template_elements SET style_json=? WHERE id=?",
+                        (json.dumps(new, ensure_ascii=False), r[0]))
+    row = con.execute("SELECT value FROM project_settings WHERE key='template_edit_snapshot'").fetchone()
+    if row:
+        try:
+            snap = json.loads(row[0])
+        except (TypeError, ValueError):
+            snap = None
+        if isinstance(snap, dict):
+            els = snap.get("elements")
+            if isinstance(els, list):
+                snap["elements"] = [_geom_v8_obj(e) for e in els]
+            tpl = snap.get("template")
+            if isinstance(tpl, dict) and tpl.get("style_json"):
+                try:
+                    st = json.loads(tpl["style_json"])
+                    if isinstance(st, dict) and st.get("padding") is not None:
+                        st["padding"] = _pxu(st["padding"])
+                        tpl["style_json"] = json.dumps(st, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    pass
+            con.execute("UPDATE project_settings SET value=? WHERE key='template_edit_snapshot'",
+                        (json.dumps(snap, ensure_ascii=False),))
+    log.info("схема v7→v8, координаты пересчитаны в 0,1 мм")
+
+
+MIGRATIONS = [SCHEMA, _v2_printed_at, _v3_line, _v4_ellipse_defaults, _v5_field_types, _V6_SETTINGS, _v7_templates, _v8_units]   # индекс + 1 = user_version; str — SQL-скрипт, callable — шаг на Python
 LATEST = len(MIGRATIONS)
 
 def now_iso() -> str:
@@ -244,11 +380,19 @@ def migrate(con) -> int:
     for i in range(v, LATEST):
         step = MIGRATIONS[i]
         if isinstance(step, str):
-            con.executescript("BEGIN;\n" + step + f"\nPRAGMA user_version={i+1};\nCOMMIT;")
+            try:
+                con.executescript("BEGIN;\n" + step + f"\nPRAGMA user_version={i+1};\nCOMMIT;")
+            except Exception as e:
+                try: con.execute("ROLLBACK")
+                except sqlite3.Error: pass
+                raise MigrationError(f"не удалось обновить схему проекта до версии {i+1}: {e}") from e
         else:
             con.execute("BEGIN")
             try:
                 step(con); con.execute(f"PRAGMA user_version={i+1}"); con.execute("COMMIT")
+            except Exception as e:
+                con.execute("ROLLBACK")
+                raise MigrationError(f"не удалось обновить схему проекта до версии {i+1}: {e}") from e
             except BaseException:
                 con.execute("ROLLBACK"); raise
     v = con.execute("PRAGMA user_version").fetchone()[0]

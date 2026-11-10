@@ -1,13 +1,14 @@
 """Рендер карточки CR80 (1011×638 px, 300 DPI) на Pillow.
 
 Главная функция: render_card(person, elements, side='front') -> PIL.Image RGB 1011×638.
-Координаты элементов в px холста. Элементы рисуются по возрастанию z_order (затем id).
+Координаты элементов — единицы 0,1 мм (холст 856×540); перевод в px @ 300 DPI внутри функции.
+Элементы рисуются по возрастанию z_order (затем id).
 """
 from __future__ import annotations
 import json, logging, os, warnings
 from ..fields import format_value
 from PIL import Image, ImageDraw, ImageColor, ImageOps
-from .. import CARD_W_PX, CARD_H_PX, DPI
+from .. import CARD_W_PX, CARD_H_PX, DPI, CARD_W_UNITS, CARD_H_UNITS, units_to_px
 from ..photo_config import PhotoConfig
 from .fonts import get_font, find_font_path
 log = logging.getLogger(__name__)
@@ -237,36 +238,114 @@ def _px(st, key):
     if st.get(key + "_mm") is not None: return float(st[key + "_mm"]) / 25.4 * DPI
     return 0.0
 
+
+def _radius_px(st):
+    if st.get("radius") is not None:
+        return float(units_to_px(st["radius"], DPI))
+    if st.get("radius_mm") is not None:
+        return float(st["radius_mm"]) / 25.4 * DPI
+    return 0.0
+
+def _border_spec(st):
+    style = st.get("border_style")
+    if style is None:
+        if st.get("stroke_width") not in (None, "", 0, "0") or (
+            st.get("stroke") not in (None, "", "none") and st.get("stroke_width") is None
+            and st.get("border_width") is None
+        ):
+            style = "solid"
+        else:
+            style = "none"
+    if style == "none":
+        return "none", 0, None
+    if st.get("border_width") not in (None, ""):
+        bw = units_to_px(st["border_width"], DPI)
+    else:
+        bw = _px(st, "stroke_width")
+        if not bw and st.get("stroke") is not None:
+            bw = 1
+    if not bw or bw <= 0:
+        return "none", 0, None
+    bw = max(1, int(round(bw)))
+    color = _color(st.get("border_color", st.get("stroke")), (0, 0, 0, 255))
+    return style, bw, color
+
+def _bg_spec(st):
+    if "bg_fill" in st:
+        return bool(st.get("bg_fill")), _color(st.get("bg_color", st.get("fill")), (255, 255, 255, 255))
+    if st.get("fill") not in (None, "", "none", "transparent"):
+        return True, _color(st.get("fill"))
+    return False, None
+
+def _dashed_rect(d, x, y, w, h, bw, color, dash=8, gap=6):
+    segs = [
+        (x, y, x + w, y),
+        (x + w - 1, y, x + w - 1, y + h),
+        (x + w, y + h - 1, x, y + h - 1),
+        (x, y + h, x, y),
+    ]
+    for x0, y0, x1, y1 in segs:
+        dx, dy = x1 - x0, y1 - y0
+        length = max(1.0, (dx * dx + dy * dy) ** 0.5)
+        ux, uy = dx / length, dy / length
+        pos = 0.0
+        on = True
+        while pos < length:
+            step = dash if on else gap
+            npos = min(length, pos + step)
+            if on:
+                d.line((x0 + ux * pos, y0 + uy * pos, x0 + ux * npos, y0 + uy * npos), fill=color, width=bw)
+            pos = npos
+            on = not on
+
+def _stroke_inside(d, x, y, w, h, bw, color, style, radius=0):
+    bw = max(1, int(bw))
+    if style in ("dash", "dot"):
+        _dashed_rect(d, x, y, w, h, bw, color, dash=(8 if style == "dash" else 2), gap=(6 if style == "dash" else 4))
+        return
+    if radius:
+        inset = (bw - 1) / 2.0
+        box = (x + inset, y + inset, x + w - 1 - inset, y + h - 1 - inset)
+        d.rounded_rectangle(box, radius=max(0, radius - inset), outline=color, width=bw)
+        return
+    d.rectangle((x, y, x + w - 1, y + bw - 1), fill=color)
+    d.rectangle((x, y + h - bw, x + w - 1, y + h - 1), fill=color)
+    d.rectangle((x, y, x + bw - 1, y + h - 1), fill=color)
+    d.rectangle((x + w - bw, y, x + w - 1, y + h - 1), fill=color)
+
 def _box(img, el, st, fill_default=None):
-    """Рамка/прямоугольник. style: fill, stroke (= border_color), stroke_width (= border_width, px или *_mm),
-    radius (px или radius_mm; rounded_rectangle). stroke без stroke_width → 1 px."""
-    fill = _color(st.get("fill"), fill_default)
-    bc = _color(st.get("stroke", st.get("border_color")))
-    bw = round(_px(st, "stroke_width") or _px(st, "border_width"))
-    if bc and not bw and ("stroke" in st) and st.get("stroke_width") is None: bw = 1
-    r = round(_px(st, "radius"))
-    if fill is None and not (bc and bw): return
+    """Рамка/прямоугольник. Заливка: bg_fill/bg_color или fill. Обводка целиком внутри прямоугольника."""
+    fill_on, fill = _bg_spec(st)
+    if fill_default is not None and not fill_on:
+        fill = _color(st.get("fill"), fill_default); fill_on = fill is not None
+    bstyle, bw, bc = _border_spec(st)
+    r = round(_radius_px(st))
+    if not fill_on and not (bstyle != "none" and bw): return
     x, y, w, h = el["x"], el["y"], el["w"], el["h"]
     layer = Image.new("RGBA", img.size, (0, 0, 0, 0)); d = ImageDraw.Draw(layer)
-    d.rounded_rectangle((x, y, x + w - 1, y + h - 1), radius=r, fill=fill,
-                        outline=bc if bw else None, width=bw or 1)
+    if fill_on and fill:
+        if r: d.rounded_rectangle((x, y, x + w - 1, y + h - 1), radius=r, fill=fill)
+        else: d.rectangle((x, y, x + w - 1, y + h - 1), fill=fill)
+    if bstyle != "none" and bw and bc:
+        _stroke_inside(d, x, y, w, h, bw, bc, bstyle, r)
     img.alpha_composite(layer)
 
 def _ellipse(img, el, st):
     """Эллипс, вписанный в рамку. style как у rect: fill, stroke (= border_color), stroke_width (= border_width); radius игнорируется."""
-    fill = _color(st.get("fill"))
-    bc = _color(st.get("stroke", st.get("border_color")))
-    bw = round(_px(st, "stroke_width") or _px(st, "border_width"))
-    if bc and not bw and ("stroke" in st) and st.get("stroke_width") is None: bw = 1
-    if fill is None and not (bc and bw): return
+    fill_on, fill = _bg_spec(st)
+    if not fill_on:
+        fill = _color(st.get("fill"))
+    bstyle, bw, bc = _border_spec(st)
+    if not fill and not (bstyle != "none" and bw): return
     x, y, w, h = el["x"], el["y"], el["w"], el["h"]
     layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    ImageDraw.Draw(layer).ellipse((x, y, x + w - 1, y + h - 1), fill=fill, outline=bc if bw else None, width=bw or 1)
+    ImageDraw.Draw(layer).ellipse((x, y, x + w - 1, y + h - 1), fill=fill,
+                                  outline=bc if (bstyle != "none" and bw) else None, width=bw or 1)
     img.alpha_composite(layer)
 
 def _paste_clipped(img, el, tile, st):
     x, y, w, h = el["x"], el["y"], el["w"], el["h"]
-    r = round(_px(st, "radius"))
+    r = round(_radius_px(st))
     mask = tile.getchannel("A")
     if r:
         m = Image.new("L", (w, h), 0); ImageDraw.Draw(m).rounded_rectangle((0, 0, w - 1, h - 1), r, fill=255)
@@ -287,6 +366,26 @@ def _raw_field_value(person, name):
     return None
 
 # ---------- главная ----------
+def _prep_style(st):
+    """Копия стиля: padding/radius уже в единицах → px для внутренних рисовальщиков."""
+    st = dict(st or {})
+    if st.get("padding") is not None:
+        try: st["padding"] = units_to_px(st["padding"], DPI)
+        except (TypeError, ValueError): pass
+    return st
+
+def _composite_layer(img, layer, el, st):
+    """Наклеить слой w×h; при rotation — вокруг центра рамки по часовой стрелке."""
+    rot = float(st.get("rotation") or 0)
+    x, y, w, h = el["x"], el["y"], el["w"], el["h"]
+    if rot % 360 != 0:
+        layer = layer.rotate(-rot, expand=True, resample=Image.BICUBIC)
+        x = round(x + w / 2 - layer.width / 2)
+        y = round(y + h / 2 - layer.height / 2)
+        img.alpha_composite(layer, (x, y))
+    else:
+        img.alpha_composite(layer, (x, y))
+
 def render_card(person, elements, side: str = "front", background=None, base_dir=None) -> Image.Image:
     """Отрисовать сторону карточки.
 
@@ -294,75 +393,91 @@ def render_card(person, elements, side: str = "front", background=None, base_dir
                 этап 15: 'photo_views' {field_name|'': params} — вид фото записи (важнее photo_config);
                 краткая форма {'fields': {...}, 'photo_path': ..., 'photo_config': ...};
                 None — пустой шаблон. Если есть и fields_json, и fields — используется fields_json.
-    elements    итерируемое template_elements (dict/Row); берутся только с данным side.
+    elements    итерируемое template_elements (dict/Row); x,y,w,h — единицы 0,1 мм; берутся только с данным side.
     side        'front' | 'back'.
     background  dict/Row template_backgrounds {'color', 'image_path'} или None (белый).
     base_dir    база для относительных путей (photo_path, image_path, static_value у image).
-    Возвращает PIL.Image RGB ровно 1011×638.
+    Возвращает PIL.Image RGB ровно 1011×638 @ 300 DPI.
     """
     if side not in ("front", "back"): raise ValueError("side должен быть 'front' или 'back'")
     person = _d(person); bg = _d(background)
-    img = Image.new("RGBA", (CARD_W_PX, CARD_H_PX), _color(bg.get("color"), (255, 255, 255, 255)))
+    W, H = units_to_px(CARD_W_UNITS, DPI), units_to_px(CARD_H_UNITS, DPI)
+    img = Image.new("RGBA", (W, H), _color(bg.get("color"), (255, 255, 255, 255)))
     if bg.get("image_path"):
         b = _open(_resolve(bg["image_path"], base_dir))
-        if b: img.alpha_composite(_cover_crop(b, CARD_W_PX, CARD_H_PX))
+        if b: img.alpha_composite(_cover_crop(b, W, H))
     els = sorted((_d(e) for e in elements if _d(e).get("side", "front") == side),
                  key=lambda e: (e.get("z_order", 0), e.get("id") or 0))
     for el in els:
-        el = {**el, **{k: int(round(el[k])) for k in ("x", "y", "w", "h")}}
+        el = {**el, **{k: units_to_px(el[k], DPI) for k in ("x", "y", "w", "h")}}
         if el["type"] == "line":
             if el["w"] == 0 and el["h"] == 0: continue
         elif el["w"] <= 0 or el["h"] <= 0: continue
-        st = _json(el.get("style_json")); t = el["type"]
+        st = _prep_style(_json(el.get("style_json"))); t = el["type"]
         try:
+            if t == "line":
+                bstyle, bw, bc = _border_spec(st)
+                c = bc or _color(st.get("stroke", st.get("color")), (0, 0, 0, 255))
+                sw = bw or max(1, round(_px(st, "stroke_width") or 1))
+                layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+                ImageDraw.Draw(layer).line((el["x"], el["y"], el["x"] + el["w"], el["y"] + el["h"]), fill=c, width=sw)
+                img.alpha_composite(layer)
+                continue
+            tile = Image.new("RGBA", (max(1, el["w"]), max(1, el["h"])), (0, 0, 0, 0))
+            loc = {**el, "x": 0, "y": 0}
+            fill_on, fill_c = _bg_spec(st)
+            if fill_on and fill_c and t not in ("rect", "ellipse"):
+                ImageDraw.Draw(tile).rectangle((0, 0, loc["w"] - 1, loc["h"] - 1), fill=fill_c)
+            bstyle, bw, bc = _border_spec(st)
+            st_content = dict(st)
+            if bstyle != "none" and bw:
+                st_content["padding"] = int(st_content.get("padding") or 0) + bw
             if t == "rect":
-                _box(img, el, st, fill_default=None)
+                _box(tile, loc, st, fill_default=None)
             elif t == "ellipse":
-                _ellipse(img, el, st)
+                _ellipse(tile, loc, st)
             elif t in ("text", "field"):
-                _box(img, el, st)
-                if t == "text" or not el.get("field_name"): val = el.get("static_value")   # этап 15: отвязанное поле
+                if t == "text" or not el.get("field_name"): val = el.get("static_value")
                 else: val = _field_value(person, el.get("field_name"), el.get("default_value"))
                 if t == "field" and el.get("data_type"): val = format_value(el["data_type"], val) if val is not None else val
-                _draw_text(img, el, val, st)
+                _draw_text(tile, loc, val, st_content)
             elif t == "photo":
                 src = _open_photo(person, el, base_dir)
                 view = _photo_view(person, el)
-                if src: tile = _view_tile(src, el["w"], el["h"], view)
-                else: tile = _placeholder(el["w"], el["h"])
-                _paste_clipped(img, el, tile, st); _box(img, el, {**st, "fill": None})
+                if src: ph = _view_tile(src, el["w"], el["h"], view)
+                else: ph = _placeholder(el["w"], el["h"])
+                _paste_clipped(tile, loc, ph, st)
             elif t == "image":
                 src = _open(_resolve(el.get("static_value"), base_dir))
                 if src:
                     fit = st.get("fit", "contain")
-                    if fit == "cover": tile = _cover_crop(src, el["w"], el["h"])
+                    if fit == "cover": ph = _cover_crop(src, el["w"], el["h"])
                     else:
-                        tile = Image.new("RGBA", (el["w"], el["h"]), (0, 0, 0, 0))
+                        ph = Image.new("RGBA", (el["w"], el["h"]), (0, 0, 0, 0))
                         c = ImageOps.contain(src, (el["w"], el["h"]), Image.LANCZOS)
-                        tile.paste(c, ((el["w"] - c.width) // 2, (el["h"] - c.height) // 2))
-                    _paste_clipped(img, el, tile, st)
+                        ph.paste(c, ((el["w"] - c.width) // 2, (el["h"] - c.height) // 2))
+                    _paste_clipped(tile, loc, ph, st)
             elif t == "barcode":
                 from .barcode import render_barcode
                 val = el.get("static_value") if not el.get("field_name") else _field_value(person, el["field_name"], el.get("default_value"))
                 if val in (None, "") and el.get("field_name") and el.get("static_value"): val = el["static_value"]
-                tile = render_barcode(el["w"], el["h"], val, st, _color(st.get("color"), (0, 0, 0, 255)),
-                                      _color(st.get("background", st.get("fill", "#FFFFFF"))), el.get("id"))
-                img.paste(tile, (el["x"], el["y"]), tile)
+                ph = render_barcode(el["w"], el["h"], val, st, _color(st.get("color"), (0, 0, 0, 255)),
+                                    _color(st.get("background", st.get("fill", "#FFFFFF"))), el.get("id"))
+                tile.paste(ph, (0, 0), ph)
             elif t == "qr":
                 from .qr import render_qr
                 val = _field_value(person, el["field_name"], el.get("default_value")) if el.get("field_name") else el.get("static_value")
                 if val in (None, "") and el.get("field_name") and el.get("static_value"): val = el["static_value"]
-                tile = render_qr(el["w"], el["h"], val, st, _color(st.get("color"), (0, 0, 0, 255)),
-                                 _color(st.get("background", st.get("fill", "#FFFFFF"))), el.get("id"))
-                img.paste(tile, (el["x"], el["y"]), tile)
-            elif t == "line":
-                c = _color(st.get("stroke", st.get("color")), (0, 0, 0, 255))
-                sw = max(1, round(_px(st, "stroke_width") or 1))
-                layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
-                ImageDraw.Draw(layer).line((el["x"], el["y"], el["x"] + el["w"], el["y"] + el["h"]), fill=c, width=sw)
-                img.alpha_composite(layer)
+                ph = render_qr(el["w"], el["h"], val, st, _color(st.get("color"), (0, 0, 0, 255)),
+                               _color(st.get("background", st.get("fill", "#FFFFFF"))), el.get("id"))
+                tile.paste(ph, (0, 0), ph)
             else:
-                log.warning("неизвестный тип элемента %r пропущен", t)
+                log.warning("неизвестный тип элемента %r пропущен", t); continue
+            if t not in ("rect", "ellipse"):
+                if bstyle != "none" and bw and bc:
+                    d = ImageDraw.Draw(tile)
+                    _stroke_inside(d, 0, 0, loc["w"], loc["h"], bw, bc, bstyle, round(_radius_px(st)))
+            _composite_layer(img, tile, el, st)
         except Exception as e:  # элемент не должен ронять карточку
             log.warning("элемент %s (%s) не отрисован: %s", el.get("id"), t, e)
     return img.convert("RGB")

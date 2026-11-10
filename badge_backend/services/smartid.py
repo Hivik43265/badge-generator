@@ -28,11 +28,11 @@ PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
 def _to_storage_units(v) -> int:
-    """Единицы .csd (0.1 мм) → единицы хранения шаблона (сейчас px при 300 DPI).
+    """Единицы .csd (0.1 мм) → единицы хранения шаблона.
 
-    После миграции на сетку 0.1 мм эта функция станет тождественной (return int(v)).
+    После миграции v8 сетка хранения совпадает с .csd — функция тождественная.
     """
-    return int(round(int(v) * STORAGE_DPI / CSD_UNITS_PER_INCH))
+    return int(v)
 
 
 def _is_photo_field(name) -> bool:

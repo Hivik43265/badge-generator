@@ -16,7 +16,7 @@ def test_v3_to_v4_keeps_data_and_ids(tmp_path):
         raw.execute("INSERT INTO template_elements(type,x,y,w,h) VALUES ('ellipse',0,0,10,10)")
     raw.commit(); raw.close()
     con = api.connect(p)
-    assert api.get_schema_version(con) == 7 == db.LATEST
+    assert api.get_schema_version(con) == db.LATEST
     assert [(e["id"], e["type"]) for e in api.list_elements(con)] == [(7, "line"), (9, "field")]
     assert "default_value" in db._cols(con, "person_fields")
     assert api.list_fields(con)[0]["default_value"] is None

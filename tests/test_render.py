@@ -42,7 +42,7 @@ def test_background_color_and_image(tmp_path):
 
 def test_field_and_cyrillic_font():
     assert find_font_path() and find_font_path().lower().endswith(".ttf")
-    el = dict(type="field", x=0, y=0, w=1011, h=638, field_name="last_name", style_json='{"font_size":40}')
+    el = dict(type="field", x=0, y=0, w=856, h=540, field_name="last_name", style_json='{"font_size":40}')
     blank = render_card({"fields_json": "{}"}, [el]); full = render_card({"fields_json": '{"last_name":"Ёжиков"}'}, [el])
     assert ImageChops.difference(blank, full).getbbox() is not None
     assert ImageChops.difference(blank, render_card(None, [])).getbbox() is None  # пустое значение — ничего

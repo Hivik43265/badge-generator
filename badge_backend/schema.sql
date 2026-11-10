@@ -1,4 +1,6 @@
 -- Единая схема Badge Generator = миграция v1 (PRAGMA user_version=1), применяется badge_backend/db.py
+-- После v8 координаты template_elements.x/y/w/h — целые единицы 0,1 мм (холст 856×540);
+-- этот файл остаётся снимком v1, новые БД проходят цепочку v1→…→v8.
 -- Это снимок v1, НЕ менять (иначе сломается цепочка миграций). Дальнейшие изменения — в db.MIGRATIONS:
 --   v2 persons.printed_at; v3 тип line; v4 тип ellipse + person_fields.default_value TEXT NULL;
 --   v5 person_fields.data_type (text|number|date|image|bool). Полей по умолчанию нет: только upsert_field.

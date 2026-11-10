@@ -104,8 +104,8 @@ def _clean_style(style):
         if v in (None, ""): out[k] = None; continue
         if k == "padding":
             try: v = int(round(float(v)))
-            except (TypeError, ValueError): raise ValueError(f"padding: ожидается число px, получено {v!r}") from None
-            if not 0 <= v <= 200: raise ValueError("padding: 0..200 px")
+            except (TypeError, ValueError): raise ValueError(f"padding: ожидается число (единицы 0,1 мм), получено {v!r}") from None
+            if not 0 <= v <= 200: raise ValueError("padding: 0..200 единиц (0..20 мм)")
         else: v = str(v).strip()
         out[k] = v
     return out
@@ -117,7 +117,7 @@ def get_template_style(con, template_id: int | None = None) -> dict:
 
 def set_template_style(con, style: dict, template_id: int | None = None) -> dict:
     """Слить style в стиль шаблона (значение None/'' — удалить ключ). Ключи: font_family (имя семейства, см.
-    list_font_families), padding (px холста 300 DPI, 0..200). Действует на text/field-объекты шаблона,
+    list_font_families), padding (единицы 0,1 мм, 0..200 = 0..20 мм). Действует на text/field-объекты шаблона,
     у которых в style_json нет своего значения. Неверно → ValueError. → итоговый стиль."""
     tid = template_id or _db.active_template_id(con)
     cur = get_template_style(con, tid)
@@ -130,10 +130,13 @@ def set_template_style(con, style: dict, template_id: int | None = None) -> dict
 
 def update_element_style(con, element_id: int, **changes) -> dict | None:
     """Слить ключи в style_json объекта (None — удалить ключ; font_family/padding проверяются как у шаблона).
+    Ключ locked всегда можно сменить (так снимают замок). rotation при locked → ValueError.
     Нет объекта → None. → итоговый style."""
     r = con.execute("SELECT style_json FROM template_elements WHERE id=?", (int(element_id),)).fetchone()
     if r is None: return None
     st = json.loads(r[0] or "{}")
+    if st.get("locked") and "rotation" in changes and changes["rotation"] != st.get("rotation"):
+        raise ValueError("элемент зафиксирован")
     chk = _clean_style({k: v for k, v in changes.items() if k in STYLE_KEYS})
     for k, v in changes.items():
         v = chk.get(k, v)
