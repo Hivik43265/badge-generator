@@ -446,7 +446,7 @@ from .services.photos import save_photo, project_base_dir, resolve_photo_path, d
 from .services.photo_edit import get_photo_frame_spec, photo_edit_target  # noqa: F401,E402
 from .services.photo_edit import (DEFAULT_PHOTO_EDIT, apply_photo_edit, detect_face_crop,  # noqa: F401,E402
                                   get_photo_edit_defaults, set_photo_edit_defaults, apply_and_save_photo,
-                                  load_photo_for_edit)
+                                  load_photo_for_edit, load_photo_for_preview)
 
 # ---------- этап 15 ----------
 def ensure_photo_field(con) -> str:

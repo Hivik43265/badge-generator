@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTabWidg
                              QLineEdit, QPushButton, QSpinBox, QGridLayout, QFileDialog, QSplitter, QSizePolicy,
                              QAbstractItemView, QDoubleSpinBox, QMessageBox, QComboBox)
 from .backend_api import BackendAPI, CARD_W_PX, CARD_H_PX
+from .preview_jobs import RenderCardJob, RenderSignals, render_pool
 from .layout_editor import element_caption
 from .records_table import format_printed_at
 
@@ -25,6 +26,9 @@ class PreviewPanel(QWidget):
     def __init__(self, api: BackendAPI, parent=None):
         super().__init__(parent)
         self.api, self.person_id, self.side = api, None, "front"
+        self._render_gen = 0
+        self._render_signals = RenderSignals(self)
+        self._render_signals.finished.connect(self._on_render_finished)
         self.title = QLabel("Предпросмотр / Поля"); self.title.setStyleSheet("font-weight:600;")
         self.sides = QTabWidget(); self.images, self.pixmaps = {}, {}
         for side, name in (("front", "Сторона 1"), ("back", "Сторона 2")):
@@ -56,9 +60,14 @@ class PreviewPanel(QWidget):
     def refresh(self):
         p = self.api.get_person(self.person_id) if self.person_id is not None else None
         if p is None: self.person_id = None
+        self._render_gen += 1
+        gen = self._render_gen
         for side in ("front", "back"):
-            self.pixmaps[side] = QPixmap.fromImage(self.api.render_card(self.person_id, side))   # рендер Backend
-        self._fit()
+            try:
+                payload = self.api.gather_render_args(self.person_id, side)
+            except KeyError:
+                payload = self.api.gather_render_args(None, side)
+            render_pool().start(RenderCardJob(gen, payload, self._render_signals))
         self.caption.setText(f"Запись #{p['id']}" if p else "Пустой шаблон (запись не выбрана)")
         _fl = self.api.list_fields(); labels = {f["name"]: f["label"] or f["name"] for f in _fl}
         types = {f["name"]: field_type(f) for f in _fl}
@@ -79,6 +88,14 @@ class PreviewPanel(QWidget):
             self.fields.setItem(r, 1, it)
         self.desync = field_desync(self.api); t = desync_text(self.desync)
         self.warning.setText(t); self.warning.setVisible(bool(t))
+
+    def _on_render_finished(self, gen, result, side):
+        if gen != self._render_gen:
+            return
+        if isinstance(result, Exception):
+            return
+        self.pixmaps[side] = QPixmap.fromImage(result)
+        self._fit()
 
     def db_rows(self):
         """[(поле, значение)]; пустое значение — "" (на экране — серым «(пусто)»)."""

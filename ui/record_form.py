@@ -155,6 +155,9 @@ class RecordForm(QDialog):
                 "photo_path": self.photo_path.text() or None, "photo_config": self.config_string()}
 
     def update_preview(self):
+        # этап 15: виджет скрыт; render_preview всё равно рисует полную карточку — не вызываем зря
+        if not self.preview.isVisible():
+            return
         try:
             img = self.api.render_preview(self.draft_person(), self.side.currentData(), 0.5)
             self.preview.setPixmap(QPixmap.fromImage(img))
