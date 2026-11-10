@@ -15,7 +15,10 @@ from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QGraphicsView, Q
                              QPlainTextEdit, QMessageBox, QCheckBox, QToolButton, QGridLayout,
                              QInputDialog, QFileDialog, QColorDialog, QScrollArea, QSizePolicy, QListWidget, QListWidgetItem)
 from .stage15 import UNLINKED_COLOR, PHOTO_FIELD_LABEL, PHOTO_FIELD_TYPE
-from .backend_api import BackendAPI, CARD_W_PX, CARD_H_PX, TYPE_NAMES, SIDE_NAMES, person_caption
+from .backend_api import (
+    BackendAPI, CARD_W_PX, CARD_H_PX, TYPE_NAMES, SIDE_NAMES,
+    scene_width, scene_height, uses_grid_units, px_to_units, units_to_mm, snap_scene,
+)
 
 SIDE_LABELS = SIDE_NAMES
 NEW_FIELD = "Новое поле…"
@@ -90,6 +93,7 @@ def find_overlaps(elements):
 
 class _Bus(QObject):
     geometry_committed = pyqtSignal(object)
+    text_edit_requested = pyqtSignal(object)
 
 
 class ElementItem(QGraphicsRectItem):
@@ -110,11 +114,8 @@ class ElementItem(QGraphicsRectItem):
         self.setBrush(QBrush(QColor(48, 112, 208, 25)))
         self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsMovable | QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
         self.setAcceptHoverEvents(True)
-        self.caption = QGraphicsSimpleTextItem(self)
         self.handle = QGraphicsRectItem(0, 0, HANDLE, HANDLE, self)
         self.handle.setBrush(QBrush(QColor("#3070d0")))
-        self.caption.setText((element_caption(el, labels)[:48]) + ("  · не связан" if self.unlinked else ""))
-        if self.unlinked: self.caption.setBrush(QBrush(QColor(UNLINKED_COLOR)))
         self._apply_geom(el["w"], el["h"])
 
     def _apply_geom(self, w, h):
@@ -124,7 +125,6 @@ class ElementItem(QGraphicsRectItem):
             self.handle.setPos(w - HANDLE / 2, h - HANDLE / 2)
         else:
             self.setRect(0, 0, w, h); self.handle.setPos(w - HANDLE, h - HANDLE)
-        r = self.rect(); self.caption.setPos(r.left() + 4, r.top() - 18)
 
     def _place_handle(self):
         self._apply_geom(*((self.lw, self.lh) if self.is_line else (self.rect().width(), self.rect().height())))
@@ -138,7 +138,7 @@ class ElementItem(QGraphicsRectItem):
 
     def mouseMoveEvent(self, ev):
         if self._resizing:
-            x, y = round(ev.pos().x()), round(ev.pos().y())
+            x, y = snap_scene(ev.pos().x()), snap_scene(ev.pos().y())
             if self.is_line:
                 if x == 0 and y == 0: x = 1          # (0,0) запрещено
                 self._apply_geom(x, y)
@@ -146,10 +146,17 @@ class ElementItem(QGraphicsRectItem):
                 self._apply_geom(max(4, x), max(4, y))
         else:
             super().mouseMoveEvent(ev)
+            if uses_grid_units():
+                self.setPos(snap_scene(self.x()), snap_scene(self.y()))
 
     def mouseReleaseEvent(self, ev):
         super().mouseReleaseEvent(ev); self._resizing = False
         self.bus.geometry_committed.emit(self)
+
+    def mouseDoubleClickEvent(self, ev):
+        super().mouseDoubleClickEvent(ev)
+        if self.el.get("type") == "text":
+            self.bus.text_edit_requested.emit(self)
 
     def geometry(self):
         if self.is_line:
@@ -168,7 +175,8 @@ class LayoutEditor(QWidget):
         self.person_id = None          # запись, рендер которой показан под рамками
         self.canvas_image = None
         self.bus = _Bus(); self.bus.geometry_committed.connect(self._commit_geometry)
-        self.scene = QGraphicsScene(0, 0, CARD_W_PX, CARD_H_PX, self)
+        self.bus.text_edit_requested.connect(self._focus_text_prop)
+        self.scene = QGraphicsScene(0, 0, scene_width(), scene_height(), self)
         self.view = QGraphicsView(self.scene); self.view.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.scene.selectionChanged.connect(self._on_select)
         self.overlaps, self.hint = [], None
@@ -176,61 +184,21 @@ class LayoutEditor(QWidget):
         # Действия (инструменты, удаление, порядок, сторона) живут только в ленте главного окна.
         self.template_mode = False       # этап 15 п.2: вне режима шаблона элементы заблокированы
         self.show_render = True          # «Рендер под рамками» — переключается действием ленты
-        self.person_label = QLabel("Запись на холсте: пустой шаблон"); self.person_label.setWordWrap(True)
         self.selection_actions = []      # действия ленты, активные только при выделенном объекте
 
         self.warn = QLabel(); self.warn.setWordWrap(True); self.warn.setStyleSheet("color:#c00;")
 
-        props = QGroupBox("Свойства элемента"); pf = QFormLayout(props)
-        self.p_type = QLabel("—"); self.p_type.setWordWrap(True)
-        self.p_x, self.p_y, self.p_w, self.p_h = (self._spin(-CARD_W_PX * 2, CARD_W_PX * 2) for _ in range(4))
-        for _w in (self.p_x, self.p_y, self.p_w, self.p_h): _w.setReadOnly(True)    # этап 15: вне режима шаблона — только чтение
-        self.p_z = self._spin(-1000, 1000)
-        self.p_field = QComboBox(); self.p_field.setEditable(True)
-        self.p_static = QLineEdit()
-        self.p_hint = QLabel(""); self.p_hint.setStyleSheet("color:#666;")
-        self.p_font = self._spin(4, 200)
-        self.p_color, self.p_bg, self.p_fill, self.p_stroke = QLineEdit(), QLineEdit(), QLineEdit(), QLineEdit()
-        for e in (self.p_color, self.p_bg, self.p_fill, self.p_stroke): e.setPlaceholderText("#RRGGBB")
-        self.p_stroke_w = self._spin(0, 100); self.p_radius = self._spin(0, 300)
-        self.p_format = QComboBox()
-        for k, v in FORMATS: self.p_format.addItem(v, k)
-        self.p_format.currentIndexChanged.connect(self._update_hint)
-        self.p_show_text = QCheckBox("Показывать текст под штрихкодом")
-        self.p_quiet = self._spin(0, 200)
-        self.p_ec = QComboBox(); self.p_ec.addItems(EC_LEVELS)
-        self.p_qborder = self._spin(0, 50)
-        self.p_style = QPlainTextEdit(); self.p_style.setFixedHeight(70)
-        self.rows = {}
-        for key, lab, w in (("type", "Элемент:", self.p_type), ("x", "X, px:", self.p_x), ("y", "Y, px:", self.p_y),
-                            ("w", "Ширина, px:", self.p_w), ("h", "Высота, px:", self.p_h), ("z", "Слой (z):", self.p_z),
-                            ("field", "Поле записи:", self.p_field), ("static", "Значение/путь:", self.p_static),
-                            ("hint", "", self.p_hint), ("format", "Формат:", self.p_format),
-                            ("show_text", "", self.p_show_text), ("quiet", "Тихая зона, px:", self.p_quiet),
-                            ("ec", "Коррекция ошибок:", self.p_ec), ("qborder", "Поле QR, модулей:", self.p_qborder),
-                            ("font", "Шрифт, pt:", self.p_font), ("color", "Цвет:", self.p_color),
-                            ("bg", "Фон:", self.p_bg), ("fill", "Заливка:", self.p_fill),
-                            ("stroke", "Цвет обводки:", self.p_stroke), ("stroke_w", "Толщина обводки, px:", self.p_stroke_w),
-                            ("radius", "Скругление, px:", self.p_radius), ("style", "Стиль (JSON):", self.p_style)):
-            pf.addRow(lab, w); self.rows[key] = (pf.labelForField(w), w)
         self._loading = False
-        self._live_wiring()          # D11: свойства применяются сразу при изменении поля (кнопки «Применить» нет)
-        self.props = props; props.setEnabled(False)
 
         right = QVBoxLayout()
         self.mode_banner = QLabel("Режим создания шаблона: расставьте элементы на карточке вручную и выберите поля; сохранение — «✓ Сохранить шаблон» на ленте"); self.mode_banner.setStyleSheet(
             "background:#2E7D6B; color:white; font-weight:600; padding:3px 8px;"); self.mode_banner.hide(); self.mode_banner.setWordWrap(True)
-        # этап 15 п.1: индикатор связи фото-объекта с полем «Фото» (Изображение)
-        self.photo_link = QLabel(); self.photo_link.setWordWrap(True); self.photo_link.hide()
-        self.photo_link.setStyleSheet("background:#EAF3FF; border:1px solid #3070d0; padding:4px;")
-        right.addWidget(self.photo_link)
-        right.addWidget(self.person_label)
         # Список элементов — только для выбора (перекрытые объекты); своих кнопок нет,
         # контекстное меню строит главное окно на тех же QAction ленты.
         self.el_list = QListWidget(); self.el_list.setMaximumHeight(140)
         self.el_list.itemClicked.connect(lambda it: self.select(it.data(Qt.ItemDataRole.UserRole)))
         right.addWidget(QLabel("Элементы стороны:")); right.addWidget(self.el_list)
-        right.addWidget(self.warn); right.addWidget(props); right.addStretch()
+        right.addWidget(self.warn); right.addStretch()
         inner = QWidget(); inner.setLayout(right)
         rw = QScrollArea(); rw.setWidget(inner); rw.setWidgetResizable(True); rw.setMinimumWidth(260)
         self.panel = rw
@@ -251,7 +219,10 @@ class LayoutEditor(QWidget):
         from PyQt6.QtCore import QEvent
         if obj is self.view.viewport() and ev.type() == QEvent.Type.MouseMove:
             p = self.view.mapToScene(ev.position().toPoint())
-            self.cursor_moved.emit(p.x() * MM_PER_PX, p.y() * MM_PER_PX)
+            if uses_grid_units():
+                self.cursor_moved.emit(units_to_mm(p.x()), units_to_mm(p.y()))
+            else:
+                self.cursor_moved.emit(p.x() * MM_PER_PX, p.y() * MM_PER_PX)
         if obj is self.view.viewport() and ev.type() in (QEvent.Type.Paint,):
             self.hruler.update(); self.vruler.update()
         return False
@@ -275,13 +246,11 @@ class LayoutEditor(QWidget):
         return self.set_props(**{key: value})
 
     def set_props(self, **values):
-        """Несколько свойств за одно применение (один шаг истории «Отменить»)."""
+        """Несколько свойств за одно применение. Пишет панель «Свойства объекта»."""
         if not self.current: return False
-        m = {"x": self.p_x, "y": self.p_y, "w": self.p_w, "h": self.p_h, "fill": self.p_fill, "stroke": self.p_stroke,
-             "stroke_width": self.p_stroke_w, "color": self.p_color}
-        for key, value in values.items():
-            w = m[key]; (w.setText if isinstance(w, QLineEdit) else w.setValue)(value)
-        return self.apply_props()
+        op = getattr(self, "object_props", None)
+        if op is None: return False
+        return op.apply_values(**values)
 
     @staticmethod
     def _spin(lo, hi):
@@ -293,16 +262,22 @@ class LayoutEditor(QWidget):
     def load(self, side, select_id=None):
         self.side = side; self.current = None
         self.scene.clear(); self.hint = None
+        sw, sh = scene_width(), scene_height()
+        self.scene.setSceneRect(0, 0, sw, sh)
         if self.show_render:
             pid = self.person_id if self.person_id is not None and self.api.get_person(self.person_id) else None
             self.person_id = pid
             self.canvas_image = self.api.render_card(pid, side)          # рендер Backend
-            bg = self.scene.addPixmap(QPixmap.fromImage(self.canvas_image))
+            pm = QPixmap.fromImage(self.canvas_image)
+            bg = self.scene.addPixmap(pm)
+            if uses_grid_units() and pm.width():
+                bg.setScale(sw / pm.width())
         else:
             b = self.api.get_background(side) or {"color": "#FFFFFF"}
-            bg = self.scene.addRect(QRectF(0, 0, CARD_W_PX, CARD_H_PX), QPen(Qt.PenStyle.NoPen), QBrush(QColor(b["color"])))
+            bg = self.scene.addRect(QRectF(0, 0, sw, sh), QPen(Qt.PenStyle.NoPen), QBrush(QColor(b["color"])))
         bg.setZValue(-1)
-        self.scene.addRect(QRectF(0, 0, CARD_W_PX, CARD_H_PX), QPen(QColor("#888888"))).setZValue(0)
+        self._bg_item = bg
+        self.scene.addRect(QRectF(0, 0, sw, sh), QPen(QColor("#888888"))).setZValue(0)
         self._draw_grid()
         fields = self.api.list_fields()
         self.labels = {f["name"]: f.get("label") for f in fields}
@@ -311,15 +286,14 @@ class LayoutEditor(QWidget):
         self.el_list.clear()
         for el in els:
             it = ElementItem(el, self.bus, self.labels); self.scene.addItem(it)
-            it.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, self.template_mode)   # этап 15: вне режима шаблона — заблокировано
-            it.handle.setVisible(self.template_mode)
+            self._apply_item_flags(it)
             li = QListWidgetItem(f"#{el['id']} {element_caption(el, self.labels)}"); li.setData(Qt.ItemDataRole.UserRole, el["id"])
             self.el_list.addItem(li)
             if el["id"] == select_id: it.setSelected(True); li.setSelected(True)
         if not els:   # подсказка — только оформление редактора, в рендер не попадает
             self.hint = QGraphicsSimpleTextItem(EMPTY_HINT)
             f = QFont(); f.setPointSize(22); self.hint.setFont(f); self.hint.setBrush(QBrush(QColor(120, 120, 120, 160)))
-            r = self.hint.boundingRect(); self.hint.setPos((CARD_W_PX - r.width()) / 2, (CARD_H_PX - r.height()) / 2)
+            r = self.hint.boundingRect(); self.hint.setPos((sw - r.width()) / 2, (sh - r.height()) / 2)
             self.hint.setZValue(500); self.scene.addItem(self.hint)
         self.view.fitInView(self.scene.sceneRect().adjusted(-20, -30, 20, 20), Qt.AspectRatioMode.KeepAspectRatio)
         self._check_overlaps()
@@ -332,26 +306,58 @@ class LayoutEditor(QWidget):
         for eid, it in items.items():
             if eid in bad:
                 it.setPen(QPen(QColor("#d00000"), 3, Qt.PenStyle.SolidLine)); it.setBrush(QBrush(QColor(208, 0, 0, 45)))
+            elif (it.el.get("style") or {}).get("locked"):
+                it.setPen(QPen(QColor("#B8860B"), 2, Qt.PenStyle.DashLine))
         msg = ("Внимание: элементы пересекаются (" + ", ".join(f"#{a}×#{b}" for a, b in self.overlaps) + ")") if self.overlaps else ""
         self.warn.setText(msg)
         self.status.emit(msg or f"Макет ({SIDE_LABELS[self.side]}): пересечений нет")
 
-    def set_person(self, person_id):
-        """Показать на холсте рендер выбранной записи (None — пустой шаблон)."""
-        self.person_id = person_id
-        p = self.api.get_person(person_id) if person_id is not None else None
-        if p:
-            name = person_caption(self.api, p).strip()
+    def refresh_render(self):
+        """Обновить рисунок карточки под рамками, не сбрасывая выделение (ввод текста)."""
+        if not self.show_render:
+            return
+        pid = self.person_id if self.person_id is not None and self.api.get_person(self.person_id) else None
+        self.person_id = pid
+        self.canvas_image = self.api.render_card(pid, self.side)
+        pm = QPixmap.fromImage(self.canvas_image)
+        bg = getattr(self, "_bg_item", None)
+        from PyQt6.QtWidgets import QGraphicsPixmapItem
+        if isinstance(bg, QGraphicsPixmapItem):
+            bg.setPixmap(pm)
+            if uses_grid_units() and pm.width():
+                bg.setScale(scene_width() / pm.width())
         else:
-            name = "пустой шаблон"
-        self.person_label.setText(f"Запись на холсте: {name}")
+            self.load(self.side, self.current.el["id"] if self.current else None)
+
+    def _focus_text_prop(self, item):
+        if item is None:
+            return
+        self.select(item.el["id"])
+        op = getattr(self, "object_props", None)
+        if op is not None:
+            QTimer.singleShot(0, op.focus_text)
+
+    def set_person(self, person_id):
+        """Показать на холсте рендер выбранной записи (None — пустой шаблон).
+        Подпись «Запись на холсте» убрана: это была только метка, не селектор.
+        Выбор записи по-прежнему через таблицу БД → person_id → render_card.
+        """
+        self.person_id = person_id
         self.load(self.side, self.current.el["id"] if self.current else None)
 
     def items(self):
         return [i for i in self.scene.items() if isinstance(i, ElementItem)]
 
+    def _apply_item_flags(self, it):
+        locked = bool((it.el.get("style") or {}).get("locked"))
+        movable = bool(self.template_mode) and not locked
+        it.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, movable)
+        it.handle.setVisible(movable)
+
     def _commit_geometry(self, item):
-        g = item.geometry()
+        if (item.el.get("style") or {}).get("locked"):
+            QTimer.singleShot(0, lambda: self.load(self.side, item.el["id"])); return
+        g = {k: snap_scene(v) for k, v in item.geometry().items()}
         if all(g[k] == item.el[k] for k in g):
             return
         err = self.validate_size(item.el["type"], g["w"], g["h"])
@@ -368,41 +374,6 @@ class LayoutEditor(QWidget):
             return "У линии ширина и высота не могут быть одновременно 0" if w == 0 and h == 0 else None
         return "Ширина и высота должны быть больше 0" if w <= 0 or h <= 0 else None
 
-    VIS = {"field": ("field", "barcode", "qr"), "static": ("text", "image", "barcode", "qr"),
-           "hint": ("barcode",), "format": ("barcode",), "show_text": ("barcode",), "quiet": ("barcode",),
-           "ec": ("qr",), "qborder": ("qr",), "font": ("text", "field", "barcode"),
-           "color": ("text", "field", "barcode", "qr"), "bg": ("barcode", "qr"), "fill": ("rect", "ellipse", "text", "field"),
-           "stroke": ("rect", "ellipse", "line"), "stroke_w": ("rect", "ellipse", "line"), "radius": ("rect",)}
-
-    def _show_rows(self, t):
-        for key, (lab, w) in self.rows.items():
-            v = t in self.VIS[key] if key in self.VIS else True
-            w.setVisible(v)
-            if lab: lab.setVisible(v)
-        self.rows["w"][0].setText("Δx, px:" if t == "line" else "Ширина, px:")
-        self.rows["h"][0].setText("Δy, px:" if t == "line" else "Высота, px:")
-
-    def _update_hint(self, *_):
-        ean = self.p_format.currentData() == "ean13"
-        self.p_hint.setText("12 или 13 цифр" if ean else "Значение: поле записи или статический текст")
-        self.p_static.setPlaceholderText("12 или 13 цифр" if ean else "")
-
-    def _live_wiring(self):
-        from PyQt6.QtCore import QTimer
-        live = self._live_apply
-        for w in (self.p_x, self.p_y, self.p_w, self.p_h, self.p_z, self.p_font, self.p_stroke_w, self.p_radius,
-                  self.p_quiet, self.p_qborder, self.p_static, self.p_color, self.p_bg, self.p_fill, self.p_stroke):
-            w.editingFinished.connect(live)
-        self.p_field.activated.connect(lambda *_: self._field_chosen() and live()); self.p_field.lineEdit().editingFinished.connect(live)
-        self.p_format.activated.connect(lambda *_: live()); self.p_ec.activated.connect(lambda *_: live())
-        self.p_show_text.toggled.connect(lambda *_: live())
-        self._style_timer = QTimer(self, singleShot=True, interval=700, timeout=live)
-        self.p_style.textChanged.connect(lambda: None if self._loading else self._style_timer.start())
-
-    def _live_apply(self):
-        if self._loading or not self.current: return None
-        return self.apply_props()
-
     def _on_select(self):
         self._loading = True
         try: self._on_select_inner()
@@ -411,79 +382,19 @@ class LayoutEditor(QWidget):
     def _on_select_inner(self):
         sel = [i for i in self.scene.selectedItems() if isinstance(i, ElementItem)]
         self.current = sel[0] if sel else None
-        self.props.setEnabled(bool(sel))
         for a in self.selection_actions: a.setEnabled(bool(sel))
         cur = self.current.el["id"] if sel else None
         for r in range(self.el_list.count()):
             it = self.el_list.item(r); it.setSelected(it.data(Qt.ItemDataRole.UserRole) == cur)
-        self._show_photo_link(self.current.el if sel else None)
-        if not sel: return
-        e = {**sel[0].el, **sel[0].geometry()}; st = e.get("style") or {}; t = e["type"]
-        self.p_type.setText(element_caption(e, getattr(self, "labels", {}))); self._show_rows(t)
-        for w, k in ((self.p_x, "x"), (self.p_y, "y"), (self.p_w, "w"), (self.p_h, "h"), (self.p_z, "z_order")):
-            w.setValue(int(e[k] or 0))
-        self.p_field.setCurrentText(e.get("field_name") or "")
-        self.p_static.setText(e.get("static_value") or "")
-        self.p_font.setValue(int(st.get("font_size", 8 if t == "barcode" else 14)))
-        self.p_color.setText(st.get("color") or ""); self.p_bg.setText(st.get("background") or "")
-        self.p_fill.setText(st.get("fill") or "")
-        self.p_stroke.setText(st.get("stroke") or st.get("border_color") or "")
-        self.p_stroke_w.setValue(int(st.get("stroke_width", st.get("border_width", 1)) or 0))
-        self.p_radius.setValue(int(st.get("radius", 0) or 0))
-        fmt = str(st.get("format") or st.get("symbology") or "code128").lower()
-        self.p_format.setCurrentIndex(max(self.p_format.findData(fmt), 0))
-        self.p_show_text.setChecked(bool(st.get("show_text", True)))
-        self.p_quiet.setValue(int(st.get("quiet_zone", 10)))
-        self.p_ec.setCurrentText(str(st.get("error_correction", "M")).upper())
-        self.p_qborder.setValue(int(st.get("border", 4)))
-        self._update_hint()
-        self.p_style.setPlainText(json.dumps(st, ensure_ascii=False))
-
-    def collect_style(self, t):
-        style = json.loads(self.p_style.toPlainText() or "{}")
-        if not isinstance(style, dict): raise ValueError("стиль должен быть объектом JSON")
-        put = lambda k, v: style.__setitem__(k, v) if v not in ("", None) else style.pop(k, None)
-        if t in ("text", "field", "barcode"): style["font_size"] = self.p_font.value()
-        if t in ("text", "field", "barcode", "qr"): put("color", self.p_color.text().strip())
-        if t in ("barcode", "qr"): put("background", self.p_bg.text().strip())
-        if t in ("rect", "ellipse", "text", "field"): put("fill", self.p_fill.text().strip())
-        if t in ("rect", "ellipse", "line"):
-            for k in ("border_color", "border_width", "color", "width"): style.pop(k, None)   # старые ключи → новые
-            put("stroke", self.p_stroke.text().strip()); style["stroke_width"] = self.p_stroke_w.value()
-        if t == "rect": style["radius"] = self.p_radius.value()
-        if t == "barcode":
-            style.pop("symbology", None); style["format"] = self.p_format.currentData()
-            style["show_text"] = self.p_show_text.isChecked(); style["quiet_zone"] = self.p_quiet.value()
-        if t == "qr":
-            style["error_correction"] = self.p_ec.currentText(); style["border"] = self.p_qborder.value()
-        return style
+        op = getattr(self, "object_props", None)
+        if op is not None: op.sync()
 
     def apply_props(self):
+        """Совместимость с лентой: пишет панель «Свойства объекта»."""
         if not self.current: return False
-        t = self.current.el["type"]
-        err = self.validate_size(t, self.p_w.value(), self.p_h.value())
-        if err:
-            _warn(self, "Размер", err); return False
-        try:
-            style = self.collect_style(t)
-        except ValueError as e:
-            _warn(self, "Стиль", f"Некорректный JSON: {e}"); return False
-        if not self.template_mode and self.current is not None:      # этап 15: геометрия вне режима шаблона не меняется
-            g = self.current.el
-            for _w, k in ((self.p_x, "x"), (self.p_y, "y"), (self.p_w, "w"), (self.p_h, "h")):
-                _w.blockSignals(True); _w.setValue(g[k]); _w.blockSignals(False)
-        changes = dict(x=self.p_x.value(), y=self.p_y.value(), w=self.p_w.value(), h=self.p_h.value(),
-                       z_order=self.p_z.value(), field_name=(self.p_field.currentText() if self.p_field.currentText() != NEW_FIELD else None) or None,
-                       static_value=self.p_static.text() or None, style=style)
-        el = self.current.el
-        changes = {k: v for k, v in changes.items() if el.get(k) != v}
-        if not changes: return True              # ничего не изменилось — шага истории нет
-        try:
-            self.api.update_element(self.current.el["id"], **changes)
-        except Exception as e:  # noqa: BLE001 (IntegrityError из CHECK Backend)
-            _warn(self, "Ошибка", f"Backend отклонил изменения: {e}"); return False
-        self.load(self.side, self.current.el["id"])
-        return True
+        op = getattr(self, "object_props", None)
+        if op is None: return False
+        return op.commit_all()
 
     # --- добавление ---
     def run_tool(self, key):
@@ -496,39 +407,23 @@ class LayoutEditor(QWidget):
     def set_template_mode_banner(self, on):
         """Этап 15 п.2: в режиме — добавление/перемещение/связывание; вне — блокировка и данные выбранной записи."""
         self.template_mode = bool(on)
-        for _w in (self.p_x, self.p_y, self.p_w, self.p_h): _w.setReadOnly(not self.template_mode)
         if hasattr(self, "mode_banner"): self.mode_banner.setVisible(self.template_mode)
         if not self.template_mode: self.show_render = True          # карточка показывает данные выбранной записи
         for it in self.items():
-            it.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, self.template_mode); it.handle.setVisible(self.template_mode)
+            self._apply_item_flags(it)
+        op = getattr(self, "object_props", None)
+        if op is not None: op.sync()
         if not self.template_mode and self.show_render: self.load(self.side, self.current.el["id"] if self.current else None)
 
     def _locked(self, title):
         if self.template_mode: return False
         _warn(self, title, "Включите «Режим шаблона» на ленте, чтобы изменять шаблон"); return True
 
-    def _show_photo_link(self, el):
-        """Этап 15 п.1 (макет): у фото-объекта — состояние связи с полем «Фото» типа «Изображение»."""
-        if not el or el.get("type") != "photo": self.photo_link.hide(); return
-        fn = el.get("field_name")
-        if fn: t = f"🔗 Связан с полем «{fn}» (тип «{PHOTO_FIELD_TYPE}»)"
-        else:
-            t = f"Объект не связан — при вставке фото создаётся поле «{PHOTO_FIELD_LABEL}» типа «{PHOTO_FIELD_TYPE}»"
-        self.photo_link.setText(t); self.photo_link.show()
-
     def _fill_fields(self, fields=None):
-        """Комбо поля объекта: только list_fields() + последний пункт «Новое поле…» (D24)."""
-        fields = self.api.list_fields() if fields is None else fields
-        cur = self.p_field.currentText(); self.p_field.blockSignals(True); self.p_field.clear(); self.p_field.addItem("")
-        for f in fields: self.p_field.addItem(f["name"]); self.p_field.setItemData(self.p_field.count() - 1, f["label"] or f["name"], Qt.ItemDataRole.ToolTipRole)
-        self.p_field.addItem(NEW_FIELD); self.p_field.setCurrentText(cur); self.p_field.blockSignals(False)
-
-    def _field_chosen(self):
-        if self._locked("Связать поле"): return False
-        if self.p_field.currentText() == NEW_FIELD:
-            name = self._new_field(); self.p_field.setCurrentText(name or "")
-            return bool(name)
-        return True
+        """Обновить комбо поля на панели «Свойства объекта»."""
+        op = getattr(self, "object_props", None)
+        if op is not None:
+            op.reload_fields(fields)
 
     def _ask_field(self):
         names = [f["name"] for f in self.api.list_fields()] + [NEW_FIELD]
@@ -567,12 +462,16 @@ class LayoutEditor(QWidget):
         if t == "field" and field_name is None: field_name = self._ask_field()
         if t == "image" and image_path is None: image_path = self._ask_file("Изображение (логотип)")
         w, h = DEFAULT_SIZE[t]
+        if uses_grid_units():
+            w, h = px_to_units(w), px_to_units(h)
         if self.validate_size(t, w, h): raise ValueError("недопустимый размер по умолчанию")
-        kw = dict(type=t, x=(CARD_W_PX - w) // 2, y=(CARD_H_PX - h) // 2, w=w, h=h, side=self.side,
+        sw, sh = scene_width(), scene_height()
+        kw = dict(type=t, x=(sw - w) // 2, y=(sh - h) // 2, w=w, h=h, side=self.side,
                   z_order=max([i.el.get("z_order") or 0 for i in self.items()] + [0]) + 1,
                   style=dict(DEFAULT_STYLE.get(t, {})))
         if t == "text": kw["static_value"] = static_value or "Текст"
         elif t == "field": kw["field_name"] = field_name
+        elif t == "photo" and field_name: kw["field_name"] = field_name
         elif t == "image": kw["static_value"] = image_path
         elif t == "barcode": kw["static_value"] = static_value or "123456789012"
         elif t == "qr": kw["static_value"] = static_value or "https://example.org"
@@ -611,8 +510,11 @@ class LayoutEditor(QWidget):
         self.load(self.side, eid)
 
     def delete_element(self):
-        if self.current:
-            self.api.delete_element(self.current.el["id"]); self.load(self.side)
+        if not self.current: return
+        if (self.current.el.get("style") or {}).get("locked"):
+            _warn(self, "Удаление", "Объект зафиксирован — сначала снимите фиксацию в свойствах")
+            return
+        self.api.delete_element(self.current.el["id"]); self.load(self.side)
 
     def zoom(self, factor):
         """factor None — вписать в окно."""
@@ -620,14 +522,19 @@ class LayoutEditor(QWidget):
         if factor is None: self._fit()
         else: self.view.scale(factor, factor)
 
-    def set_grid(self, on, step=20):
-        self.grid_on, self.grid_step = bool(on), max(2, int(step)); self.load(self.side, self.current.el["id"] if self.current else None)
+    def set_grid(self, on, step=None):
+        if step is None:
+            step = 10 if uses_grid_units() else 20
+        lo = 1 if uses_grid_units() else 2
+        self.grid_on, self.grid_step = bool(on), max(lo, int(step))
+        self.load(self.side, self.current.el["id"] if self.current else None)
 
     def _draw_grid(self):
         if not getattr(self, "grid_on", False): return
         pen = QPen(QColor(49, 130, 206, 50)); st = self.grid_step
-        for x in range(0, CARD_W_PX + 1, st): self.scene.addLine(x, 0, x, CARD_H_PX, pen).setZValue(1)
-        for y in range(0, CARD_H_PX + 1, st): self.scene.addLine(0, y, CARD_W_PX, y, pen).setZValue(1)
+        sw, sh = scene_width(), scene_height()
+        for x in range(0, sw + 1, st): self.scene.addLine(x, 0, x, sh, pen).setZValue(1)
+        for y in range(0, sh + 1, st): self.scene.addLine(0, y, sw, y, pen).setZValue(1)
 
     def _fit(self):
         self.view.resetTransform()
@@ -654,8 +561,9 @@ class Ruler(QWidget):
         p = QPainter(self); p.fillRect(self.rect(), QColor("#F1F3F2")); p.setPen(QColor("#555555"))
         f = QFont(); f.setPixelSize(9); p.setFont(f)
         view = self.ed.view
-        o = view.mapFromScene(0, 0); e = view.mapFromScene(CARD_W_PX, CARD_H_PX)
-        px_per_mm = ((e.x() - o.x()) / 85.6) if self.h else ((e.y() - o.y()) / (CARD_H_PX * MM_PER_PX))
+        o = view.mapFromScene(0, 0); e = view.mapFromScene(scene_width(), scene_height())
+        h_mm = 54.0 if uses_grid_units() else (CARD_H_PX * MM_PER_PX)
+        px_per_mm = ((e.x() - o.x()) / 85.6) if self.h else ((e.y() - o.y()) / h_mm)
         if px_per_mm <= 0: return
         base = o.x() if self.h else o.y(); length = self.width() if self.h else self.height()
         for mm in range(int(-base / px_per_mm) - 1, int((length - base) / px_per_mm) + 2):

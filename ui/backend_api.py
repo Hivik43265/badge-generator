@@ -34,6 +34,131 @@ TYPE_NAMES = {"field": "Поле", "text": "Текст", "photo": "Фото", "i
 SIDE_NAMES = {"front": "Лицевая", "back": "Оборот"}
 
 
+# --- координаты 0.1 мм (контракт v8). На 583e88c имён ещё нет — fallback как сейчас (px). ---
+import badge_backend as _badge_pkg
+
+def _unit_attr(name, default=None):
+    """Сначала пакет badge_backend, затем badge_backend.api; иначе default."""
+    if hasattr(_badge_pkg, name):
+        return getattr(_badge_pkg, name)
+    return getattr(_api, name, default)
+
+GRID_DPI = _unit_attr("GRID_DPI", 254)
+UNIT_MM = _unit_attr("UNIT_MM", 0.1)
+CARD_W_UNITS = _unit_attr("CARD_W_UNITS", 856)
+CARD_H_UNITS = _unit_attr("CARD_H_UNITS", 540)
+
+
+def uses_grid_units():
+    """True, когда Backend отдал units_to_px — холст и запись в 0.1 мм."""
+    return callable(_unit_attr("units_to_px"))
+
+
+def units_to_px(u, dpi=300):
+    fn = _unit_attr("units_to_px")
+    if callable(fn):
+        try:
+            return fn(u, dpi)
+        except TypeError:
+            return fn(u, dpi=dpi)
+    return int(round(float(u)))
+
+
+def px_to_units(px, dpi=300):
+    fn = _unit_attr("px_to_units")
+    if callable(fn):
+        try:
+            return fn(px, dpi)
+        except TypeError:
+            return fn(px, dpi=dpi)
+    return int(round(float(px)))
+
+
+def units_to_mm(u):
+    fn = _unit_attr("units_to_mm")
+    if callable(fn):
+        return float(fn(u))
+    # fallback: значение в записи — пиксели @ 300 DPI
+    return float(u) * 25.4 / 300.0
+
+
+def mm_to_units(mm):
+    fn = _unit_attr("mm_to_units")
+    if callable(fn):
+        return fn(mm)
+    return int(round(float(mm) * 300.0 / 25.4))
+
+
+def px_to_mm(px, dpi=300):
+    fn = _unit_attr("px_to_mm")
+    if callable(fn):
+        try:
+            return float(fn(px, dpi))
+        except TypeError:
+            return float(fn(px, dpi=dpi))
+    return float(px) * 25.4 / float(dpi)
+
+
+def scene_width():
+    return int(CARD_W_UNITS) if uses_grid_units() else int(CARD_W_PX)
+
+
+def scene_height():
+    return int(CARD_H_UNITS) if uses_grid_units() else int(CARD_H_PX)
+
+
+def stored_to_mm(v):
+    """x/y/w/h из записи → мм для спинбоксов."""
+    return units_to_mm(v)
+
+
+def mm_to_stored(mm):
+    """мм со спинбокса → целое в записи (единицы 0.1 мм или px)."""
+    return int(round(mm_to_units(mm)))
+
+
+def snap_scene(v):
+    """Шаг перетаскивания: 1 единица сцены (0.1 мм при API, иначе 1 px)."""
+    return int(round(float(v)))
+
+
+def update_element_style_available():
+    return callable(getattr(_api, "update_element_style", None))
+
+
+def list_fonts():
+    """Семейства, которые умеет загрузить рендерер (контракт: api.list_fonts() -> list[str]).
+
+    list_font_families() — алиас. Пока Backend не отдал list_fonts, берём текущий
+    list_font_families. Свой список (QFontDatabase и т.п.) не строим.
+    """
+    fn = getattr(_api, "list_fonts", None)
+    if not callable(fn):
+        fn = getattr(_api, "list_font_families", None)
+    if not callable(fn):
+        return []
+    return list(fn())
+
+
+def format_schema_migration_error(exc):
+    """Читаемое сообщение об ошибке миграции при открытии проекта.
+
+    TODO(backend): Backend пришлёт отдельный класс исключения (миграция
+    координат v7→v8). Подставить его в `cls` ниже вместо проверки имени.
+    """
+    # TODO(backend): заменить на `isinstance(exc, BackendMigrationError)`
+    name = type(exc).__name__
+    if name in ("SchemaMigrationError", "UnitsMigrationError"):
+        src = getattr(exc, "from_version", "?")
+        dst = getattr(exc, "to_version", "?")
+        return (
+            "Не удалось открыть проект: ошибка миграции шаблона "
+            f"(схема {src} → {dst}). {exc}"
+        )
+    return None
+
+
+
 
 def pil_to_qimage(img):
     """PIL.Image (результат рендера Backend) -> QImage. Только конвертация, без рисования."""
@@ -89,15 +214,22 @@ class BackendAPI:
     def open_db(self, path, base_dir=None, *, recover=None):
         """Открыть/создать проект через ProjectSession: self.con — рабочая копия (session.con).
         recover=None и есть несохранённая копия → RecoverableProjectError (диалог в UI)."""
-        if str(path) == ":memory:":
-            sess = open_project(":memory:")
-        else:
-            pth = Path(path)
-            sess = create_project(pth) if not pth.exists() else open_project(pth, recover=recover)
-        self.adopt_session(sess)
-        if base_dir: self.base_dir = str(base_dir)
-        if self.schema_version() < _db.LATEST:
-            raise RuntimeError(f"БД {path}: схема v{self.schema_version()}, требуется v{_db.LATEST}")
+        try:
+            if str(path) == ":memory:":
+                sess = open_project(":memory:")
+            else:
+                pth = Path(path)
+                sess = create_project(pth) if not pth.exists() else open_project(pth, recover=recover)
+            self.adopt_session(sess)
+            if base_dir: self.base_dir = str(base_dir)
+            if self.schema_version() < _db.LATEST:
+                raise RuntimeError(f"БД {path}: схема v{self.schema_version()}, требуется v{_db.LATEST}")
+        except Exception as e:
+            # TODO(backend): класс исключения миграции — format_schema_migration_error
+            msg = format_schema_migration_error(e)
+            if msg:
+                raise RuntimeError(msg) from e
+            raise
 
     def adopt_session(self, session):
         """Подменить сессию (после recover / save_as). Старую закрывает без записи исходника."""
@@ -239,7 +371,19 @@ class BackendAPI:
     def clear_history(self): self._hist(); self._undo.clear(); self._redo.clear(); self._ids.clear()
     def get_background(self, side): return _api.get_background(self.con, side)
     def set_background(self, side, color="#FFFFFF", image_path=None):
+        """Фон СТРАНИЦЫ (не заливка объекта). Не смешивать с style.bg_color."""
         return _api.set_background(self.con, side, color, image_path)
+
+    def update_element_style(self, eid, **changes):
+        """Слить ключи стиля. Нет функции в Backend → None (вызывающий держит в памяти)."""
+        fn = getattr(_api, "update_element_style", None)
+        if not callable(fn):
+            return None
+        old = self._el(eid)
+        r = fn(self.con, self._id(eid), **changes)
+        if old is not None:
+            self._record(("update", eid, {"style": old.get("style")}, {"style": r}))
+        return r
 
     # --- рендер (Backend) ---
     def render_card(self, person, side="front"):
@@ -490,7 +634,12 @@ def _bapi_rename_template(self, template_id, name): return _api.rename_template(
 def _bapi_delete_template(self, template_id): return _api.delete_template(self.con, template_id)
 def _bapi_get_template_style(self, template_id=None): return _api.get_template_style(self.con, template_id)
 def _bapi_set_template_style(self, style, template_id=None): return _api.set_template_style(self.con, style, template_id)
-def _bapi_list_font_families(self): return list(_api.list_font_families())
+def _bapi_list_fonts(self):
+    return list_fonts()
+
+def _bapi_list_font_families(self):
+    """Алиас list_fonts() (контракт)."""
+    return list_fonts()
 def _bapi_get_template_edit_state(self): return _api.get_template_edit_state(self.con)
 def _bapi_begin_template_edit(self, template_id=None):
     return _api.begin_template_edit(self.con, template_id)
@@ -549,6 +698,7 @@ BackendAPI.rename_template = _bapi_rename_template
 BackendAPI.delete_template = _bapi_delete_template
 BackendAPI.get_template_style = _bapi_get_template_style
 BackendAPI.set_template_style = _bapi_set_template_style
+BackendAPI.list_fonts = _bapi_list_fonts
 BackendAPI.list_font_families = _bapi_list_font_families
 BackendAPI.get_template_edit_state = _bapi_get_template_edit_state
 BackendAPI.begin_template_edit = _bapi_begin_template_edit

@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTabWidg
                              QTableWidget, QTableWidgetItem, QHeaderView, QDialog, QDialogButtonBox, QFormLayout,
                              QLineEdit, QPushButton, QSpinBox, QGridLayout, QFileDialog, QSplitter, QSizePolicy,
                              QAbstractItemView, QDoubleSpinBox, QMessageBox, QComboBox)
-from .backend_api import BackendAPI, CARD_W_PX, CARD_H_PX
+from .backend_api import BackendAPI, CARD_W_PX, CARD_H_PX, scene_width, scene_height
 from .layout_editor import element_caption
 from .records_table import format_printed_at
 
@@ -400,12 +400,13 @@ ALIGN = [("left", "По левому краю"), ("hcenter", "По центру 
 def aligned_geometry(el, how, margin=0):
     x, y, w, h = el["x"], el["y"], el["w"], el["h"]
     bw, bh = abs(w), abs(h); ox, oy = min(0, w), min(0, h)          # линии: w/h могут быть < 0
+    cw, ch = scene_width(), scene_height()
     if how == "left": x = margin - ox
-    elif how == "right": x = CARD_W_PX - margin - bw - ox
-    elif how == "hcenter": x = (CARD_W_PX - bw) // 2 - ox
+    elif how == "right": x = cw - margin - bw - ox
+    elif how == "hcenter": x = (cw - bw) // 2 - ox
     elif how == "top": y = margin - oy
-    elif how == "bottom": y = CARD_H_PX - margin - bh - oy
-    elif how == "vcenter": y = (CARD_H_PX - bh) // 2 - oy
+    elif how == "bottom": y = ch - margin - bh - oy
+    elif how == "vcenter": y = (ch - bh) // 2 - oy
     return {"x": int(x), "y": int(y)}
 
 

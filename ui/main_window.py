@@ -12,6 +12,7 @@ from .backend_api import (BackendAPI, DEFAULT_DB_PATH, TYPE_NAMES,
                           UnsavedChangesError, TemplateEditActiveError, recover)
 from .records_table import RecordsWidget, PRINTED_FILTERS
 from .layout_editor import LayoutEditor
+from .object_properties import ObjectPropertiesDock
 from .main_view import (PreviewPanel, PrintQueueDialog, PositionDialog, SettingsDialog, FieldManager, ALIGN,
                         aligned_geometry)
 from .ribbon import Ribbon, glyph
@@ -114,9 +115,13 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget(); self.stack.addWidget(le); self.stack.addWidget(self.db_page)
 
         self.ribbon = Ribbon()
-        central = QWidget(); cl = QVBoxLayout(central); cl.setContentsMargins(0, 0, 0, 0); cl.setSpacing(0)
-        cl.addWidget(self.ribbon); cl.addWidget(self.stack, 1)
-        self.setCentralWidget(central)
+        # Лента на всю ширину окна выше области доков: панель свойств
+        # начинается под лентой, а не рядом с ней до верха окна.
+        self.setMenuWidget(self.ribbon)
+        self.setCentralWidget(self.stack)
+        self.props_dock = ObjectPropertiesDock(le, self)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.props_dock)
+        le.object_props = self.props_dock.panel
         self.pos_label = QLabel("X: —  Y: — мм"); self.statusBar().addPermanentWidget(self.pos_label)
 
         self._build_actions(); self._build_ribbon(); self._build_context_menus()
@@ -196,7 +201,7 @@ class MainWindow(QMainWindow):
             return mk
         self.act_font = FieldWidgetAction(self, "act_font", "Шрифт", _font, self._bind_font, "Шрифт шаблона")
         self.act_font_size = FieldWidgetAction(self, "act_font_size", "Размер", _spin(4, 200, 14, " pt"),
-            lambda e: e.editingFinished.connect(lambda e=e: le.current and (le.p_font.setValue(e.value()), le.apply_props())))
+            lambda e: e.editingFinished.connect(lambda e=e: le.current and le.set_props(font_size=e.value())))
         self.act_padding = FieldWidgetAction(self, "act_padding", "Отступы", _spin(0, 200, 0, " px"), self._bind_padding,
                                              "Отступы шаблона (0…200 px)")
         self.act_text_color = A("act_text_color", "Цвет текста…", lambda: self.pick_color("color"), "text", icon_text="Цвет\nтекста")
@@ -334,6 +339,8 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.db_page if db else self.layout_editor)
         if db: self.preview_panel.refresh()
         else: self.layout_editor.reload()
+        if hasattr(self, "props_dock"):
+            self.props_dock.setVisible(not db)
         self._sync_selection()
 
     def show_main(self):
@@ -423,14 +430,14 @@ class MainWindow(QMainWindow):
         r = self.api.redo(); self.layout_editor.reload(); self._sync_selection(); return r
 
     def edit_position(self):
+        """Одно место для X/Y/W/H — панель «Свойства объекта» (диалог PositionDialog больше не открывается)."""
         le = self.layout_editor
         if not le.current:
             self.statusBar().showMessage("Выберите объект на холсте"); return None
-        d = PositionDialog({**le.current.el, **le.current.geometry()}, self)
-        val = position_hook(d) if position_hook is not None else (d.value() if d.exec() else None)
-        if val:
-            le.set_props(**{k: val[k] for k in ("x", "y") if k in val})
-        return val
+        if hasattr(self, "props_dock"):
+            self.props_dock.show(); self.props_dock.raise_()
+            self.props_dock.panel.expand_all()
+        return None
 
     # --- расположение ---
     def save_layout(self):
