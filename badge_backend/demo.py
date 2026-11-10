@@ -1,5 +1,7 @@
 """Тестовые картинки (make_photo/make_logo) и загрузчик макетов из JSON. Макетов в коде нет —
-демо-макет лежит в tests/fixtures/demo_layout.json."""
+демо-макет лежит в tests/fixtures/demo_layout.json.
+Рамки текста и полей в этом файле рассчитаны так, чтобы демо-строки влезали
+в заданный font_size без автоподбора (после перевода px → 0,1 мм и обратно)."""
 import json
 from pathlib import Path
 from PIL import Image, ImageDraw
