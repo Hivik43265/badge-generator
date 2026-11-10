@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import Qt, QEventLoop, QTimer, QSettings
+from PyQt6.QtCore import Qt, QEventLoop, QTimer, QSettings, QThreadPool
 from PyQt6.QtGui import QPixmap, QImage, QColor
 from PyQt6.QtPrintSupport import QPrinter
 _cfg = tempfile.mkdtemp(prefix="bg_ui_cfg_")   # не трогать настройки пользователя
@@ -30,6 +30,16 @@ shots = ROOT / "reports"
 ok = lambda m: print("OK  ", m)
 def spin(ms=50):
     loop = QEventLoop(); QTimer.singleShot(ms, loop.quit); loop.exec()
+def wait_previews(app):
+    """Сбросить 0-ms таймер выбора и дождаться фонового рендера превью."""
+    pool = QThreadPool.globalInstance()
+    for _ in range(8):
+        app.processEvents()
+        if not pool.waitForDone(8000):
+            break
+        app.processEvents()
+        if pool.activeThreadCount() == 0:
+            break
 def cancel_immediately(pd): pd.cancel()
 
 api = BackendAPI(tmp / "test.db")
@@ -160,7 +170,7 @@ tmpid = le.add_element(); next(i for i in le.items() if i.el["id"] == tmpid).set
 le.delete_element(); assert all(e["id"] != tmpid for e in api.list_elements())
 ok("редактор: delete_element, стороны")
 # --- предпросмотр ---
-w.show_main(); w._select_person(ivanov); app.processEvents()
+w.show_main(); w._select_person(ivanov); wait_previews(app)
 assert w.stack.currentWidget() is w.db_page and w.preview_panel.person_id == ivanov
 assert w.preview_panel.pixmap.toImage() == QPixmap.fromImage(api.render_card(ivanov, "front")).toImage()
 w.grab().save(str(shots / "screenshot_preview.png")); w.show_editor()
@@ -334,15 +344,16 @@ ok("Открыть БД / все вкладки ленты")
 # ===== Этап 9 =====
 # выбор строки внизу → холст сразу рендерит эту запись
 w.act_show_render.setChecked(True); w.layout_editor.set_show_render(True)
+w.show_editor(); wait_previews(app)   # холст рендерит только на видимой вкладке редактора
 for pid in (petrova, ivanov):
     r = w.records.proxy.mapFromSource(w.records.model.index(next(r for r in range(w.records.model.rowCount()) if w.records.model.person_id(r) == pid), 1)).row()
-    w.records.view.selectRow(r); app.processEvents()
+    w.records.view.selectRow(r); wait_previews(app)
     assert w.layout_editor.person_id == pid and w.preview_panel.person_id == pid
     assert w.layout_editor.canvas_image == api.render_card(pid, "front"), pid
 ok("выбор строки в доке «Записи» → холст = render_card(выбранная запись), предпросмотр синхронизирован")
 w.grab().save(str(shots / "screenshot.png"))
 # пустая БД → пустой шаблон, подсказка; кнопки создают элементы нужных типов
-w.switch_db(tmp / "empty.db"); le = w.layout_editor; app.processEvents()
+w.switch_db(tmp / "empty.db"); le = w.layout_editor; wait_previews(app)
 assert api.list_elements() == [] and api.list_elements("back") == [] and le.items() == []
 assert le.hint is not None and le.hint.text() == lem.EMPTY_HINT == "Добавьте элементы: вкладка ленты «Рисование»"
 assert api.render_card(None, "front") == le.canvas_image   # подсказка — не часть рендера
@@ -564,7 +575,7 @@ ok(f"таблица: колонки {hdr}")
 pp = w.preview_panel
 people = api.list_persons(); a_id, b_id = people[0]["id"], people[1]["id"]
 for pid in (a_id, b_id):
-    w._select_person(pid); app.processEvents()
+    w._select_person(pid); wait_previews(app)
     assert pp.person_id == pid and pp.pixmap.toImage() == QPixmap.fromImage(api.render_card(pid, "front")).toImage()
     assert pp.pixmaps["back"].toImage() == QPixmap.fromImage(api.render_card(pid, "back")).toImage()
     rows = pp.db_rows(); f = api.get_person(pid)["fields"]
@@ -771,7 +782,7 @@ api.open_db(ivan_db)
 for i, (n, l) in enumerate([("familiya", "Фамилия"), ("imya", "Имя"), ("otchestvo", "Отчество"), ("fakultet", "Факультет")]):
     api.upsert_field(n, l, i)
     api.create_element(type="field", side="front", x=40, y=40 + 70 * i, w=600, h=60, field_name=n)
-w.refresh_all(); app.processEvents()
+w.refresh_all(); wait_previews(app)
 empty = w.preview_panel.pixmaps["front"].toImage()
 assert [m.headerData(c, Qt.Orientation.Horizontal) for c in range(m.columnCount())] == ["Печать", "Фамилия", "Имя", "Отчество", "Факультет", "Напечатано"]
 vals = {"familiya": "Иванова", "imya": "Мария", "otchestvo": "Петровна", "fakultet": "Физмат"}
@@ -779,7 +790,7 @@ def fill(f):
     assert list(f.edits) == list(vals), list(f.edits)
     for k, v in vals.items(): f.edits[k].setText(v)
     f.save(); return f.result() == 1
-rtm.form_hook = fill; new_id = w.records._open_form(None); rtm.form_hook = None; spin(50)
+rtm.form_hook = fill; new_id = w.records._open_form(None); rtm.form_hook = None; wait_previews(app)
 assert w.records.selected_ids() == [new_id] and w.preview_panel.person_id == new_id
 img = w.preview_panel.pixmaps["front"].toImage(); assert img != empty                       # текст отрисован
 diff = sum(1 for x in range(0, img.width(), 4) for y in range(0, img.height(), 4) if img.pixel(x, y) != empty.pixel(x, y))
