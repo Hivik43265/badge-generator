@@ -114,7 +114,7 @@ def test_write_then_import_compares_elements(tmp_path):
     ]
     dest2 = tmp_path / "out2.csd"
     r2 = api.write_csd(bad, dest2)
-    assert any("qr" in d for d in r2["dropped"])
+    assert any(d == "QR-код 1: не поддерживается в .csd" for d in r2["dropped"])
 
 
 def test_roundtrip_demo_fixture(tmp_path):

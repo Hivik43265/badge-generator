@@ -89,6 +89,57 @@ ALIGN_CODES = {"left": 0x10, "center": 0x11, "right": 0x12}
 WRITABLE_TYPES = {"text": "ET", "field": "ET", "photo": "MI", "image": "MI", "rect": "ER"}
 TAG_TYPES = {"ET": "text", "MI": "image", "ER": "rect"}
 
+TYPE_TITLES = {
+    "text": "Текст",
+    "field": "Поле",
+    "photo": "Фото",
+    "image": "Картинка",
+    "rect": "Прямоугольник",
+    "qr": "QR-код",
+    "barcode": "Штрихкод",
+    "line": "Линия",
+}
+
+
+def _fmt_comma(val) -> str:
+    """Число для пользователя: десятичная запятая, без лишних нулей."""
+    x = float(val)
+    if abs(x - round(x)) < 1e-9:
+        return str(int(round(x)))
+    s = f"{x:.6f}".rstrip("0").rstrip(".")
+    return s.replace(".", ",")
+
+
+def _fmt_mm_from_units(u) -> str:
+    """Единицы шаблона (0,1 мм) → строка в миллиметрах."""
+    from .. import units_to_mm
+    return f"{_fmt_comma(units_to_mm(float(u)))} мм"
+
+
+def _obj_caption(obj: dict) -> str:
+    for key in ("text", "static_value", "label"):
+        val = obj.get(key)
+        if val is not None and str(val).strip():
+            return str(val).strip()
+    return ""
+
+
+def _human_title(typ: str | None, n: int, obj: dict) -> str:
+    kind = (typ or "").casefold() or "объект"
+    caption = _obj_caption(obj)
+    if kind == "qr":
+        return f"QR-код «{caption}»" if caption else f"QR-код {n}"
+    if kind == "barcode":
+        return f"Штрихкод «{caption}»" if caption else f"Штрихкод {n}"
+    base = TYPE_TITLES.get(kind, "Объект")
+    return f"{base} {n}"
+
+
+def _drop(dropped: list, title: str, user_msg: str, tech: str | None = None) -> None:
+    dropped.append(f"{title}: {user_msg}")
+    log.info("smartid_write %s: %s", title, tech or user_msg)
+
+
 # 1×1 RGB PNG — заглушка, если у MI нет пикселей.
 _PLACEHOLDER_PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de"
@@ -242,10 +293,10 @@ def _ensure_png(raw: bytes, dropped: list, label: str) -> bytes | None:
             im = im.convert("RGB")
         buf = io.BytesIO()
         im.save(buf, format="PNG")
-        dropped.append(f"{label}: исходник не PNG, записан как PNG")
+        log.info("write_csd %s: исходник не PNG, записан как PNG", label)
         return buf.getvalue()
     except Exception as e:
-        dropped.append(f"{label}: не удалось прочитать изображение ({e})")
+        _drop(dropped, label, "нет изображения", tech=f"не удалось прочитать изображение ({e})")
         return None
 
 
@@ -262,7 +313,7 @@ def _load_png(src, base_dir, dropped: list, label: str) -> bytes | None:
     if not p.is_file() and base_dir:
         p = Path(base_dir) / src
     if not p.is_file():
-        dropped.append(f"{label}: файл изображения не найден ({src})")
+        _drop(dropped, label, "нет изображения", tech=f"файл изображения не найден ({src})")
         return None
     return _ensure_png(p.read_bytes(), dropped, label)
 
@@ -274,16 +325,28 @@ def _objects_of(template: dict) -> list[dict]:
     return list(objs)
 
 
-def _note_dropped_style(obj: dict, st: dict, dropped: list, label: str) -> None:
-    for key, title in (("bold", "жирный"), ("italic", "курсив"), ("underline", "подчёркивание")):
+def _note_dropped_style(obj: dict, st: dict, dropped: list, title: str) -> None:
+    said_bold = False
+    said_italic = False
+    for key, user_msg in (("bold", "жирный"), ("italic", "курсив"), ("underline", "подчёркивание")):
         if st.get(key) or obj.get(key):
-            dropped.append(f"{label}: начертание «{title}» не записывается — смещение в записи ET неизвестно")
+            _drop(dropped, title, user_msg,
+                  tech=f"начертание {key!r} не записывается: смещение в записи ET неизвестно")
+            if key == "bold":
+                said_bold = True
+            if key == "italic":
+                said_italic = True
     weight = st.get("font_weight") or obj.get("font_weight")
     if weight not in (None, "", "normal", "Normal", 400, "400"):
-        dropped.append(f"{label}: font_weight={weight!r} не записывается")
+        if not said_bold:
+            _drop(dropped, title, "жирный",
+                  tech=f"font_weight={weight!r} не записывается: смещение в записи ET неизвестно")
+        else:
+            log.info("write_csd %s: font_weight=%r не записывается", title, weight)
     if st.get("font_style") in ("italic", "oblique") or obj.get("font_style") in ("italic", "oblique"):
-        if not (st.get("italic") or obj.get("italic")):
-            dropped.append(f"{label}: начертание «курсив» не записывается — смещение в записи ET неизвестно")
+        if not (st.get("italic") or obj.get("italic") or said_italic):
+            _drop(dropped, title, "курсив",
+                  tech="font_style italic/oblique не записывается: смещение в записи ET неизвестно")
 
 
 
@@ -475,13 +538,15 @@ def _header_from_ref(ref: dict, card_w, card_h, dpi, printer: str) -> bytes:
     return bytes(buf)
 
 
-def _note_angle(obj: dict, st: dict, dropped: list, label: str) -> None:
-    rot = int(obj.get("rotation") or st.get("rotation") or 0)
+def _note_angle(obj: dict, st: dict, dropped: list, title: str) -> None:
+    raw = obj.get("rotation") if obj.get("rotation") is not None else st.get("rotation")
+    try:
+        rot = float(raw or 0)
+    except (TypeError, ValueError):
+        rot = 0
     if rot:
-        dropped.append(
-            f"{label}: угол {rot} не записывается — в int32 после h оставлено "
-            "значение эталонной записи (или 0)"
-        )
+        _drop(dropped, title, f"поворот {_fmt_comma(rot)}°",
+              tech=f"угол {raw!r} не записывается: int32 после h остаётся из эталона (или 0)")
 
 
 def _overlay_xywh(rec: bytearray, obj: dict, st: dict) -> None:
@@ -553,15 +618,15 @@ def _write_font_name(rec: bytearray, family: str, dropped: list, label: str) -> 
         return
     if len(payload) > room:
         payload = payload[: room - (room % 2)]
-        dropped.append(f"{label}: имя шрифта обрезано до {len(payload) // 2} символов")
+        _drop(dropped, label, "имя шрифта обрезано",
+              tech=f"имя шрифта обрезано до {len(payload) // 2} символов")
     rec[off:off + len(payload)] = payload
     end = off + len(payload)
     if end + 2 <= 0xDD:
         rec[end:end + 2] = b"\x00\x00"
     if not family.replace(" ", "").isascii():
-        dropped.append(
-            f"{label}: имя шрифта {family!r} не ASCII — наш импортёр его при чтении пропустит"
-        )
+        _drop(dropped, label, "имя шрифта",
+              tech=f"имя шрифта {family!r} не ASCII — импортёр его при чтении пропустит")
 
 
 def _build_et(obj: dict, st: dict, text: str, dropped: list, label: str,
@@ -610,12 +675,12 @@ def _build_et(obj: dict, st: dict, text: str, dropped: list, label: str,
         room = 0xDD - 0x97
         if len(face) > room:
             face = face[: room - (room % 2)]
-            dropped.append(f"{label}: имя шрифта обрезано до {len(face) // 2} символов")
+            _drop(dropped, label, "имя шрифта обрезано",
+                  tech=f"имя шрифта обрезано до {len(face) // 2} символов")
         rec[0x97:0x97 + len(face)] = face
         if not family.replace(" ", "").isascii():
-            dropped.append(
-                f"{label}: имя шрифта {family!r} не ASCII — наш импортёр его при чтении пропустит"
-            )
+            _drop(dropped, label, "имя шрифта",
+                  tech=f"имя шрифта {family!r} не ASCII — импортёр его при чтении пропустит")
     n, raw = _utf16_payload(text or "")
     rec += _i32(n) + raw
     return bytes(rec)
@@ -642,7 +707,8 @@ def _build_mi(obj: dict, st: dict, png: bytes | None, filename: str | None,
     name = filename or obj.get("filename") or st.get("filename") or "image.png"
     blob = png or _PLACEHOLDER_PNG
     if png is None:
-        dropped.append(f"{label}: нет пикселей изображения, записана заглушка 1×1 PNG")
+        _drop(dropped, label, "нет изображения",
+              tech="нет пикселей изображения, записана заглушка 1×1 PNG")
     n, raw = _utf16_payload(name)
     payload = _i32(n) + raw + _i32(len(blob)) + blob
     if skeleton:
@@ -682,14 +748,19 @@ def _build_er(obj: dict, st: dict, dropped: list, label: str,
     color = st.get("border_color") or st.get("stroke") or obj.get("border_color")
     parsed = _parse_color(color) if color else None
     if parsed is not None and parsed != (0, 0, 0):
-        dropped.append(
-            f"{label}: цвет рамки {color!r} не записывается — импортёр всегда читает ER как чёрную solid без заливки"
-        )
+        _drop(dropped, label, "цвет рамки",
+              tech=f"цвет рамки {color!r} не записывается: импортёр читает ER как чёрную solid без заливки")
     if st.get("bg_fill") or st.get("fill") or obj.get("bg_fill"):
-        dropped.append(f"{label}: заливка прямоугольника не записывается")
-    bw = st.get("border_width") or st.get("stroke_width")
+        _drop(dropped, label, "заливка",
+              tech="заливка прямоугольника не записывается")
+    bw = st.get("border_width") if st.get("border_width") is not None else st.get("stroke_width")
     if bw not in (None, "", 1, 1.0, "1"):
-        dropped.append(f"{label}: толщина рамки {bw!r} не записывается")
+        try:
+            user_bw = f"толщина рамки {_fmt_mm_from_units(bw)}"
+        except (TypeError, ValueError):
+            user_bw = "толщина рамки"
+        _drop(dropped, label, user_bw,
+              tech=f"толщина рамки {bw!r} ед. (0,1 мм) не записывается")
     if skeleton:
         rec = bytearray(skeleton)
         _overlay_xywh(rec, obj, st)
@@ -812,26 +883,29 @@ def build_csd_bytes(template: dict, *, base_dir=None, reference_csd=None,
     if bg is None:
         bgs = template.get("backgrounds") or {}
         bg = bgs.get("front") if isinstance(bgs, dict) else None
-    bg_png = _load_png(bg, base_dir, dropped, "фон лицевой стороны")
+    bg_png = _load_png(bg, base_dir, dropped, "Фон лицевой стороны")
     bgs = template.get("backgrounds") or {}
     if isinstance(bgs, dict) and bgs.get("back"):
-        dropped.append(
-            "фон оборотной стороны не записывается: импортёр принимает за фон только PNG до первого объекта"
-        )
+        _drop(dropped, "Фон оборота", "не поддерживается в .csd",
+              tech="импортёр принимает за фон только PNG до первого объекта")
     if bg_png:
         parts.append(bg_png)
 
     used_fields: list[tuple[str, str]] = []
     counters: dict[str, int] = {}
+    type_n: dict[str, int] = {}
     for idx, raw in enumerate(_objects_of(template)):
         obj = dict(raw)
         st = _style_of(obj)
         typ = _classify(obj)
-        label = f"элемент[{idx}] type={typ or obj.get('tag')!r}"
+        kind = typ or (obj.get("tag") or "объект")
+        type_n[kind] = type_n.get(kind, 0) + 1
+        title = _human_title(kind, type_n[kind], obj)
+        label = title
+        log.debug("write_csd элемент[%s] type=%r → %s", idx, kind, title)
         if typ not in WRITABLE_TYPES:
-            dropped.append(
-                f"{label}: тип не записывается в .csd (поддерживаются text, field, photo, image, rect)"
-            )
+            _drop(dropped, title, "не поддерживается в .csd",
+                  tech=f"элемент[{idx}] type={kind!r} не записывается (text/field/photo/image/rect)")
             continue
         x, y, w, h = _csd_xy(obj)
         rec_obj = {**obj, "x": x, "y": y, "w": max(1, w), "h": max(1, h)}
@@ -952,9 +1026,9 @@ def write_csp(path, csd_path, db_path, *, overwrite: bool = False,
     fields_b = [str(x).strip() for x in (tbl_fields or []) if str(x).strip()]
     dropped = []
     if fields_a and fields_b and len(fields_a) != len(fields_b):
-        dropped.append(
-            f"CSD_Fields ({len(fields_a)}) и TBL_Fields ({len(fields_b)}) разной длины — записываю как есть"
-        )
+        _drop(dropped, "Привязки полей",
+              "число имён в макете и в таблице не совпадает",
+              tech=f"CSD_Fields ({len(fields_a)}) и TBL_Fields ({len(fields_b)}) разной длины")
     lines = [
         "[DB]",
         f"CSD_Name={csd_rel}",
