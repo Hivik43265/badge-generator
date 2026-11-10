@@ -23,6 +23,8 @@ if not os.path.isfile(_casc):
 datas.append((_casc, os.path.join("cv2", "data")))
 # D47: встроенное фото для --self-test → <_MEIPASS>/badge_backend/assets/selftest_face.jpg
 datas.append((os.path.join(ROOT, "badge_backend", "assets", "selftest_face.jpg"), os.path.join("badge_backend", "assets")))
+# Запасные шрифты DejaVu (кириллица) → <_MEIPASS>/fonts (render/fonts.py сканирует этот каталог)
+datas.append((os.path.join(ROOT, "badge_backend", "assets", "fonts"), "fonts"))
 hidden = collect_submodules("badge_backend") + collect_submodules("barcode") + ["qrcode.image.pil"]
 # Этап 13 / D22: аудит hiddenimports. Модули ui/ импортируются статически из main_window (PyInstaller
 # находит их сам), но ленивые импорты внутри функций (QtMultimedia в main_view.camera_available /
