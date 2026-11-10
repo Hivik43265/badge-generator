@@ -221,21 +221,26 @@ class BackendAPI:
             raise RuntimeError(f"БД {path}: схема v{self.schema_version()}, требуется v{_db.LATEST}")
 
     def adopt_session(self, session):
-        """Подменить сессию (после recover / save_as). Старую закрывает без записи исходника."""
+        """Подменить сессию (после recover / save_as / открытия). Старую закрывает без записи."""
         old = getattr(self, "session", None)
         self.session = session
         self.con = session.con
-        self.db_path = session.source_path if session.source_path is not None else Path(":memory:")
+        if session.source_path is not None:
+            self.db_path = session.source_path
+        else:
+            name = getattr(session, "suggested_name", None)
+            self.db_path = Path(name) if name else Path(":memory:")
         self.base_dir = str(session.base_dir)
         if hasattr(self, "_undo"): self.clear_history()
         if old is not None and old is not session:
-            self._release_session(old, persist=True)
+            self._release_session(old, persist=False)
 
     def schema_version(self) -> int:
         return get_schema_version(self.con)
 
-    def _release_session(self, sess, *, persist=True):
-        """Снять сессию. persist=True — записать исходник (как прежнее прямое соединение с .db)."""
+    def _release_session(self, sess, *, persist=False):
+        """Снять сессию. persist=True — явно записать исходник; по умолчанию не пишет
+        (запись только по «Сохранить», UI спрашивает до замены сессии)."""
         if sess is None: return
         try:
             if persist and sess.con is not None and sess.source_path is not None and sess.is_dirty():
@@ -255,10 +260,20 @@ class BackendAPI:
     def close(self):
         sess = getattr(self, "session", None)
         if sess is not None:
-            self._release_session(sess, persist=True)
+            self._release_session(sess, persist=False)
             self.session = None; self.con = None; return
         if self.con is not None:
             self.con.close(); self.con = None
+
+    def import_smartid_as_new_project(self, path):
+        """Открыть .csd/.csp как новый несохранённый проект.
+
+        Предыдущую сессию закрывает без записи. Возвращает (session, result),
+        где result — как у import_smartid (template_id, name, persons_imported, report).
+        """
+        session, result = _api.import_smartid_as_new_project(path)
+        self.adopt_session(session)
+        return session, result
 
     # --- записи ---
     def list_fields(self): return _api.list_fields(self.con)

@@ -470,6 +470,31 @@ def _resolve_next_to(base: Path, *parts) -> list[Path]:
     return out
 
 
+def _unique_search_paths(cands) -> list[str]:
+    seen, out = set(), []
+    for c in cands:
+        if not c:
+            continue
+        s = str(Path(c))
+        key = s.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+    return out
+
+
+def _missing_sidecar_error(kind: str, project_name: str, hint: str, cands) -> FileNotFoundError:
+    listed = _unique_search_paths(cands)
+    paths = "\n".join(f"  {x}" for x in listed) or "  (пути не заданы в проекте)"
+    if kind == "csd":
+        head = f"Не найден файл макета (.csd) для проекта {project_name}."
+    else:
+        head = f"Не найдена база данных записей для проекта {project_name}."
+    extra = f"{hint}\n" if hint else ""
+    return FileNotFoundError(f"{head}\n{extra}Искали по путям:\n{paths}")
+
+
 def resolve_csp_csd(info: dict) -> Path:
     p = info["path"]
     name = info.get("csd_name")
@@ -480,7 +505,8 @@ def resolve_csp_csd(info: dict) -> Path:
     for c in cands:
         if c and c.is_file():
             return c
-    raise FileNotFoundError(f"не найден .csd для проекта {p.name} (CSD_Name={name!r})")
+    hint = f"В проекте указано CSD_Name={name!r}."
+    raise _missing_sidecar_error("csd", p.name, hint, cands)
 
 
 def resolve_csp_db(info: dict) -> Path:
@@ -500,8 +526,8 @@ def resolve_csp_db(info: dict) -> Path:
     for c in cands:
         if c and c.is_file():
             return c
-    raise FileNotFoundError(
-        f"не найдена SQLite-база для проекта {p.name} (SQLiteDBPath={d!r}, SQLiteDBName={n!r})")
+    hint = f"В проекте указано SQLiteDBPath={d!r}, SQLiteDBName={n!r}."
+    raise _missing_sidecar_error("db", p.name, hint, cands)
 
 
 def _style_of(obj: dict) -> dict:
@@ -686,7 +712,7 @@ def import_smartid(con, path) -> dict:
     """
     p = Path(path)
     if not p.is_file():
-        raise FileNotFoundError(p)
+        raise FileNotFoundError(f"Файл не найден: {p}")
     suf = p.suffix.lower()
     report = {"imported": [], "skipped": [], "guessed": [], "warnings": [], "created_fields": []}
     persons = 0
@@ -707,3 +733,42 @@ def import_smartid(con, path) -> dict:
         "persons_imported": persons,
         "report": report,
     }
+
+
+def _resolved_import_sources(path) -> list[Path]:
+    """Пути исходников Smart ID, поверх которых нельзя сохранить наш проект."""
+    p = Path(path).resolve()
+    out = [p]
+    if p.suffix.lower() != ".csp":
+        return out
+    info = parse_csp(p)
+    out.append(resolve_csp_csd(info).resolve())
+    out.append(resolve_csp_db(info).resolve())
+    return out
+
+
+def import_smartid_as_new_project(path):
+    """Создать несохранённый проект и импортировать в него .csd или .csp.
+
+    Возвращает (ProjectSession, result), где result — как у import_smartid.
+    source_path пустой (первое сохранение — save_as); своя временная base_dir
+    для фонов и картинок. Сам файл проекта не пишет.
+    Для .csp сначала находит .csd и SQLite-базу (нет файла — FileNotFoundError
+    со всеми проверенными путями). Для .csd записи не импортируются.
+    """
+    from .project_session import create_unsaved_project
+    p = Path(path)
+    if not p.is_file():
+        raise FileNotFoundError(f"Файл не найден: {p}")
+    suf = p.suffix.lower()
+    if suf not in {".csd", ".csp"}:
+        raise ValueError(f"ожидался файл .csd или .csp, получено {suf or p.name}")
+    sources = _resolved_import_sources(p)
+    session = create_unsaved_project(p.stem)
+    session.import_source_paths = sources
+    try:
+        result = import_smartid(session.con, p)
+    except Exception:
+        session.discard()
+        raise
+    return session, result

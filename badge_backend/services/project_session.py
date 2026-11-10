@@ -244,8 +244,13 @@ def cleanup_stale_temp_work(min_age_s: float = STALE_AGE_S) -> list[str]:
         now = time.time()
         for f in root.iterdir():
             try:
-                if not f.is_file(): continue
                 if now - f.stat().st_mtime < min_age_s: continue
+                if f.is_dir() and f.name.startswith("unsaved_"):
+                    import shutil
+                    shutil.rmtree(f, ignore_errors=True)
+                    out.append(f.name)
+                    continue
+                if not f.is_file(): continue
                 f.unlink(); out.append(f.name)
             except OSError as e:
                 log.warning("не удалось удалить старую рабочую копию %s: %s", f, e)
@@ -304,6 +309,11 @@ def recover(info_or_path, *, accept: bool) -> "ProjectSession":
         return ProjectSession._resume(src, Path(info["work_path"]), force_dirty=True)
     _discard_files(src, Path(info["work_path"]))
     return open_project(src)
+
+
+def create_unsaved_project(name=None) -> "ProjectSession":
+    """Пустой несохранённый проект (первое сохранение — save_as). name — имя файла без пути."""
+    return ProjectSession._unsaved(name)
 
 
 def create_project(path) -> "ProjectSession":
@@ -374,6 +384,9 @@ class ProjectSession:
         self._clean_total_changes = 0
         self._force_dirty = False
         self._photos_at_open: set[str] = set()
+        self.suggested_name: str | None = None
+        self.import_source_paths: list[Path] = []
+        self._owned_base_dir = False
 
     # ----- constructors -----
     @classmethod
@@ -381,6 +394,21 @@ class ProjectSession:
         s = cls()
         s.con = _db.connect(":memory:")
         s.base_dir = Path.cwd()
+        set_project_base_dir(s.con, s.base_dir)
+        s._mark_clean()
+        return s
+
+    @classmethod
+    def _unsaved(cls, name=None) -> "ProjectSession":
+        """Пустой несохранённый проект: source_path нет, своя временная base_dir."""
+        s = cls()
+        s.con = _db.connect(":memory:")
+        stem = Path(str(name)).stem if name else "проект"
+        s.suggested_name = f"{stem}.db"
+        root = Path(tempfile.gettempdir()) / WORK_TEMP_DIR
+        root.mkdir(parents=True, exist_ok=True)
+        s.base_dir = Path(tempfile.mkdtemp(prefix=f"unsaved_{stem}_", dir=str(root)))
+        s._owned_base_dir = True
         set_project_base_dir(s.con, s.base_dir)
         s._mark_clean()
         return s
@@ -480,6 +508,12 @@ class ProjectSession:
     def save_as(self, dest_path, *, overwrite: bool = False, commit_template: bool = False) -> dict:
         self._require_no_template_draft(commit_template)
         dest = Path(dest_path)
+        blocked = self._protected_save_target(dest)
+        if blocked is not None:
+            raise ValueError(
+                "нельзя сохранить проект поверх исходного файла Smart ID Designer "
+                f"(.csp, .csd или его базы данных):\n{blocked}"
+            )
         if self.work_path and dest.exists() and _same_path(dest, self.work_path):
             raise ValueError("нельзя сохранить поверх рабочей копии")
         if self.source_path and dest.exists() and _same_path(dest, self.source_path):
@@ -488,6 +522,7 @@ class ProjectSession:
             raise FileExistsError(dest)
         dest.parent.mkdir(parents=True, exist_ok=True)
         old_source, old_work, old_base = self.source_path, self.work_path, self.base_dir
+        old_owned = self._owned_base_dir
         r = self._write_source(dest, overwrite=overwrite or not dest.exists())
         # переключить сессию на новый исходник
         if old_source is None or old_source.parent.resolve() != dest.parent.resolve():
@@ -497,10 +532,11 @@ class ProjectSession:
                 _discard_files(old_source, old_work)
         self.source_path = dest.resolve()
         self.base_dir = self.source_path.parent
+        self._owned_base_dir = False
         work = default_work_path(self.source_path)
         if should_use_temp_work(self.base_dir):
             work = _temp_work_path(self.source_path)
-        if old_work and work != old_work:
+        if old_work is None or work != old_work:
             if self.con: self.con.close()
             _copy_db(dest, work)
             _hide_windows(work)
@@ -512,8 +548,33 @@ class ProjectSession:
         self._photos_at_open = self._list_photos()
         self._write_session()
         self._mark_clean()
+        if old_owned and old_base.resolve() != self.base_dir.resolve():
+            self._rm_owned_base_dir(old_base)
         r["path"] = self.source_path
         return r
+
+    def _protected_save_target(self, dest: Path) -> Path | None:
+        """Если dest совпадает с исходником импорта Smart ID — вернуть этот путь."""
+        for raw in self.import_source_paths or []:
+            if raw is None:
+                continue
+            src = Path(raw)
+            try:
+                if _same_path(dest, src):
+                    return src.resolve() if src.exists() else src
+            except OSError:
+                if os.path.normcase(os.path.realpath(dest)) == os.path.normcase(os.path.realpath(src)):
+                    return src
+        return None
+
+    def _rm_owned_base_dir(self, path: Path | None) -> None:
+        if not path:
+            return
+        import shutil
+        try:
+            shutil.rmtree(path, ignore_errors=True)
+        except OSError as e:
+            log.warning("не удалось удалить временный каталог проекта %s: %s", path, e)
 
     def _copy_asset_trees(self, old_base: Path, new_base: Path):
         if old_base.resolve() == new_base.resolve(): return
@@ -579,6 +640,9 @@ class ProjectSession:
         if self.source_path:
             _discard_files(self.source_path, self.work_path)
         self.work_path = None
+        if self._owned_base_dir:
+            self._rm_owned_base_dir(self.base_dir)
+            self._owned_base_dir = False
 
     def close(self, *, save: bool | None = None, commit_template: bool = False) -> None:
         """save=True — записать и закрыть; save=False — discard;
