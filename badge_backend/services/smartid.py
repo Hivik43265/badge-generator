@@ -747,22 +747,113 @@ def _resolved_import_sources(path) -> list[Path]:
     return out
 
 
-def import_smartid_as_new_project(path):
-    """Создать несохранённый проект и импортировать в него .csd или .csp.
+def looks_like_badge_db(path) -> bool:
+    """True, если path — база Badge Generator (наша схема).
 
-    Возвращает (ProjectSession, result), где result — как у import_smartid.
-    source_path пустой (первое сохранение — save_as); своя временная base_dir
-    для фонов и картинок. Сам файл проекта не пишет.
-    Для .csp сначала находит .csd и SQLite-базу (нет файла — FileNotFoundError
-    со всеми проверенными путями). Для .csd записи не импортируются.
+    write_csp записывает SQLiteDBPath/SQLiteDBName на нашу .db. В ней
+    PRAGMA user_version от 1 до LATEST и есть таблицы template_elements
+    и persons. Чужой .csp Smart ID указывает на их таблицу записей
+    (обычно user_version=0, наших таблиц нет).
     """
-    from .project_session import create_unsaved_project
+    import sqlite3
+    p = Path(path)
+    if not p.is_file():
+        return False
+    try:
+        con = sqlite3.connect(f"file:{p.resolve().as_posix()}?mode=ro", uri=True)
+    except (sqlite3.Error, OSError):
+        return False
+    try:
+        v = int(con.execute("PRAGMA user_version").fetchone()[0] or 0)
+        if not 1 <= v <= _db.LATEST:
+            return False
+        names = {r[0] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        return "template_elements" in names and "persons" in names
+    except (sqlite3.Error, TypeError, ValueError):
+        return False
+    finally:
+        con.close()
+
+
+def detect_own_csp_db(path):
+    """Если .csp ссылается на нашу .db — Path к ней, иначе None."""
+    p = Path(path)
+    try:
+        info = parse_csp(p)
+    except (OSError, FileNotFoundError, ValueError):
+        return None
+    try:
+        dbp = resolve_csp_db(info)
+    except FileNotFoundError:
+        return None
+    if not looks_like_badge_db(dbp):
+        return None
+    try:
+        return Path(dbp).resolve()
+    except OSError:
+        return Path(dbp)
+
+
+def _open_own_csp_project(db_path, *, recover=None):
+    from .project_session import open_project
+    session = open_project(db_path, recover=recover)
+    result = {
+        "kind": "own_project",
+        "template_id": _db.active_template_id(session.con),
+        "name": Path(db_path).stem,
+        "persons_imported": 0,
+        "source_path": session.source_path,
+        "report": {
+            "imported": [], "skipped": [], "guessed": [],
+            "warnings": [], "created_fields": [],
+            "opened_from_db": True,
+        },
+    }
+    return session, result
+
+
+def open_csd_or_csp(path, *, recover=None):
+    """Открыть .csd или .csp.
+
+    Свой .csp (рядом/в ссылке есть наша .db — см. detect_own_csp_db):
+    шаблон и записи берутся из .db, сессия сохранённая (source_path = .db,
+    base_dir = каталог проекта, без временного каталога).
+    Чужой .csp/.csd — как import_smartid_as_new_project: новый несохранённый
+    проект через импорт (.csd как макет).
+    Возвращает (ProjectSession, result); у своего проекта
+    result['kind'] == 'own_project', у импорта — 'import'.
+    """
     p = Path(path)
     if not p.is_file():
         raise FileNotFoundError(f"Файл не найден: {p}")
     suf = p.suffix.lower()
     if suf not in {".csd", ".csp"}:
         raise ValueError(f"ожидался файл .csd или .csp, получено {suf or p.name}")
+    if suf == ".csp":
+        own = detect_own_csp_db(p)
+        if own is not None:
+            return _open_own_csp_project(own, recover=recover)
+    return _import_smartid_as_unsaved(p)
+
+
+def import_smartid_as_new_project(path):
+    """Открыть .csd/.csp: свой .csp — сохранённый проект из .db, чужой — импорт.
+
+    Для чужого файла поведение прежнее: несохранённый проект (source_path
+    пустой, первое сохранение — save_as), временная base_dir, сам ничего
+    не пишет. Для .csp сначала находит .csd и SQLite-базу (нет файла —
+    FileNotFoundError со всеми проверенными путями). Для .csd записи
+    не импортируются.
+
+    Возвращает (ProjectSession, result). result как у import_smartid плюс
+    ключ kind: 'own_project' | 'import'.
+    """
+    return open_csd_or_csp(path)
+
+
+def _import_smartid_as_unsaved(p: Path):
+    from .project_session import create_unsaved_project
     sources = _resolved_import_sources(p)
     session = create_unsaved_project(p.stem)
     session.import_source_paths = sources
@@ -771,4 +862,6 @@ def import_smartid_as_new_project(path):
     except Exception:
         session.discard()
         raise
+    result = dict(result)
+    result["kind"] = "import"
     return session, result

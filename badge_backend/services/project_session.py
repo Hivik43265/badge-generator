@@ -3,6 +3,13 @@
 Рабочая копия: <имя>.db.work рядом с проектом (на Windows — скрытый) или
 %TEMP%/BadgeGenerator-work/… (нет прав / сетевой диск). Пути photos/ и фонов —
 от каталога исходника (con.bg_base_dir).
+
+Новый проект — тройка <имя>.csp + <имя>.csd + <имя>.db рядом, плюс photos/ и
+template_bg/. Эталон шаблона — наша .db; .csd нужен для совместимости со
+Smart ID Designer. Свой .csp (ссылается на нашу .db) открывается из .db как
+сохранённый проект. Чужой .csp/.csd — импорт в несохранённый проект.
+Старый проект из одной .db по-прежнему открывается; Save пишет только .db,
+«Сохранить как» превращает его в тройку.
 """
 from __future__ import annotations
 import json, os, socket, sqlite3, tempfile, time, logging
@@ -316,23 +323,87 @@ def create_unsaved_project(name=None) -> "ProjectSession":
     return ProjectSession._unsaved(name)
 
 
+def triple_paths(dest) -> tuple[Path, Path, Path]:
+    """Пути тройки (.csp, .csd, .db) для dest (.csp/.csd/.db/.sqlite или без суффикса).
+
+    Суффикс .sqlite/.sqlite3 сохраняется у файла базы; .csp/.csd нормализуются к .db.
+    """
+    dest = Path(dest)
+    suf = dest.suffix.lower()
+    if suf in {".csp", ".csd"}:
+        return dest.with_suffix(".csp"), dest.with_suffix(".csd"), dest.with_suffix(".db")
+    if suf in {".db", ".sqlite", ".sqlite3"}:
+        return dest.with_suffix(".csp"), dest.with_suffix(".csd"), dest
+    return Path(str(dest) + ".csp"), Path(str(dest) + ".csd"), Path(str(dest) + ".db")
+
+
+def _ensure_asset_dirs(base: Path) -> None:
+    for sub in ("photos", "template_bg"):
+        (base / sub).mkdir(parents=True, exist_ok=True)
+
+
 def create_project(path) -> "ProjectSession":
-    """Сразу создать пустой файл v7 по path и открыть сессию (dirty=False). Файл уже есть → FileExistsError."""
+    """Создать новый проект-тройку и открыть сессию (dirty=False).
+
+    Пишет <stem>.csp + <stem>.csd + <stem>.db (суффикс .sqlite сохраняется),
+    создаёт photos/ и template_bg/. Любой из трёх файлов уже есть → FileExistsError.
+    """
     path = Path(path)
-    if path.exists(): raise FileExistsError(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    c = _db.connect(str(path)); c.close()
-    return open_project(path)
+    csp, csd, db = triple_paths(path)
+    for cand in (path, csp, csd, db):
+        if cand.exists():
+            raise FileExistsError(cand)
+    db.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_asset_dirs(db.parent)
+    created: list[Path] = []
+    try:
+        c = _db.connect(str(db)); c.close()
+        created.append(db)
+        _write_new_project_sidecars(db, csd, csp)
+        created.extend((csd, csp))
+    except Exception:
+        for f in reversed(created):
+            try:
+                f.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
+    return open_project(db)
+
+
+def _write_new_project_sidecars(db: Path, csd: Path, csp: Path) -> None:
+    from .smartid_write import (
+        write_csd, write_csp, template_from_con, bundled_reference_csd,
+    )
+    con = _db.connect(str(db))
+    try:
+        tmpl = template_from_con(con, base_dir=db.parent)
+        ref = bundled_reference_csd()
+        write_csd(tmpl, csd, overwrite=False, reference_csd=ref, base_dir=db.parent)
+        names = [f["name"] for f in (tmpl.get("fields") or [])]
+        write_csp(csp, csd, db, overwrite=False, csd_fields=names, tbl_fields=names, template=tmpl)
+    finally:
+        con.close()
 
 
 def open_project(path, *, recover: bool | None = None, create: bool = False) -> "ProjectSession":
     """Открыть проект. path=':memory:' — без файла.
     recover=None и нужна развилка → RecoverableProjectError.
-    create=True — создать пустой v7, если файла нет."""
+    create=True — создать пустой проект-тройку, если файла нет.
+    path с суффиксом .csp/.csd — свой .csp открывается из нашей .db,
+    чужой .csp/.csd импортируется как несохранённый проект."""
     cleanup_stale_temp_work()
     if str(path) == ":memory:":
         return ProjectSession._memory()
     path = Path(path)
+    if path.suffix.lower() in {".csp", ".csd"}:
+        if not path.exists():
+            if create:
+                return create_project(path)
+            raise FileNotFoundError(path)
+        from .smartid import open_csd_or_csp
+        session, _ = open_csd_or_csp(path, recover=recover)
+        return session
     if str(path).endswith(".work"):
         path = Path(str(path)[:-5])  # project.db.work → project.db
     if not path.exists():
@@ -386,6 +457,9 @@ class ProjectSession:
         self._photos_at_open: set[str] = set()
         self.suggested_name: str | None = None
         self.import_source_paths: list[Path] = []
+        self.csp_path: Path | None = None
+        self.csd_path: Path | None = None
+        self.last_save_dropped: list[str] = []
         self._owned_base_dir = False
 
     # ----- constructors -----
@@ -430,6 +504,7 @@ class ProjectSession:
         except sqlite3.Error: pass
         set_project_base_dir(s.con, s.base_dir)
         s._photos_at_open = s._list_photos()
+        s._attach_sidecars()
         s._write_session()
         _remove_sidecars(source)
         s._mark_clean()
@@ -446,6 +521,7 @@ class ProjectSession:
         except sqlite3.Error: pass
         set_project_base_dir(s.con, s.base_dir)
         s._photos_at_open = s._list_photos()
+        s._attach_sidecars()
         s._force_dirty = force_dirty
         s._clean_total_changes = s.con.total_changes
         s._write_session()
@@ -503,28 +579,38 @@ class ProjectSession:
         if self.source_path is None:
             raise ValueError("нет файла проекта — используйте save_as")
         self._require_no_template_draft(commit_template)
-        return self._write_source(self.source_path, overwrite=True)
+        r = self._write_source(self.source_path, overwrite=True)
+        r.update(self._write_companions(self.source_path, overwrite=True, required=False))
+        return r
 
     def save_as(self, dest_path, *, overwrite: bool = False, commit_template: bool = False) -> dict:
         self._require_no_template_draft(commit_template)
-        dest = Path(dest_path)
-        blocked = self._protected_save_target(dest)
-        if blocked is not None:
-            raise ValueError(
-                "нельзя сохранить проект поверх исходного файла Smart ID Designer "
-                f"(.csp, .csd или его базы данных):\n{blocked}"
-            )
+        dest_in = Path(dest_path)
+        _csp, _csd, dest = triple_paths(dest_in)
+        for cand in (dest_in, dest, _csp, _csd):
+            blocked = self._protected_save_target(cand)
+            if blocked is not None:
+                raise ValueError(
+                    "нельзя сохранить проект поверх исходного файла Smart ID Designer "
+                    f"(.csp, .csd или его базы данных):\n{blocked}"
+                )
         if self.work_path and dest.exists() and _same_path(dest, self.work_path):
             raise ValueError("нельзя сохранить поверх рабочей копии")
-        if self.source_path and dest.exists() and _same_path(dest, self.source_path):
+        if self.source_path and (
+            (dest_in.exists() and _same_path(dest_in, self.source_path))
+            or (dest.exists() and _same_path(dest, self.source_path))
+        ):
             return self.save(commit_template=False)  # draft already committed if requested
-        if dest.exists() and not overwrite:
-            raise FileExistsError(dest)
+        exists = dest_in.exists() or dest.exists()
+        if exists and not overwrite:
+            raise FileExistsError(dest_in if dest_in.exists() else dest)
         dest.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_asset_dirs(dest.parent)
         old_source, old_work, old_base = self.source_path, self.work_path, self.base_dir
         old_owned = self._owned_base_dir
         r = self._write_source(dest, overwrite=overwrite or not dest.exists())
-        # переключить сессию на новый исходник
+        r.update(self._write_companions(dest, overwrite=True, required=True))
+        # переключить сессию на новый исходник (.db)
         if old_source is None or old_source.parent.resolve() != dest.parent.resolve():
             self._copy_asset_trees(old_base, dest.parent)
         if old_source and old_work:
@@ -546,6 +632,7 @@ class ProjectSession:
             except sqlite3.Error: pass
         set_project_base_dir(self.con, self.base_dir)
         self._photos_at_open = self._list_photos()
+        self._attach_sidecars()
         self._write_session()
         self._mark_clean()
         if old_owned and old_base.resolve() != self.base_dir.resolve():
@@ -566,6 +653,122 @@ class ProjectSession:
                 if os.path.normcase(os.path.realpath(dest)) == os.path.normcase(os.path.realpath(src)):
                     return src
         return None
+
+    def _attach_sidecars(self) -> None:
+        """Если рядом с нашей .db есть свой .csp — запомнить пути тройки."""
+        if not self.source_path:
+            return
+        from .smartid import detect_own_csp_db, parse_csp, resolve_csp_csd
+        csp = self.source_path.with_suffix(".csp")
+        if not csp.is_file():
+            return
+        own = detect_own_csp_db(csp)
+        if own is None:
+            return
+        try:
+            if not _same_path(own, self.source_path):
+                return
+        except OSError:
+            return
+        self.csp_path = csp.resolve()
+        try:
+            self.csd_path = resolve_csp_csd(parse_csp(csp)).resolve()
+        except (FileNotFoundError, OSError, ValueError):
+            csd = self.source_path.with_suffix(".csd")
+            self.csd_path = csd.resolve() if csd.is_file() else csd
+
+    def _has_triple(self) -> bool:
+        """True, если сессия уже привязана к своему .csp (не любой файл рядом)."""
+        return bool(self.csp_path and self.csd_path)
+
+    def _reference_csd(self):
+        """Исходный .csd импорта Smart ID или встроенный эталон."""
+        from .smartid import parse_csp, resolve_csp_csd
+        from .smartid_write import bundled_reference_csd
+        for raw in self.import_source_paths or []:
+            if raw is None:
+                continue
+            q = Path(raw)
+            try:
+                if q.is_file() and q.suffix.lower() == ".csd":
+                    return q
+            except OSError:
+                continue
+        for raw in self.import_source_paths or []:
+            if raw is None:
+                continue
+            q = Path(raw)
+            if not (q.is_file() and q.suffix.lower() == ".csp"):
+                continue
+            try:
+                csd = resolve_csp_csd(parse_csp(q))
+            except (FileNotFoundError, OSError, ValueError):
+                continue
+            if csd.is_file():
+                return csd
+        return bundled_reference_csd()
+
+    def _write_companions(self, dest_db: Path, *, overwrite: bool, required: bool) -> dict:
+        """Записать .csd/.csp рядом с dest_db.
+
+        required=False: для Save старого .db-проекта (нет тройки) — ничего не писать.
+        required=True: «Сохранить как» всегда пишет тройку.
+        Возвращает {"dropped": [...], "csd_path", "csp_path", "db_path"?}.
+        """
+        dest_db = Path(dest_db)
+        if not required and not self._has_triple():
+            self.last_save_dropped = []
+            return {"dropped": []}
+        csp, csd, db = triple_paths(dest_db)
+        if self.csp_path and self.csd_path and not required:
+            try:
+                if _same_path(dest_db, self.source_path):
+                    csp, csd = Path(self.csp_path), Path(self.csd_path)
+            except OSError:
+                pass
+        for cand in (csp, csd, db):
+            blocked = self._protected_save_target(cand)
+            if blocked is not None:
+                raise ValueError(
+                    "нельзя сохранить проект поверх исходного файла Smart ID Designer "
+                    f"(.csp, .csd или его базы данных):\n{blocked}"
+                )
+        from .smartid_write import (
+            write_csd, write_csp, template_from_con, SmartIdSourceProtectedError,
+        )
+        tmpl = template_from_con(
+            self.con, base_dir=self.base_dir,
+            import_source_paths=self.import_source_paths,
+        )
+        ref = self._reference_csd()
+        try:
+            wr = write_csd(
+                tmpl, csd, overwrite=overwrite,
+                import_source_paths=self.import_source_paths,
+                base_dir=self.base_dir, reference_csd=ref,
+            )
+            names = [f["name"] for f in (tmpl.get("fields") or [])]
+            wr2 = write_csp(
+                csp, csd, dest_db, overwrite=overwrite,
+                import_source_paths=self.import_source_paths,
+                csd_fields=names, tbl_fields=names, template=tmpl,
+            )
+        except SmartIdSourceProtectedError as e:
+            raise ValueError(
+                "нельзя сохранить проект поверх исходного файла Smart ID Designer "
+                f"(.csp, .csd или его базы данных):\n{e}"
+            ) from e
+        dropped = list(wr.get("dropped") or []) + list(wr2.get("dropped") or [])
+        self.csp_path = Path(wr2["path"]).resolve() if wr2.get("path") else csp.resolve()
+        self.csd_path = Path(wr["path"]).resolve() if wr.get("path") else csd.resolve()
+        self.last_save_dropped = dropped
+        return {
+            "dropped": dropped,
+            "csd_path": self.csd_path,
+            "csp_path": self.csp_path,
+            "db_path": dest_db,
+            "reference_csd": ref,
+        }
 
     def _rm_owned_base_dir(self, path: Path | None) -> None:
         if not path:

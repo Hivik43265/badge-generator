@@ -25,6 +25,9 @@ datas.append((_casc, os.path.join("cv2", "data")))
 datas.append((os.path.join(ROOT, "badge_backend", "assets", "selftest_face.jpg"), os.path.join("badge_backend", "assets")))
 # Запасные шрифты DejaVu (кириллица) → <_MEIPASS>/fonts (render/fonts.py сканирует этот каталог)
 datas.append((os.path.join(ROOT, "badge_backend", "assets", "fonts"), "fonts"))
+# Эталон .csd для записи макетов → <_MEIPASS>/badge_backend/assets/smartid/reference.csd
+datas.append((os.path.join(ROOT, "badge_backend", "assets", "smartid", "reference.csd"),
+              os.path.join("badge_backend", "assets", "smartid")))
 hidden = collect_submodules("badge_backend") + collect_submodules("barcode") + ["qrcode.image.pil"]
 # Этап 13 / D22: аудит hiddenimports. Модули ui/ импортируются статически из main_window (PyInstaller
 # находит их сам), но ленивые импорты внутри функций (QtMultimedia в main_view.camera_available /
@@ -139,3 +142,5 @@ with open(os.path.join(_dist, "BadgeGenerator.bundle.txt"), "w", encoding="utf-8
     f.write(f"{'FOUND' if _cv2_in else 'MISSING'}\tcv2\t{','.join(_cv2_in)}\n")
     _st_in = any(str(t[0]).replace("\\", "/").endswith("badge_backend/assets/selftest_face.jpg") for t in a_app.datas)
     f.write(f"{'FOUND' if _st_in else 'MISSING'}\tbadge_backend/assets/selftest_face.jpg\t\n")
+    _csd_in = any(str(t[0]).replace("\\", "/").endswith("badge_backend/assets/smartid/reference.csd") for t in a_app.datas)
+    f.write(f"{'FOUND' if _csd_in else 'MISSING'}\tbadge_backend/assets/smartid/reference.csd\t\n")

@@ -266,12 +266,16 @@ class BackendAPI:
             self.con.close(); self.con = None
 
     def import_smartid_as_new_project(self, path):
-        """Открыть .csd/.csp как новый несохранённый проект.
+        """Открыть .csd/.csp: свой .csp — сохранённый проект из .db, чужой — импорт.
 
-        Предыдущую сессию закрывает без записи. Возвращает (session, result),
-        где result — как у import_smartid (template_id, name, persons_imported, report).
+        Предыдущую сессию закрывает без записи. Возвращает (session, result);
+        result['kind'] == 'own_project' | 'import', плюс поля import_smartid.
         """
-        session, result = _api.import_smartid_as_new_project(path)
+        return self.open_csd_or_csp(path)
+
+    def open_csd_or_csp(self, path):
+        """То же, что import_smartid_as_new_project (единый фасад открытия)."""
+        session, result = _api.open_csd_or_csp(path)
         self.adopt_session(session)
         return session, result
 

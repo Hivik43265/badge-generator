@@ -287,16 +287,40 @@ def _note_dropped_style(obj: dict, st: dict, dropped: list, label: str) -> None:
 
 
 
+def bundled_reference_csd() -> Path | None:
+    """Встроенный эталон .csd: badge_backend/assets/smartid/reference.csd.
+
+    В exe (PyInstaller) ищется в <sys._MEIPASS>/badge_backend/assets/smartid/,
+    как шрифты в render/fonts.py — через _MEIPASS, иначе рядом с пакетом.
+    """
+    import sys
+    name = Path("badge_backend") / "assets" / "smartid" / "reference.csd"
+    cands: list[Path] = []
+    mei = getattr(sys, "_MEIPASS", None)
+    if mei:
+        root = Path(mei)
+        cands.append(root / name)
+        cands.append(root / "assets" / "smartid" / "reference.csd")
+    pkg = Path(__file__).resolve().parent.parent  # badge_backend
+    cands.append(pkg / "assets" / "smartid" / "reference.csd")
+    return _first_existing(cands)
+
+
 def default_reference_csd() -> Path | None:
-    """Демо-эталон tests/fixtures/license_to_firearms.csd относительно репозитория/пакета."""
+    """Эталон неизвестных байтов: встроенный ресурс, иначе tests/fixtures."""
+    found = bundled_reference_csd()
+    if found is not None:
+        return found
     name = Path("tests") / "fixtures" / "license_to_firearms.csd"
     here = Path(__file__).resolve()
-    seen: set[Path] = set()
-    cands = []
-    for parent in here.parents:
-        cands.append(parent / name)
+    cands = [parent / name for parent in here.parents]
     cands.append(Path("/workspace/smartid_samples/license_to_firearms.csd"))
     cands.append(Path.cwd() / name)
+    return _first_existing(cands)
+
+
+def _first_existing(cands) -> Path | None:
+    seen: set[Path] = set()
     for c in cands:
         try:
             key = c.resolve() if c.exists() else c
@@ -1023,4 +1047,6 @@ __all__ = [
     "write_csp",
     "template_from_con",
     "build_csd_bytes",
+    "bundled_reference_csd",
+    "default_reference_csd",
 ]
