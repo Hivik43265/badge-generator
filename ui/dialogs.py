@@ -1,8 +1,10 @@
 """Диалоги импорта, экспорта и печати.
 
 Импорт выполняется в GUI-потоке (соединение sqlite привязано к нему) с QProgressDialog и отменой.
-Экспорт/печать: missing_photos() + snapshot() в GUI-потоке → рабочий QThread вызывает
-*_from_snapshot / print_snapshot без соединения (работает и с :memory:).
+Экспорт: missing_photos() + snapshot() в GUI-потоке → рабочий QThread вызывает
+*_from_snapshot без соединения (работает и с :memory:).
+Печать: snapshot в GUI-потоке, print_snapshot тоже в GUI-потоке (QPrinter/QPainter
+нельзя уводить в QThread); прогресс — через processEvents.
 """
 import threading
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QEventLoop
@@ -440,7 +442,8 @@ class SnapshotWorker(QThread):
 
 
 def run_snapshot_job(parent, title, fn, *args, allow_missing_photo=False):
-    """Запустить worker с QProgressDialog (Отмена → progress вернёт False). Возвращает (result, error)."""
+    """Запустить worker с QProgressDialog (Отмена → progress вернёт False). Возвращает (result, error).
+    Только для экспорта (Pillow). Печать на QPrinter — через run_print_job в главном потоке."""
     pd = make_progress(parent, title, f"{title}…")
     w = SnapshotWorker(fn, *args, allow_missing_photo=allow_missing_photo)
     box = {"res": None, "err": None}
@@ -452,6 +455,23 @@ def run_snapshot_job(parent, title, fn, *args, allow_missing_photo=False):
     w.start(); loop.exec(); w.wait(); QApplication.processEvents()
     pd.close()
     return box["res"], box["err"]
+
+
+def run_print_job(parent, title, fn, *args, allow_missing_photo=False):
+    """Вызвать print_snapshot в GUI-потоке. QPrinter/QPainter нельзя уводить в QThread.
+    Прогресс и «Отмена» — тот же QProgressDialog, что у экспорта (processEvents, abort сохраняется)."""
+    pd = make_progress(parent, title, f"{title}…")
+    def cb(done, total):
+        pd.setMaximum(max(total, 1)); pd.setValue(done)
+        QApplication.processEvents()
+        return not pd.wasCanceled()
+    try:
+        res, err = fn(*args, progress=cb, allow_missing_photo=allow_missing_photo), None
+    except Exception as e:  # noqa: BLE001  (MissingPhotosError и др.)
+        res, err = None, e
+    pd.close()
+    QApplication.processEvents()
+    return res, err
 
 
 def describe_result(res, err, kind):
