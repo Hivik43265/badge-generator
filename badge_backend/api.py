@@ -475,4 +475,6 @@ from .services.project_session import (  # noqa: F401,E402
     open_project, create_project, recover, list_recoverable_sessions)
 from .services.template_file import export_template, import_template, preview_template_file  # noqa: F401,E402
 from .services.smartid import import_smartid, import_smartid_as_new_project  # noqa: F401,E402
+from .services.smartid_write import (  # noqa: F401,E402
+    write_csd, write_csp, SmartIdSourceProtectedError, template_from_con)
 from .render.fonts import list_fonts  # noqa: F401,E402
