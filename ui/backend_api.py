@@ -249,6 +249,23 @@ class BackendAPI:
     def render_preview(self, person, side="front", scale=0.5):
         return pil_to_qimage(_api.render_preview(self.con, person, side, scale, self.base_dir))
 
+    def gather_render_args(self, person, side="front"):
+        """GUI-поток: прочитать person / элементы / фон. Результат — аргументы render_card без con."""
+        from badge_backend.render import load_elements, load_background, load_photo_views
+        if isinstance(person, int):
+            row = _api.get_person(self.con, person)
+            if row is None:
+                raise KeyError(f"person {person} не найден")
+            person = dict(row)
+            if person.get("id") is not None:
+                person["photo_views"] = load_photo_views(self.con, person["id"])
+        elif person is not None:
+            person = dict(person)
+            if "photo_views" not in person and person.get("id") is not None:
+                person["photo_views"] = load_photo_views(self.con, person["id"])
+        return {"person": person, "elements": load_elements(self.con, side), "side": side,
+                "background": load_background(self.con, side), "base_dir": self.base_dir}
+
     # --- импорт (GUI-поток, соединение привязано к нему) ---
     def read_headers(self, path): return read_table(path)[0]
 
@@ -368,6 +385,50 @@ def apply_photo_edit(img, params):
     """Backend apply_photo_edit; нет функции → исходное изображение без изменений (UI сам не обрабатывает)."""
     fn = getattr(_api, "apply_photo_edit", None)
     return fn(img, dict(params)) if fn else img
+
+
+def render_card_mem(person, elements, side="front", background=None, base_dir=None):
+    """Чистый Backend render_card: без соединения SQLite (для воркера превью)."""
+    return _api.render_card(person, elements, side, background, base_dir)
+
+
+# как DETECT_MAX_SIDE в badge_backend.services.photo_edit (1480e2c)
+try:
+    from badge_backend.services.photo_edit import DETECT_MAX_SIDE as PREVIEW_MAX_SIDE
+except ImportError:
+    PREVIEW_MAX_SIDE = 800
+
+
+def preview_photo_edit(img, params, max_side=None):
+    """Превью редактора: apply_photo_edit по уменьшенной копии (макс. сторона max_side).
+
+    Возвращает (image, k), где координаты crop на превью = crop полного кадра * k.
+    Уменьшение — через _src_for_frame из 1480e2c (исходник заранее в размер выхода);
+    если её нет — через уменьшенный scale в apply_photo_edit (без Pillow в UI).
+    """
+    max_side = int(max_side or PREVIEW_MAX_SIDE)
+    params = {**dict(params or {}), "crop": None}
+    src_max = max(img.width, img.height) or 1
+    sc = float(params.get("scale") or 100)
+    out_max = src_max * sc / 100.0
+    if out_max <= max_side:
+        return apply_photo_edit(img, params), 1.0
+    tw = max(1, round(img.width * sc / 100.0 * max_side / out_max))
+    th = max(1, round(img.height * sc / 100.0 * max_side / out_max))
+    src_fn = None
+    try:
+        from badge_backend.services.photo_edit import _src_for_frame, normalize_params
+        src_fn = _src_for_frame
+    except ImportError:
+        src_fn = None
+    if src_fn is not None:
+        work, p = src_fn(img, normalize_params(params), tw, th)
+        out = apply_photo_edit(work, {**p, "crop": None})
+        k = work.width / img.width if img.width else 1.0
+        return out, (k if k > 0 else 1.0)
+    preview_scale = max(10, min(400, round(max_side / src_max * 100)))
+    k = (preview_scale / sc) if sc else 1.0
+    return apply_photo_edit(img, {**params, "scale": int(preview_scale)}), k
 
 
 def detect_face_crop(img, aspect):

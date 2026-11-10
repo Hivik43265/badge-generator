@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QGraphicsView, Q
                              QInputDialog, QFileDialog, QColorDialog, QScrollArea, QSizePolicy, QListWidget, QListWidgetItem)
 from .stage15 import UNLINKED_COLOR, PHOTO_FIELD_LABEL, PHOTO_FIELD_TYPE
 from .backend_api import BackendAPI, CARD_W_PX, CARD_H_PX, TYPE_NAMES, SIDE_NAMES, person_caption
+from .preview_jobs import RenderCardJob, RenderSignals, render_pool
 
 SIDE_LABELS = SIDE_NAMES
 NEW_FIELD = "Новое поле…"
@@ -177,6 +178,10 @@ class LayoutEditor(QWidget):
         self.template_mode = False       # этап 15 п.2: вне режима шаблона элементы заблокированы
         self.show_render = True          # «Рендер под рамками» — переключается действием ленты
         self.person_label = QLabel("Запись на холсте: пустой шаблон"); self.person_label.setWordWrap(True)
+        self._bg_item = None
+        self._render_gen = 0
+        self._render_signals = RenderSignals(self)
+        self._render_signals.finished.connect(self._on_canvas_rendered)
         self.selection_actions = []      # действия ленты, активные только при выделенном объекте
 
         self.warn = QLabel(); self.warn.setWordWrap(True); self.warn.setStyleSheet("color:#c00;")
@@ -292,12 +297,16 @@ class LayoutEditor(QWidget):
 
     def load(self, side, select_id=None):
         self.side = side; self.current = None
+        self._render_gen += 1
+        self._bg_item = None
         self.scene.clear(); self.hint = None
         if self.show_render:
             pid = self.person_id if self.person_id is not None and self.api.get_person(self.person_id) else None
             self.person_id = pid
-            self.canvas_image = self.api.render_card(pid, side)          # рендер Backend
-            bg = self.scene.addPixmap(QPixmap.fromImage(self.canvas_image))
+            ph = QPixmap(CARD_W_PX, CARD_H_PX); ph.fill(QColor("#FFFFFF"))
+            self._bg_item = self.scene.addPixmap(ph)
+            bg = self._bg_item
+            self._start_canvas_render(pid, side)
         else:
             b = self.api.get_background(side) or {"color": "#FFFFFF"}
             bg = self.scene.addRect(QRectF(0, 0, CARD_W_PX, CARD_H_PX), QPen(Qt.PenStyle.NoPen), QBrush(QColor(b["color"])))
@@ -336,16 +345,38 @@ class LayoutEditor(QWidget):
         self.warn.setText(msg)
         self.status.emit(msg or f"Макет ({SIDE_LABELS[self.side]}): пересечений нет")
 
-    def set_person(self, person_id):
-        """Показать на холсте рендер выбранной записи (None — пустой шаблон)."""
-        self.person_id = person_id
+    def _set_person_meta(self, person_id):
+        """Запомнить выбранную запись и подпись, без пересборки элементов и без рендера."""
         p = self.api.get_person(person_id) if person_id is not None else None
-        if p:
-            name = person_caption(self.api, p).strip()
-        else:
-            name = "пустой шаблон"
+        self.person_id = person_id if p is not None else None
+        name = person_caption(self.api, p).strip() if p else "пустой шаблон"
         self.person_label.setText(f"Запись на холсте: {name}")
-        self.load(self.side, self.current.el["id"] if self.current else None)
+        return self.person_id
+
+    def set_person(self, person_id):
+        """Показать на холсте рендер выбранной записи (None — пустой шаблон).
+        Элементы не пересобираются: load() только при смене шаблона/стороны."""
+        pid = self._set_person_meta(person_id)
+        if self.show_render and self.isVisible():
+            self._start_canvas_render(pid, self.side)
+
+    def _start_canvas_render(self, person_id, side):
+        self._render_gen += 1
+        gen = self._render_gen
+        try:
+            payload = self.api.gather_render_args(person_id, side)
+        except KeyError:
+            payload = self.api.gather_render_args(None, side)
+        render_pool().start(RenderCardJob(gen, payload, self._render_signals))
+
+    def _on_canvas_rendered(self, gen, result, side):
+        if gen != self._render_gen or side != self.side:
+            return
+        if isinstance(result, Exception):
+            return
+        self.canvas_image = result
+        if self._bg_item is not None:
+            self._bg_item.setPixmap(QPixmap.fromImage(result))
 
     def items(self):
         return [i for i in self.scene.items() if isinstance(i, ElementItem)]

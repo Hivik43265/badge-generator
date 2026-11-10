@@ -13,7 +13,7 @@ from PyQt6.QtGui import QPen, QColor, QPixmap, QAction, QTransform, QPainterPath
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QSlider, QSpinBox, QCheckBox,
                              QPushButton, QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsPixmapItem, QFrame)
 from .backend_api import (pil_to_qimage, PHOTO_EDIT_DEFAULTS, photo_edit_available, face_detect_available,
-                          open_image, apply_photo_edit, apply_photo_view, detect_face_crop,
+                          open_image, apply_photo_edit, apply_photo_view, preview_photo_edit, detect_face_crop,
                           NO_TARGET_FN, NO_TARGET,
                           portrait_params, autoeffect_params)
 
@@ -126,7 +126,7 @@ class PhotoEditor(QDialog):
         self.field_name, self.person_id, self.session = field_name, person_id, session   # session — Backend PhotoSession формы
         self.element_id, self._autoeffect_baked = element_id, False
         self.target, self.aspect, self.target_error, self._editor_state = None, None, None, None
-        self._crop, self._live_preview = None, False
+        self._crop, self._live_preview, self._prev_k = None, False, 1.0
         if person_id is not None and api is not None and hasattr(api, "get_photo_editor_state"):
             try:
                 eid = element_id
@@ -336,7 +336,7 @@ class PhotoEditor(QDialog):
             pp = self.params(crop=False)
             if getattr(self, "_autoeffect_baked", False): pp = {**pp, "autoeffect": False}
             # crop не вшиваем в пиксели — иначе рамка становится декоративной ~80% поверх уже обрезанного кадра
-            self.img = apply_photo_edit(self.src, {**pp, "crop": None})
+            self.img, self._prev_k = preview_photo_edit(self.src, {**pp, "crop": None})
         except ValueError as e:
             self.status.setText(f"Ошибка правки: {e}"); return False
         if self.status.text().startswith("Ошибка правки") or self.target_error == _FREE_FRAME:
@@ -349,7 +349,8 @@ class PhotoEditor(QDialog):
             self.frame.set_bounds(b)
             if self._crop:
                 x, y, w, h = self._crop
-                r = QRectF(x, y, w, h).intersected(b)
+                k = self._k()
+                r = QRectF(x * k, y * k, w * k, h * k).intersected(b)
                 if r.width() >= 1 and r.height() >= 1: self.frame.setRect(r)
                 else: self.reset_frame()
             elif not b.contains(self.frame.rect()):
@@ -373,21 +374,28 @@ class PhotoEditor(QDialog):
         if self.frame is None: self.frame = CropFrame(r, self.aspect, b); self.scene.addItem(self.frame)
         else: self.frame.set_bounds(b); self.frame.setRect(r)
 
+    def _k(self):
+        """Масштаб превью относительно полного кадра после scale/rotate (фикстуры ≤800 px → 1.0)."""
+        k = getattr(self, "_prev_k", 1.0) or 1.0
+        return k if k > 0 else 1.0
+
     def crop(self):
-        """Текущий кадр: из пунктирной рамки (она же попадает на карточку), иначе сохранённый _crop."""
+        """Текущий кадр в координатах полного изображения (после EXIF/scale/rotate), не пиксели превью."""
         if self.frame is not None:
-            r = self.frame.rect()
-            self._crop = (int(round(r.x())), int(round(r.y())), int(round(r.width())), int(round(r.height())))
+            r = self.frame.rect(); k = self._k()
+            self._crop = (int(round(r.x() / k)), int(round(r.y() / k)),
+                          int(round(r.width() / k)), int(round(r.height() / k)))
             return self._crop
         return self._crop
 
     def set_crop(self, x, y, w, h):
-        """crop Backend: px после EXIF, масштаба и вращения — совпадает с пунктирной рамкой на превью."""
+        """crop Backend: px после EXIF, масштаба и вращения — на превью рамка = crop * k."""
         self._crop = (int(x), int(y), int(w), int(h))
         if self.frame is None: self.reset_frame()
         if self.frame is not None:
+            k = self._k()
             self.frame.set_bounds(self.scene.sceneRect())
-            self.frame.setRect(QRectF(self._crop[0], self._crop[1], self._crop[2], self._crop[3]))
+            self.frame.setRect(QRectF(self._crop[0] * k, self._crop[1] * k, self._crop[2] * k, self._crop[3] * k))
 
     def find_face(self):
         if self.src is None or self.frame is None or self.aspect is None: return False
@@ -396,7 +404,7 @@ class PhotoEditor(QDialog):
         if not box:
             self.portrait.blockSignals(True); self.portrait.setChecked(False); self.portrait.blockSignals(False)
             self.status.setText("Лицо не найдено" + (f" ({self.base_status})" if not face_detect_available() else "")); return False
-        self.set_crop(*box); self.status.setText(self.base_status); return True
+        k = self._k(); self.set_crop(*tuple(int(round(v / k)) for v in box)); self.status.setText(self.base_status); return True
 
     # ---- применить ----
     def apply(self):
@@ -409,9 +417,10 @@ class PhotoEditor(QDialog):
         if self.api is None:
             self.status.setText("Применить нельзя: нет открытого проекта"); return False
         p = self.params()
-        # проверка crop/параметров без записи файла (тот же apply_photo_edit, что превью)
+        if getattr(self, "_autoeffect_baked", False):
+            p = {**p, "autoeffect": False}
         try:
-            apply_photo_edit(self.src, {**p, "autoeffect": False} if getattr(self, "_autoeffect_baked", False) else p)
+            self._validate_view(p)
         except ValueError as e:
             self.status.setText(f"Вид не сохранён: {e}"); return False
         try:
@@ -423,6 +432,24 @@ class PhotoEditor(QDialog):
         except ValueError as e:
             self.status.setText(f"Вид не сохранён: {e}"); return False
         self.accept(); return True
+
+    def _validate_view(self, p):
+        """Проверить пересечение crop с кадром после scale/rotate без LANCZOS на полном снимке."""
+        crop = p.get("crop")
+        if not crop or self.src is None:
+            return
+        import math
+        sc = (p.get("scale") or 100) / 100.0
+        w, h = self.src.width * sc, self.src.height * sc
+        rot = float(p.get("rotate") or 0)
+        if rot:
+            a = abs(rot) * math.pi / 180.0
+            c, s = abs(math.cos(a)), abs(math.sin(a))
+            w, h = w * c + h * s, w * s + h * c
+        x, y, cw, ch = crop
+        l, t, r, b = max(0, x), max(0, y), min(w, x + cw), min(h, y + ch)
+        if r <= l or b <= t:
+            raise ValueError(f"crop {crop} вне изображения ({max(1, int(round(w)))}, {max(1, int(round(h)))})")
 
 
 def make_edit_action(parent, slot):

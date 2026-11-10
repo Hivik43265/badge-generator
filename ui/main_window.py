@@ -3,7 +3,7 @@
 используют те же QAction. Вкладка ленты «База данных» показывает таблицу записей, остальные — редактор."""
 import os
 from pathlib import Path
-from PyQt6.QtCore import QSettings, Qt
+from PyQt6.QtCore import QSettings, Qt, QTimer, QThreadPool
 from PyQt6.QtGui import QAction, QActionGroup, QKeySequence
 from PyQt6.QtWidgets import (QMainWindow, QFileDialog, QMessageBox, QInputDialog, QSplitter, QMenu, QStackedWidget,
                              QWidget, QVBoxLayout, QWidgetAction, QSpinBox, QLabel, QHBoxLayout, QColorDialog, QComboBox)
@@ -124,6 +124,8 @@ class MainWindow(QMainWindow):
         le.status.connect(self._editor_changed)
         le.cursor_moved.connect(lambda x, y: self.pos_label.setText(f"X: {x:.1f}  Y: {y:.1f} мм"))
         le.scene.selectionChanged.connect(self._sync_selection)
+        self._sel_timer = QTimer(self, singleShot=True, interval=0, timeout=self._apply_record_selection)
+        self._suspend_sel = False
         self.records.view.selectionModel().selectionChanged.connect(lambda *_: self._on_record_selected())
         self.records.model.modelReset.connect(self._on_record_selected)
         self.records.model.queue_toggle_requested.connect(self._checkbox_queue)
@@ -458,8 +460,20 @@ class MainWindow(QMainWindow):
         return ids[0] if ids else None
 
     def _on_record_selected(self):
+        if self._suspend_sel:
+            return
+        self._sel_timer.start()
+
+    def _apply_record_selection(self):
         pid = self.selected_person_id()
-        self.preview_panel.set_person(pid); self.layout_editor.set_person(pid); self._sync_selection()
+        db = self.stack.currentWidget() is self.db_page
+        if db:
+            self.preview_panel.set_person(pid)
+            self.layout_editor._set_person_meta(pid)
+        else:
+            self.layout_editor.set_person(pid)
+            self.preview_panel.person_id = pid
+        self._sync_selection()
 
     def _select_person(self, pid):
         r = self.records.model.row_of(pid)
@@ -765,7 +779,19 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"БД: {self.api.db_path}; база путей фото: {self.api.base_dir}")
 
     def refresh_all(self):
-        self.records.reload(); self.layout_editor.reload(); self.preview_panel.refresh(); self._on_record_selected()
+        self._suspend_sel = True
+        try:
+            self.records.reload()
+        finally:
+            self._suspend_sel = False
+        pid = self.selected_person_id()
+        if self.stack.currentWidget() is self.layout_editor:
+            self.layout_editor._set_person_meta(pid)
+            self.layout_editor.reload()
+            self.preview_panel.person_id = pid
+        else:
+            self.layout_editor._set_person_meta(pid)
+            self.preview_panel.set_person(pid)
         self.sync_template_style(); self._update_title()
 
     def _open_api(self, path):
@@ -894,4 +920,5 @@ class MainWindow(QMainWindow):
             self.api.session = None; self.api.con = None
         self.save_layout()          # расположение окна сохраняется автоматически
         if self._own_api and getattr(self.api, "con", None) is not None: self.api.close()
+        QThreadPool.globalInstance().waitForDone(8000)
         super().closeEvent(ev)
