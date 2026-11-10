@@ -41,7 +41,8 @@ QHeaderView::section { background:#EEF2F1; padding:4px; border:0; border-right:1
 """
 HELP_TEXT = ("Лента: «Файл» — проект и данные; «Главная» — буфер и сторона; «Рисование» — объекты и стиль;\n"
              "«Редактировать» — история, объект, порядок; «Просмотр» — масштаб и сетка; «База данных» — записи,\n"
-             "фильтр, печать и метки. Правый клик по холсту, списку элементов или таблице — те же команды.")
+             "фильтр, печать и метки. Правый клик по холсту или таблице — те же команды. "
+             "Alt+клик по холсту выбирает следующий объект под курсором.")
 
 
 class StrokeWidthAction(QWidgetAction):
@@ -303,17 +304,14 @@ class MainWindow(QMainWindow):
         le = self.layout_editor
         # клавиши, конфликтующие с вводом текста, действуют только в своём виджете (тот же QAction)
         for a, w in ((self.act_queue_toggle, self.records.view), (self.act_card_edit, self.records.view),
-                     (self.act_card_delete, self.records.view), (self.act_delete_element, le.view),
-                     (self.act_delete_element, le.el_list)):
+                     (self.act_card_delete, self.records.view), (self.act_delete_element, le.view)):
             self.removeAction(a); w.addAction(a); a.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.canvas_menu_actions = [self.act_cut, self.act_copy, self.act_paste, self.act_duplicate, None,
                                     self.act_delete_element, self.act_position, self.act_align, self.act_z_up, self.act_z_down,
                                     None, self.act_background]
-        self.list_menu_actions = [self.act_cut, self.act_copy, self.act_duplicate, None, self.act_delete_element,
-                                  self.act_position, self.act_z_up, self.act_z_down]
         self.table_menu_actions = [self.act_card_add, self.act_card_edit, self.act_card_delete, None, self.act_queue_toggle,
                                    self.act_mark_printed, self.act_mark_unprinted, None, self.act_print]
-        for w, acts in ((le.view, self.canvas_menu_actions), (le.el_list, self.list_menu_actions),
+        for w, acts in ((le.view, self.canvas_menu_actions),
                         (self.records.view, self.table_menu_actions)):
             w.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             w.customContextMenuRequested.connect(lambda pos, w=w, acts=acts: self._popup(w, acts, pos))
@@ -324,9 +322,6 @@ class MainWindow(QMainWindow):
         return m
 
     def _popup(self, w, acts, pos):
-        if w is self.layout_editor.el_list:
-            it = w.itemAt(pos)
-            if it: self.layout_editor.select(it.data(Qt.ItemDataRole.UserRole))
         self.context_menu(acts).popup(w.mapToGlobal(pos))
 
     def all_actions(self):

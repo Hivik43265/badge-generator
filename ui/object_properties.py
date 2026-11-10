@@ -76,7 +76,7 @@ def _border_style(st):
     v = st.get("border_style")
     if v in ("none", "solid", "dash", "dot"):
         return v
-    if st.get("stroke"):
+    if st.get("stroke") or st.get("border_color") or st.get("border_width"):
         return "solid"
     return "none"
 
@@ -237,6 +237,8 @@ class ObjectPropertiesPanel(QWidget):
         self._row(self.g_border, "Стиль", self.w_bstyle)
         self._row(self.g_border, "Ширина", self.w_bwidth)
         self._row(self.g_border, "Цвет", self.w_bcolor)
+        self.w_radius = _mm_spin(0.0, 50.0)
+        self.row_radius = self._row(self.g_border, "Радиус, мм", self.w_radius)
 
         self.g_bg = self._group("Background")
         self.w_fill_on = QComboBox(); self.w_fill_on.addItems(["Нет", "Да"])
@@ -311,8 +313,10 @@ class ObjectPropertiesPanel(QWidget):
         self.w_bcolor.changed.connect(lambda *_: self._apply_border())
         self.w_fill_on.activated.connect(self._apply_background)
         self.w_fill_color.changed.connect(lambda *_: self._apply_background())
-        self.w_fsize.editingFinished.connect(self._apply_font)
-        self.w_fsize.valueChanged.connect(self._apply_font)
+        self._font_timer = QTimer(self, singleShot=True, interval=300, timeout=self._apply_font)
+        self.w_fsize.valueChanged.connect(lambda: None if self._loading else self._font_timer.start())
+        self._radius_timer = QTimer(self, singleShot=True, interval=300, timeout=self._apply_radius)
+        self.w_radius.valueChanged.connect(lambda: None if self._loading else self._radius_timer.start())
         self.w_fcolor.changed.connect(lambda *_: self._apply_font())
         self.w_ffamily.activated.connect(self._apply_font)
         self.w_field.activated.connect(self._apply_binding)
@@ -325,7 +329,7 @@ class ObjectPropertiesPanel(QWidget):
         self.w_z.editingFinished.connect(self._apply_z)
         self._style_timer = QTimer(self, singleShot=True, interval=700, timeout=self._apply_json)
         self.w_style.textChanged.connect(lambda: None if self._loading else self._style_timer.start())
-        self._text_timer = QTimer(self, singleShot=True, interval=400, timeout=self._apply_text)
+        self._text_timer = QTimer(self, singleShot=True, interval=300, timeout=self._apply_text)
         self.w_text.textChanged.connect(lambda: None if self._loading else self._text_timer.start())
 
     def expand_all(self, extra=False):
@@ -361,11 +365,19 @@ class ObjectPropertiesPanel(QWidget):
             enabled = cur is not None
             self.tree.setEnabled(enabled)
             if not enabled:
+                self._font_timer.stop()
+                self._radius_timer.stop()
+                self._font_eid = None
                 self.w_type.setText("—")
                 return
             e = {**cur.el, **cur.geometry()}
             t = e.get("type")
             st = e.get("style") or {}
+            eid = e.get("id")
+            if getattr(self, "_font_eid", None) != eid:
+                self._font_timer.stop()
+                self._radius_timer.stop()
+            self._font_eid = eid
             from .layout_editor import element_caption
             self.w_type.setText(element_caption(e, getattr(ed, "labels", {})))
 
@@ -389,8 +401,11 @@ class ObjectPropertiesPanel(QWidget):
             tmpl = bool(getattr(ed, "template_mode", False))
             locked = bool(st.get("locked"))
             movable = tmpl and not locked
-            for w in (self.w_left, self.w_top, self.w_width, self.w_height, self.w_rot):
+            is_line = t == "line"
+            for w in (self.w_left, self.w_top, self.w_width, self.w_height):
                 w.setReadOnly(not movable)
+            self.w_rot.setEnabled(not is_line)
+            self.w_rot.setReadOnly(is_line or not movable)
             self.w_page.setEnabled(movable)
             self.w_lock.setEnabled(tmpl)
             # Текст можно править вне режима шаблона; блокирует только style.locked
@@ -404,12 +419,17 @@ class ObjectPropertiesPanel(QWidget):
                 self.w_bstyle.setCurrentIndex(bi)
             self.w_bwidth.setValue(stored_to_mm(_border_width_stored(st)))
             self.w_bcolor.set_color(_border_color(st))
+            if not self._radius_timer.isActive():
+                self.w_radius.setValue(stored_to_mm(int(st.get("radius", 0) or 0)))
+            self.row_radius.setHidden(t != "rect")
+            self.w_radius.setEnabled(t == "rect")
 
             self.w_fill_on.setCurrentIndex(1 if _bg_fill(st) else 0)
             self.w_fill_color.set_color(_bg_color(st))
 
             self._fill_families(st)
-            self.w_fsize.setValue(int(st.get("font_size", 8 if t == "barcode" else 14)))
+            if not self._font_timer.isActive():
+                self.w_fsize.setValue(int(st.get("font_size", 8 if t == "barcode" else 14)))
             self.w_fcolor.set_color(st.get("color") or "#000000")
 
             from .stage15 import PHOTO_FIELD_LABEL, PHOTO_FIELD_TYPE
@@ -513,6 +533,7 @@ class ObjectPropertiesPanel(QWidget):
 
     def _write_element(self, **changes):
         ed = self.editor
+        reload = changes.pop("reload", True)
         if not ed.current:
             return False
         blocked = {"x", "y", "w", "h", "side"}
@@ -529,7 +550,9 @@ class ObjectPropertiesPanel(QWidget):
         except Exception as e:
             _warn(self, "Ошибка", f"Backend отклонил изменения: {e}")
             return False
-        ed.load(changes.get("side", ed.side), eid)
+        ed.current.el.update(changes)
+        if reload:
+            ed.load(changes.get("side", ed.side), eid)
         return True
 
     def _write_style(self, **keys):
@@ -603,7 +626,7 @@ class ObjectPropertiesPanel(QWidget):
 
     def _apply_geometry(self):
         if self._loading or not self.editor.current:
-            return
+            return False
         x, y = mm_to_stored(self.w_left.value()), mm_to_stored(self.w_top.value())
         w, h = mm_to_stored(self.w_width.value()), mm_to_stored(self.w_height.value())
         t = self.editor.current.el.get("type")
@@ -611,11 +634,16 @@ class ObjectPropertiesPanel(QWidget):
         if err:
             _warn(self, "Размер", err)
             self.sync()
-            return
-        self._write_element(x=x, y=y, w=w, h=h)
+            return False
+        cur = self.editor.current.el
+        if all(cur.get(k) == v for k, v in (("x", x), ("y", y), ("w", w), ("h", h))):
+            return True
+        return bool(self._write_element(x=x, y=y, w=w, h=h))
 
     def _apply_rotation(self):
         if self._loading or not self.editor.current:
+            return
+        if self.editor.current.el.get("type") == "line":
             return
         if not self._can_move():
             self.sync()
@@ -639,6 +667,19 @@ class ObjectPropertiesPanel(QWidget):
         if self._loading or not self.editor.current:
             return
         self._write_style(**self._style_payload_border())
+
+    def _radius_stored(self):
+        return max(0, int(mm_to_stored(self.w_radius.value())))
+
+    def _apply_radius(self, *_):
+        if self._loading or not self.editor.current:
+            return
+        if self.editor.current.el.get("type") != "rect":
+            return
+        val = self._radius_stored()
+        if int(_style_of(self.editor.current.el).get("radius") or 0) == val:
+            return
+        self._write_style(radius=val)
 
     def _apply_background(self, *_):
         if self._loading or not self.editor.current:
@@ -684,6 +725,7 @@ class ObjectPropertiesPanel(QWidget):
             format=self.w_format.currentData() or "code128",
             show_text=self.w_show_text.isChecked(),
             quiet_zone=int(self.w_quiet.value()),
+            symbology=None,
         )
 
     def _apply_qr(self, *_):
@@ -787,6 +829,8 @@ class ObjectPropertiesPanel(QWidget):
                 style_keys["stroke_width"] = v
         if "border_width" in values:
             style_keys["border_width"] = int(values["border_width"])
+        if "radius" in values:
+            style_keys["radius"] = max(0, int(values["radius"]))
         if "rotation" in values:
             style_keys["rotation"] = float(values["rotation"])
         if "locked" in values:
@@ -799,22 +843,74 @@ class ObjectPropertiesPanel(QWidget):
         self.sync()
         return ok
 
+    def flush(self):
+        """Сразу применить отложенные правки (таймеры шрифта, радиуса, текста, JSON)."""
+        for timer in (self._font_timer, self._radius_timer, self._text_timer, self._style_timer):
+            if timer.isActive():
+                timer.stop()
+                timer.timeout.emit()
+
     def commit_all(self):
         """Применить текущие виджеты (совместимость с apply_props)."""
         if not self.editor.current:
             return False
-        if self.editor.current.el.get("type") == "text":
+        self.flush()
+        ed = self.editor
+        t = ed.current.el.get("type")
+        x, y = mm_to_stored(self.w_left.value()), mm_to_stored(self.w_top.value())
+        w, h = mm_to_stored(self.w_width.value()), mm_to_stored(self.w_height.value())
+        err = ed.validate_size(t, w, h)
+        if err:
+            _warn(self, "Размер", err)
+            self.sync()
+            return False
+        if t == "text":
             self._apply_text()
-        self._apply_geometry()
-        if self.editor.current:
-            self._write_style(
-                rotation=float(self.w_rot.value()),
-                locked=bool(self.w_lock.isChecked()),
-                **self._style_payload_border(),
-                **self._style_payload_bg(),
-                font_size=int(self.w_fsize.value()),
-                color=self.w_fcolor.color_hex() or "#000000",
+        geom = dict(x=x, y=y, w=w, h=h)
+        if t in ("field", "barcode", "qr", "photo", "image"):
+            from .layout_editor import NEW_FIELD
+            name = self.w_field.currentText()
+            if name == NEW_FIELD:
+                name = ed._new_field()
+                if not name:
+                    self.sync()
+                    return False
+            geom["field_name"] = name or None
+            geom["static_value"] = self.w_static.text() or None
+        cur = ed.current.el
+        need_geom = any(cur.get(k) != v for k, v in geom.items())
+        if need_geom and not self._write_element(reload=False, **geom):
+            return False
+        style_keys = dict(
+            locked=bool(self.w_lock.isChecked()),
+            **self._style_payload_border(),
+            **self._style_payload_bg(),
+            font_size=int(self.w_fsize.value()),
+            color=self.w_fcolor.color_hex() or "#000000",
+        )
+        fam = self.w_ffamily.currentText()
+        if fam:
+            style_keys["font_family"] = fam
+        if t != "line":
+            style_keys["rotation"] = float(self.w_rot.value())
+        if t == "rect":
+            style_keys["radius"] = self._radius_stored()
+        if t == "barcode":
+            style_keys.update(
+                format=self.w_format.currentData() or "code128",
+                show_text=self.w_show_text.isChecked(),
+                quiet_zone=int(self.w_quiet.value()),
+                symbology=None,
             )
+        if t == "qr":
+            style_keys.update(
+                error_correction=self.w_ec.currentText() or "M",
+                border=int(self.w_qborder.value()),
+            )
+        if not self._write_style(**style_keys):
+            return False
+        if ed.current:
+            ed.load(ed.side, ed.current.el["id"])
         return True
 
 
@@ -829,3 +925,7 @@ class ObjectPropertiesDock(QDockWidget):
         self.setWidget(self.panel)
         self.setMinimumWidth(280)
         self.resize(320, 640)
+
+    def flush(self):
+        """Прокси к панели: сразу применить отложенные правки."""
+        self.panel.flush()

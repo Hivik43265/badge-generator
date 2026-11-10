@@ -7,13 +7,13 @@ update_element / delete_element / set_background.
 """
 import json
 import os
-from PyQt6.QtCore import Qt, QRectF, pyqtSignal, QObject, QTimer
+from PyQt6.QtCore import Qt, QRectF, pyqtSignal, QObject, QTimer, QEvent
 from PyQt6.QtGui import QBrush, QColor, QPen, QPainter, QPixmap, QAction, QFont
-from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QGraphicsView, QGraphicsScene,
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QGraphicsView, QGraphicsScene,
                              QGraphicsRectItem, QGraphicsSimpleTextItem, QGraphicsItem, QGroupBox,
                              QFormLayout, QLabel, QComboBox, QPushButton, QSpinBox, QLineEdit,
                              QPlainTextEdit, QMessageBox, QCheckBox, QToolButton, QGridLayout,
-                             QInputDialog, QFileDialog, QColorDialog, QScrollArea, QSizePolicy, QListWidget, QListWidgetItem)
+                             QInputDialog, QFileDialog, QColorDialog, QSizePolicy)
 from .stage15 import UNLINKED_COLOR, PHOTO_FIELD_LABEL, PHOTO_FIELD_TYPE
 from .backend_api import (
     BackendAPI, CARD_W_PX, CARD_H_PX, TYPE_NAMES, SIDE_NAMES,
@@ -186,22 +186,10 @@ class LayoutEditor(QWidget):
         self.show_render = True          # «Рендер под рамками» — переключается действием ленты
         self.selection_actions = []      # действия ленты, активные только при выделенном объекте
 
-        self.warn = QLabel(); self.warn.setWordWrap(True); self.warn.setStyleSheet("color:#c00;")
-
         self._loading = False
 
-        right = QVBoxLayout()
         self.mode_banner = QLabel("Режим создания шаблона: расставьте элементы на карточке вручную и выберите поля; сохранение — «✓ Сохранить шаблон» на ленте"); self.mode_banner.setStyleSheet(
             "background:#2E7D6B; color:white; font-weight:600; padding:3px 8px;"); self.mode_banner.hide(); self.mode_banner.setWordWrap(True)
-        # Список элементов — только для выбора (перекрытые объекты); своих кнопок нет,
-        # контекстное меню строит главное окно на тех же QAction ленты.
-        self.el_list = QListWidget(); self.el_list.setMaximumHeight(140)
-        self.el_list.itemClicked.connect(lambda it: self.select(it.data(Qt.ItemDataRole.UserRole)))
-        right.addWidget(QLabel("Элементы стороны:")); right.addWidget(self.el_list)
-        right.addWidget(self.warn); right.addStretch()
-        inner = QWidget(); inner.setLayout(right)
-        rw = QScrollArea(); rw.setWidget(inner); rw.setWidgetResizable(True); rw.setMinimumWidth(260)
-        self.panel = rw
         self.view.setMouseTracking(True); self.view.viewport().setMouseTracking(True)
         self.view.viewport().installEventFilter(self)
         self.hruler, self.vruler = Ruler(self, True), Ruler(self, False)
@@ -209,14 +197,13 @@ class LayoutEditor(QWidget):
         corner = QLabel("мм"); corner.setFixedSize(Ruler.T, Ruler.T); corner.setStyleSheet("font-size:8px; background:#F1F3F2;")
         g.addWidget(corner, 0, 0); g.addWidget(self.hruler, 0, 1); g.addWidget(self.vruler, 1, 0); g.addWidget(self.view, 1, 1)
         self.canvas_box = cw
-        left = QVBoxLayout(); left.setContentsMargins(0, 0, 0, 0); left.setSpacing(0); left.addWidget(self.mode_banner); left.addWidget(cw, 1)
-        lay = QHBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0); lay.addLayout(left, 1); lay.addWidget(rw)
+        lay = QVBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(0)
+        lay.addWidget(self.mode_banner); lay.addWidget(cw, 1)
         self.load("front")
 
     cursor_moved = pyqtSignal(float, float)
 
     def eventFilter(self, obj, ev):
-        from PyQt6.QtCore import QEvent
         if obj is self.view.viewport() and ev.type() == QEvent.Type.MouseMove:
             p = self.view.mapToScene(ev.position().toPoint())
             if uses_grid_units():
@@ -225,7 +212,29 @@ class LayoutEditor(QWidget):
                 self.cursor_moved.emit(p.x() * MM_PER_PX, p.y() * MM_PER_PX)
         if obj is self.view.viewport() and ev.type() in (QEvent.Type.Paint,):
             self.hruler.update(); self.vruler.update()
+        if (obj is self.view.viewport()
+                and ev.type() == QEvent.Type.MouseButtonPress
+                and ev.button() == Qt.MouseButton.LeftButton
+                and ev.modifiers() & Qt.KeyboardModifier.AltModifier):
+            self.cycle_select_at(self.view.mapToScene(ev.position().toPoint()))
+            return True
         return False
+
+    def elements_at(self, pos):
+        """Элементы под точкой сцены, сверху вниз по z (для Alt+клика)."""
+        return sorted(
+            (i for i in self.scene.items(pos) if isinstance(i, ElementItem)),
+            key=lambda i: (-i.zValue(), -(i.el.get("z_order") or 0), i.el["id"]),
+        )
+
+    def cycle_select_at(self, pos):
+        """Выбрать следующий элемент под точкой (по кругу)."""
+        hits = self.elements_at(pos)
+        if not hits:
+            return None
+        cur = self.current
+        nxt = hits[(hits.index(cur) + 1) % len(hits)] if cur in hits else hits[0]
+        return self.select(nxt.el["id"])
 
     def set_rulers(self, on):
         self.hruler.setVisible(on); self.vruler.setVisible(on)
@@ -237,7 +246,7 @@ class LayoutEditor(QWidget):
         if side != self.side: self.load(side)
 
     def select(self, eid):
-        """Выбор объекта по id (список элементов, панель полей): выделяет объект на холсте."""
+        """Выбор объекта по id (холст, панель полей, Alt+клик): выделяет объект на холсте."""
         for i in self.items(): i.setSelected(i.el["id"] == eid)
         return self.current
 
@@ -283,13 +292,10 @@ class LayoutEditor(QWidget):
         self.labels = {f["name"]: f.get("label") for f in fields}
         self._fill_fields(fields)
         els = self.api.list_elements(side)
-        self.el_list.clear()
         for el in els:
             it = ElementItem(el, self.bus, self.labels); self.scene.addItem(it)
             self._apply_item_flags(it)
-            li = QListWidgetItem(f"#{el['id']} {element_caption(el, self.labels)}"); li.setData(Qt.ItemDataRole.UserRole, el["id"])
-            self.el_list.addItem(li)
-            if el["id"] == select_id: it.setSelected(True); li.setSelected(True)
+            if el["id"] == select_id: it.setSelected(True)
         if not els:   # подсказка — только оформление редактора, в рендер не попадает
             self.hint = QGraphicsSimpleTextItem(EMPTY_HINT)
             f = QFont(); f.setPointSize(22); self.hint.setFont(f); self.hint.setBrush(QBrush(QColor(120, 120, 120, 160)))
@@ -309,7 +315,6 @@ class LayoutEditor(QWidget):
             elif (it.el.get("style") or {}).get("locked"):
                 it.setPen(QPen(QColor("#B8860B"), 2, Qt.PenStyle.DashLine))
         msg = ("Внимание: элементы пересекаются (" + ", ".join(f"#{a}×#{b}" for a, b in self.overlaps) + ")") if self.overlaps else ""
-        self.warn.setText(msg)
         self.status.emit(msg or f"Макет ({SIDE_LABELS[self.side]}): пересечений нет")
 
     def refresh_render(self):
@@ -383,9 +388,6 @@ class LayoutEditor(QWidget):
         sel = [i for i in self.scene.selectedItems() if isinstance(i, ElementItem)]
         self.current = sel[0] if sel else None
         for a in self.selection_actions: a.setEnabled(bool(sel))
-        cur = self.current.el["id"] if sel else None
-        for r in range(self.el_list.count()):
-            it = self.el_list.item(r); it.setSelected(it.data(Qt.ItemDataRole.UserRole) == cur)
         op = getattr(self, "object_props", None)
         if op is not None: op.sync()
 

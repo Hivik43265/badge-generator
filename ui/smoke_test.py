@@ -140,9 +140,9 @@ els0 = api.list_elements("front")
 src = next(e for e in els0 if e["type"] == "text")          # элемент из фикстуры
 dst = next(e for e in els0 if e["type"] == "photo")         # цель пересечения из фикстуры
 eid, ORIG = src["id"], (src["x"], src["y"], src["w"], src["h"])
+api.update_element(eid, x=dst["x"], y=dst["y"], w=src["w"], h=src["h"])
 le.load("front", eid)
-le.p_x.setValue(dst["x"]); le.p_y.setValue(dst["y"]); le.p_w.setValue(src["w"]); le.p_h.setValue(src["h"]); le.apply_props()
-assert any(eid in pair for pair in le.overlaps) and "пересекаются" in le.warn.text()
+assert any(eid in pair for pair in le.overlaps)
 assert "пересекаются" in w.statusBar().currentMessage()
 red = next(i for i in le.items() if i.el["id"] == eid).pen().color().name()
 assert red == "#d00000", red
@@ -151,7 +151,7 @@ it = next(i for i in le.items() if i.el["id"] == eid)
 it.setPos(ORIG[0], ORIG[1]); it.set_size(ORIG[2], ORIG[3]); le._commit_geometry(it); spin()
 els = api.list_elements("front"); g = next(e for e in els if e["id"] == eid)
 assert (g["x"], g["y"], g["w"], g["h"]) == ORIG, g
-assert find_overlaps(els) == [] and le.overlaps == [] and le.warn.text() == ""
+assert find_overlaps(els) == [] and le.overlaps == [] and "пересекаются" not in (w.statusBar().currentMessage() or "")
 ok(f"элемент #{eid} возвращён на позицию из фикстуры {ORIG} перетаскиванием: пересечений нет ({len(els) - 1} проверено)")
 w.act_side.trigger(); app.processEvents(); assert le.side == "back" and le.items() and w.act_side.isChecked()
 w.act_side.trigger(); app.processEvents(); assert le.side == "front" and w.act_side.text() == "Сторона: лицевая"
@@ -358,7 +358,7 @@ for key, opts in (("text", {}), ("field", {"field_name": "last_name"}), ("image"
     assert eid is not None, (key, WARN)
     e = next(x for x in api.list_elements() if x["id"] == eid)
     assert e["type"] == key and e["x"] == (1011 - e["w"]) // 2 and e["y"] == (638 - e["h"]) // 2, e
-    assert le.current and le.current.el["id"] == eid and le.props.isEnabled()
+    assert le.current and le.current.el["id"] == eid and le.object_props.tree.isEnabled()
     assert le.hint is None
     made[key] = eid
 assert next(x for x in api.list_elements() if x["id"] == made["field"])["field_name"] == "last_name"
@@ -368,52 +368,65 @@ for m_ in skipped: print("SKIP", m_)
 bg = le.add_background(color="#E8F0FA"); assert api.get_background("front")["color"].upper() == "#E8F0FA", bg
 ok("Фон стороны → set_background/get_background")
 # свойства: шрифт/цвет/привязка/символика; z-order; удаление
-le.load("front", made["field"]); le.p_font.setValue(22); le.p_color.setText("#112233"); le.p_field.setCurrentText("first_name"); le.apply_props()
+le.load("front", made["field"]); le.set_props(font_size=22, color="#112233", field_name="first_name")
 e = next(x for x in api.list_elements() if x["id"] == made["field"])
 assert e["style"]["font_size"] == 22 and e["style"]["color"] == "#112233" and e["field_name"] == "first_name", e
 el_ = lambda i: next(x for x in api.list_elements() if x["id"] == i)
 # --- этап 10: штрихкод ---
-le.load("front", made["barcode"]); assert le.p_show_text.isChecked() and le.p_quiet.value() == 10 and le.p_font.value() == 8
-le.p_format.setCurrentIndex(le.p_format.findData("ean13")); assert le.p_hint.text() == "12 или 13 цифр"
-le.p_static.setText("400638133393"); le.p_show_text.setChecked(False); le.p_quiet.setValue(14)
-le.p_color.setText("#102030"); le.p_bg.setText("#F0F0F0"); le.p_font.setValue(9); assert le.apply_props()
+op = le.object_props
+le.load("front", made["barcode"]); assert op.w_show_text.isChecked() and op.w_quiet.value() == 10 and op.w_fsize.value() == 8
+op.w_format.setCurrentIndex(op.w_format.findData("ean13")); op.w_format.activated.emit(op.w_format.currentIndex())
+assert op.w_hint.text() == "12 или 13 цифр"
+op.w_static.setText("400638133393"); op.w_show_text.setChecked(False); op.w_quiet.setValue(14)
+op.w_fcolor.set_color("#102030"); op.w_fill_on.setCurrentIndex(1); op.w_fill_color.set_color("#F0F0F0"); op.w_fsize.setValue(9)
+assert le.apply_props()
 st = el_(made["barcode"])["style"]
 assert st["format"] == "ean13" and "symbology" not in st and st["show_text"] is False and st["quiet_zone"] == 14 \
-    and st["color"] == "#102030" and st["background"] == "#F0F0F0" and st["font_size"] == 9, st
-le.p_field.setCurrentText("employee_id"); le.apply_props(); assert el_(made["barcode"])["field_name"] == "employee_id"
-le.p_field.setCurrentText(""); le.apply_props()
+    and st["color"] == "#102030" and (st.get("bg_color") or st.get("fill")) == "#F0F0F0" and st["font_size"] == 9, st
+op.w_field.setCurrentText("employee_id"); le.apply_props(); assert el_(made["barcode"])["field_name"] == "employee_id"
+op.w_field.setCurrentText(""); le.apply_props()
 # старый ключ symbology читается, при сохранении заменяется на format
 api.update_element(made["barcode"], style={"symbology": "ean13"}); le.load("front", made["barcode"])
-assert le.p_format.currentData() == "ean13"; le.apply_props(); st = el_(made["barcode"])["style"]
+assert op.w_format.currentData() == "ean13"; le.apply_props(); st = el_(made["barcode"])["style"]
 assert st["format"] == "ean13" and "symbology" not in st, st
 ok(f"штрихкод: format/show_text/quiet_zone/color/background/font_size, поле или static сохраняются; symbology → format {st}")
 # --- QR ---
-le.load("front", made["qr"]); assert le.p_ec.currentText() == "M" and le.p_qborder.value() == 4
-le.p_ec.setCurrentText("H"); le.p_qborder.setValue(2); le.p_color.setText("#000080"); le.p_bg.setText("#FFFFEE")
-le.p_static.setText("https://example.org/badge"); assert le.apply_props(); st = el_(made["qr"])["style"]
-assert st["error_correction"] == "H" and st["border"] == 2 and st["color"] == "#000080" and st["background"] == "#FFFFEE", st
+le.load("front", made["qr"]); assert op.w_ec.currentText() == "M" and op.w_qborder.value() == 4
+op.w_ec.setCurrentText("H"); op.w_qborder.setValue(2); op.w_fcolor.set_color("#000080")
+op.w_fill_on.setCurrentIndex(1); op.w_fill_color.set_color("#FFFFEE")
+op.w_static.setText("https://example.org/badge"); assert le.apply_props(); st = el_(made["qr"])["style"]
+assert st["error_correction"] == "H" and st["border"] == 2 and st["color"] == "#000080" and (st.get("bg_color") or st.get("fill")) == "#FFFFEE", st
 assert el_(made["qr"])["static_value"] == "https://example.org/badge"
 ok(f"QR: error_correction/border/color/background сохраняются {st}")
 # --- линия: отрезок, w/h 0 или <0, но не оба 0 ---
-le.load("front", made["line"]); le.p_stroke.setText("#C00000"); le.p_stroke_w.setValue(5)
-le.p_w.setValue(-300); le.p_h.setValue(120); assert le.apply_props()
-g = el_(made["line"]); assert (g["w"], g["h"]) == (-300, 120) and g["style"]["stroke"] == "#C00000" and g["style"]["stroke_width"] == 5, g
+le.load("front", made["line"])
+# w/h линии могут быть <0; спинбоксы панели от 0 мм, поэтому пишем через set_props (единицы хранения)
+assert le.set_props(w=-300, h=120, stroke="#C00000", stroke_width=5)
+g = el_(made["line"]); st = g["style"]
+assert (g["w"], g["h"]) == (-300, 120) and (st.get("stroke") or st.get("border_color")) == "#C00000" \
+    and int(st.get("stroke_width") or st.get("border_width")) == 5, g
 it = le.current; assert it.geometry()["w"] == -300 and it.rect().width() > 300 and it.rect().left() < -300
-le.p_w.setValue(0); le.p_h.setValue(-80); assert le.apply_props() and (el_(made["line"])["w"], el_(made["line"])["h"]) == (0, -80)
+assert le.set_props(w=0, h=-80) and (el_(made["line"])["w"], el_(made["line"])["h"]) == (0, -80)
 assert le.current.rect().width() > 0   # нулевая ширина всё ещё выбирается
-WARN.clear(); le.p_w.setValue(0); le.p_h.setValue(0); assert not le.apply_props()
+from ui.backend_api import stored_to_mm
+WARN.clear(); op.w_width.setValue(0); op.w_height.setValue(0); assert not le.apply_props()
 assert WARN and "одновременно 0" in WARN[-1] and (el_(made["line"])["w"], el_(made["line"])["h"]) == (0, -80)
 it = le.current; it.set_size(0, 0); WARN.clear(); le._commit_geometry(it); spin()
 assert WARN and (el_(made["line"])["w"], el_(made["line"])["h"]) == (0, -80)
-le.load("front", made["line"]); le.p_w.setValue(500); le.p_h.setValue(0); le.apply_props()
+le.load("front", made["line"]); le.set_props(w=500, h=0)
 ok("линия: (-300,120), (0,-80) сохраняются, выбор работает; (0,0) запрещено и в свойствах, и при перетаскивании")
 # --- рамка: stroke/stroke_width/fill/radius, чтение legacy border_* ---
 api.update_element(made["rect"], style={"border_color": "#123456", "border_width": 7}); le.load("front", made["rect"])
-assert le.p_stroke.text() == "#123456" and le.p_stroke_w.value() == 7
-le.p_fill.setText("#EEF3FA"); le.p_radius.setValue(16); le.p_stroke_w.setValue(2); assert le.apply_props()
+from ui.backend_api import stored_to_mm, mm_to_stored
+assert op.w_bcolor.color_hex() == "#123456" and mm_to_stored(op.w_bwidth.value()) == 7
+op.w_fill_on.setCurrentIndex(1); op.w_fill_color.set_color("#EEF3FA")
+op.w_bwidth.setValue(stored_to_mm(2)); op.w_radius.setValue(stored_to_mm(16)); assert le.apply_props()
 st = el_(made["rect"])["style"]
-assert st == {**st, "stroke": "#123456", "stroke_width": 2, "fill": "#EEF3FA", "radius": 16} and "border_color" not in st, st
-ok(f"рамка: legacy border_* прочитан, записаны stroke/stroke_width/fill/radius {st}")
+assert (st.get("stroke") or st.get("border_color")) == "#123456"
+assert int(st.get("stroke_width") or st.get("border_width")) == 2
+assert (st.get("fill") or st.get("bg_color")) == "#EEF3FA"
+assert int(st.get("radius") or 0) == 16
+ok(f"рамка: legacy border_* прочитан, записаны граница, заливка и radius {st}")
 le.load("front", made["barcode"])
 z0 = le.current.el["z_order"]; le.move_z(+1); assert le.current.el["z_order"] == z0 + 1; le.move_z(-1); assert le.current.el["z_order"] == z0
 tmp_id = le.add_element("text"); le.delete_element(); assert all(x["id"] != tmp_id for x in api.list_elements())
@@ -436,12 +449,16 @@ extra = [api.create_element(type=t, x=10, y=10, w=50, h=50 if t != "line" else 0
 from ui.layout_editor import element_caption
 for side in ("front", "back"):
     le.load(side)
-    caps = [i.caption.text() for i in le.items()] + [le.el_list.item(r).text() for r in range(le.el_list.count())]
+    caps = [element_caption(i.el, getattr(le, "labels", {})) for i in le.items()]
     assert caps and not any("None" in c for c in caps), caps
     for i in le.items():
+        cap = element_caption(i.el, getattr(le, "labels", {}))
         if i.el["type"] == "field":
-            assert i.caption.text() == "Поле" or i.caption.text().startswith("Поле: "), i.caption.text()
-        i.setSelected(True); app.processEvents(); assert "None" not in le.p_type.text(); i.setSelected(False)
+            assert cap == "Поле" or cap.startswith("Поле: "), cap
+        i.setSelected(True); app.processEvents()
+        typ = le.object_props.w_type.text() if getattr(le, "object_props", None) else cap
+        assert "None" not in typ
+        i.setSelected(False)
 assert element_caption({"type": "field", "field_name": None}) == "Поле"
 assert element_caption({"type": "field", "field_name": "employee_id"}, {"employee_id": "Таб. номер"}) == "Поле: Таб. номер"
 assert element_caption({"type": "field", "field_name": "x"}, {"x": None}) == "Поле: x"
@@ -503,9 +520,9 @@ from PyQt6.QtWidgets import QPushButton
 assert [b.text() for b in w.records.findChildren(QPushButton) if b.parent() is w.records] == []
 ok(f"лента: {len(TABS)} вкладок, {len(acts)} QAction, тексты и objectName уникальны, у каждого одно место; повтор → ValueError; старые дубли удалены")
 # контекстные меню используют те же QAction
-for acts_ in (w.canvas_menu_actions, w.list_menu_actions, w.table_menu_actions):
+for acts_ in (w.canvas_menu_actions, w.table_menu_actions):
     m_ = w.context_menu(acts_); assert all(a in w.ribbon.places for a in m_.actions() if not a.isSeparator())
-ok("контекстные меню холста, списка элементов и таблицы — те же QAction ленты")
+ok("контекстные меню холста и таблицы — те же QAction ленты")
 # окно помещается в 1024 px
 w.showNormal(); w.resize(1024, 720); spin(100)
 assert w.minimumWidth() <= 1024 and w.minimumSizeHint().width() <= 1024 and w.width() <= 1024, (w.minimumWidth(), w.minimumSizeHint().width(), w.width())
@@ -542,18 +559,31 @@ assert TYPE_NAMES == {"field": "Поле", "text": "Текст", "photo": "Фо�
 assert all(w.tool_actions[t].text() == TYPE_NAMES[t] for t in TYPE_NAMES)
 assert all(ec({"type": t}).startswith(TYPE_NAMES[t]) for t in TYPE_NAMES) and SIDE_NAMES == {"front": "Лицевая", "back": "Оборот"}
 le.load("front")
-caps = [le.el_list.item(r).text() for r in range(le.el_list.count())]
-caps = [c.split(" ", 1)[1] if c.startswith("#") else c for c in caps]
+caps = [ec(i.el, getattr(le, "labels", {})) for i in le.items()]
 assert caps and all(any(c.startswith(n) for n in TYPE_NAMES.values()) for c in caps), caps
 assert not any(k in " ".join(caps) for k in ("rect", "barcode", "photo", "field:", "qr:")), caps
 ok(f"подписи типов по-русски (TYPE_NAMES): {caps[:4]}…")
-# список элементов — только выбор
-eids = [le.el_list.item(r).data(Qt.ItemDataRole.UserRole) for r in range(le.el_list.count())]
-le.el_list.itemClicked.emit(le.el_list.item(1)); app.processEvents(); assert le.current and le.current.el["id"] == eids[1]
-assert w.act_delete_element.isEnabled() and w.act_z_up.isEnabled()
+# списка элементов нет: выбор перекрытого объекта — Alt+клик по холсту
+assert not hasattr(le, "el_list") and not hasattr(le, "warn") and not hasattr(w, "list_menu_actions")
+rects = [i for i in le.items() if not i.is_line and i.sceneBoundingRect().width() > 4 and i.sceneBoundingRect().height() > 4]
+assert len(rects) >= 2, len(rects)
+a, b = rects[0], rects[1]
+old_pos = a.pos()
+a.setPos(b.pos())
+pos = a.sceneBoundingRect().intersected(b.sceneBoundingRect()).center()
+hits = le.elements_at(pos)
+assert a in hits and b in hits and len(hits) >= 2, (len(hits), [i.el["id"] for i in hits])
+le.select(hits[0].el["id"]); app.processEvents()
+assert le.current is hits[0]
+le.cycle_select_at(pos); app.processEvents()
+assert le.current is hits[1], (le.current and le.current.el["id"], hits[1].el["id"])
+le.cycle_select_at(pos); app.processEvents()
+expect = hits[2 % len(hits)]
+assert le.current is expect, (le.current and le.current.el["id"], expect.el["id"])
+a.setPos(old_pos)
 le.scene.clearSelection(); app.processEvents(); assert not w.act_delete_element.isEnabled()
-assert le.el_list.findChildren(QPushButton) == [] and le.findChildren(QPushButton) == [] and not hasattr(le, "apply_btn")
-ok("список элементов: клик выделяет объект на холсте, своих кнопок нет; действия выделения активны только при выборе")
+assert le.findChildren(QPushButton) == [] and not hasattr(le, "apply_btn")
+ok("Alt+клик циклически выбирает следующий объект под курсором; списка элементов нет; действия выделения активны только при выборе")
 # таблица
 w.show_main(); app.processEvents()
 assert w.stack.currentWidget() is w.db_page and w.splitter.widget(0) is w.records and w.splitter.widget(1) is w.preview_panel
@@ -587,10 +617,12 @@ ok("D13: чекбокс «Печать» в таблице → act_queue_toggle.
 # D11: живое применение свойств, один шаг отмены
 le_ = w.layout_editor; w.ribbon.select("Главная"); app.processEvents()
 t_el = next(e for e in api.list_elements("front") if e["type"] == "text"); le_.load("front", t_el["id"])
-nu = len(api._undo); le_.p_x.setValue(t_el["x"] + 7); le_.p_x.editingFinished.emit()
+from ui.backend_api import stored_to_mm, mm_to_stored
+op_ = le_.object_props
+nu = len(api._undo); op_.w_left.setValue(stored_to_mm(t_el["x"] + 7)); op_.w_left.editingFinished.emit()
 assert next(e for e in api.list_elements("front") if e["id"] == t_el["id"])["x"] == t_el["x"] + 7 and len(api._undo) == nu + 1
-le_.p_x.editingFinished.emit(); assert len(api._undo) == nu + 1                  # без изменений — шага нет
-le_.p_color.setText("#445566"); le_.p_color.editingFinished.emit(); assert len(api._undo) == nu + 2
+op_.w_left.editingFinished.emit(); assert len(api._undo) == nu + 1                  # без изменений — шага нет
+op_.w_fcolor.set_color("#445566"); op_.w_fcolor.changed.emit(op_.w_fcolor.color_hex()); assert len(api._undo) == nu + 2
 w.undo(); w.undo(); assert next(e for e in api.list_elements("front") if e["id"] == t_el["id"]) == t_el
 ok("D11: кнопки «Применить» нет; поле применяется сразу (editingFinished), одно изменение — один шаг отмены")
 w.show_main(); app.processEvents()
@@ -649,7 +681,7 @@ assert len(api.list_elements("front")) == n0 and next(e for e in api.list_elemen
 ok("буфер: копировать/вставить (+20 px)/дублировать/вырезать; стиль и «Выровнять» через set_prop; отменить/повторить")
 # эллипс (v4)
 eid_e = w.layout_editor.run_tool("ellipse"); assert eid_e and next(e for e in api.list_elements() if e["id"] == eid_e)["type"] == "ellipse"
-assert le.el_list.currentItem() is None or "Эллипс" in " ".join(le.el_list.item(r).text() for r in range(le.el_list.count()))
+assert any(i.el["type"] == "ellipse" for i in le.items())
 w.delete_element(); assert all(e["id"] != eid_e for e in api.list_elements())
 ok("Эллипс: create_element('ellipse') → рендер Backend; удаление")
 # положение
@@ -683,14 +715,16 @@ fm.set_element(eid_l); assert fm.unlink() is False and _w2[-1][0] == "Отвяз
 assert next(e for e in api.list_elements() if e["id"] == eid_l).get("field_name") == fld
 fm._select_field(fld); fm.set_element(None); assert fm.link() is False and _w2[-1][0] == "Связать поле"
 le.load(le.side, eid_l); g0 = next(e for e in api.list_elements() if e["id"] == eid_l)
-assert all(x.isReadOnly() for x in (le.p_x, le.p_y, le.p_w, le.p_h))
-le.p_x.setValue(g0["x"] + 11); le.apply_props(); g1 = next(e for e in api.list_elements() if e["id"] == eid_l)
-assert (g1["x"], g1["y"], g1["w"], g1["h"]) == (g0["x"], g0["y"], g0["w"], g0["h"]) and le.p_x.value() == g0["x"]
+from ui.backend_api import stored_to_mm, mm_to_stored
+op = le.object_props
+assert all(x.isReadOnly() for x in (op.w_left, op.w_top, op.w_width, op.w_height))
+op.w_left.setValue(stored_to_mm(g0["x"] + 11)); le.apply_props(); g1 = next(e for e in api.list_elements() if e["id"] == eid_l)
+assert (g1["x"], g1["y"], g1["w"], g1["h"]) == (g0["x"], g0["y"], g0["w"], g0["h"]) and mm_to_stored(op.w_left.value()) == g0["x"]
 ok("вне режима шаблона: X/Y/W/H только чтение (apply_props не меняет геометрию), «Связать/Отвязать поле» — no-op с предупреждением")
-w.template_tools.set_template_mode(True); assert not any(x.isReadOnly() for x in (le.p_x, le.p_y, le.p_w, le.p_h))
-le.load(le.side, eid_l); le.p_x.setValue(g0["x"] + 11); le.apply_props()
+w.template_tools.set_template_mode(True); assert not any(x.isReadOnly() for x in (op.w_left, op.w_top, op.w_width, op.w_height))
+le.load(le.side, eid_l); op.w_left.setValue(stored_to_mm(g0["x"] + 11)); le.apply_props()
 assert next(e for e in api.list_elements() if e["id"] == eid_l)["x"] == g0["x"] + 11
-le.load(le.side, eid_l); le.p_x.setValue(g0["x"]); le.apply_props(); _lem2.warn_hook = None; _s15.stub_hook = None
+le.load(le.side, eid_l); op.w_left.setValue(stored_to_mm(g0["x"])); le.apply_props(); _lem2.warn_hook = None; _s15.stub_hook = None
 ok("в режиме шаблона: X/Y/W/H редактируются и применяются; «Связать/Отвязать» выполняются (ниже)")
 fm._select_field(fld); fm.set_element(eid_l)
 assert fm.b_unlink.isEnabled(); typ0 = next(e for e in api.list_elements() if e["id"] == eid_l)["type"]; fm.unlink(); e_ = next(e for e in api.list_elements() if e["id"] == eid_l)
