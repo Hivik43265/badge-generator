@@ -34,7 +34,7 @@ def wait_previews(app):
 
 def scenario(tmp, chk, out, EXC):
     from badge_backend import api as B
-    from .backend_api import BackendAPI
+    from .backend_api import BackendAPI, CARD_W_UNITS, CARD_H_UNITS
     from .main_window import MainWindow
     def spin(ms=30):
         l = QEventLoop(); QTimer.singleShot(ms, l.quit); l.exec()
@@ -71,10 +71,13 @@ def scenario(tmp, chk, out, EXC):
         c = B.connect(str(path))
         if with_fields:
             for i, (n, l) in enumerate((("last_name", "Фамилия"), ("first_name", "Имя"), ("faculty", "Факультет"))): B.upsert_field(c, n, l, i)
+        W, H = int(CARD_W_UNITS), int(CARD_H_UNITS)
         for fn, y, h in (("last_name", 40, 120), ("first_name", 200, 100), ("faculty", 330, 90)):
-            B.create_element(c, "field", 40, y, 900, h, field_name=fn)
-        B.create_element(c, "rect", 20, 20, 970, 600, style={"stroke": "#000", "stroke_width": 2})
-        B.create_element(c, "ellipse", 800, 450, 150, 120, style={"stroke": "#000", "stroke_width": 2})
+            B.create_element(c, "field", 40, y, W - 80, h, field_name=fn)
+        B.create_element(c, "rect", 20, 20, W - 40, H - 40,
+                         style={"border_style": "solid", "border_color": "#000", "border_width": 2})
+        B.create_element(c, "ellipse", W - 160, H - 140, 140, 120,
+                         style={"border_style": "solid", "border_color": "#000", "border_width": 2})
         pid = B.create_person(c, {"last_name": "Иванов", "first_name": "Иван", "faculty": "Физфак"})
         c.close(); return pid
 

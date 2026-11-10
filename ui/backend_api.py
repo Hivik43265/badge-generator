@@ -140,21 +140,15 @@ def list_fonts():
     return list(fn())
 
 
-def format_schema_migration_error(exc):
-    """Читаемое сообщение об ошибке миграции при открытии проекта.
+# Класс ошибки миграции схемы/координат (v8: файл не меняется, .bak сохраняется).
+MigrationError = getattr(_db, "MigrationError", None) or getattr(_api, "MigrationError", None)
 
-    TODO(backend): Backend пришлёт отдельный класс исключения (миграция
-    координат v7→v8). Подставить его в `cls` ниже вместо проверки имени.
-    """
-    # TODO(backend): заменить на `isinstance(exc, BackendMigrationError)`
-    name = type(exc).__name__
-    if name in ("SchemaMigrationError", "UnitsMigrationError"):
-        src = getattr(exc, "from_version", "?")
-        dst = getattr(exc, "to_version", "?")
-        return (
-            "Не удалось открыть проект: ошибка миграции шаблона "
-            f"(схема {src} → {dst}). {exc}"
-        )
+
+def format_schema_migration_error(exc):
+    """Текст ошибки миграции при открытии проекта, либо None, если это не она."""
+    cls = MigrationError
+    if cls is not None and isinstance(exc, cls):
+        return str(exc)
     return None
 
 
@@ -213,23 +207,18 @@ class BackendAPI:
     # --- БД ---
     def open_db(self, path, base_dir=None, *, recover=None):
         """Открыть/создать проект через ProjectSession: self.con — рабочая копия (session.con).
-        recover=None и есть несохранённая копия → RecoverableProjectError (диалог в UI)."""
-        try:
-            if str(path) == ":memory:":
-                sess = open_project(":memory:")
-            else:
-                pth = Path(path)
-                sess = create_project(pth) if not pth.exists() else open_project(pth, recover=recover)
-            self.adopt_session(sess)
-            if base_dir: self.base_dir = str(base_dir)
-            if self.schema_version() < _db.LATEST:
-                raise RuntimeError(f"БД {path}: схема v{self.schema_version()}, требуется v{_db.LATEST}")
-        except Exception as e:
-            # TODO(backend): класс исключения миграции — format_schema_migration_error
-            msg = format_schema_migration_error(e)
-            if msg:
-                raise RuntimeError(msg) from e
-            raise
+        recover=None и есть несохранённая копия → RecoverableProjectError (диалог в UI).
+        MigrationError (миграция схемы) пробрасывается как есть — UI показывает текст ошибки;
+        файл не изменён, .bak сохраняется Backend'ом."""
+        if str(path) == ":memory:":
+            sess = open_project(":memory:")
+        else:
+            pth = Path(path)
+            sess = create_project(pth) if not pth.exists() else open_project(pth, recover=recover)
+        self.adopt_session(sess)
+        if base_dir: self.base_dir = str(base_dir)
+        if self.schema_version() < _db.LATEST:
+            raise RuntimeError(f"БД {path}: схема v{self.schema_version()}, требуется v{_db.LATEST}")
 
     def adopt_session(self, session):
         """Подменить сессию (после recover / save_as). Старую закрывает без записи исходника."""

@@ -6,14 +6,15 @@ from pathlib import Path
 from PyQt6.QtCore import QSettings, Qt, QTimer, QThreadPool
 from PyQt6.QtGui import QAction, QActionGroup, QKeySequence
 from PyQt6.QtWidgets import (QMainWindow, QFileDialog, QMessageBox, QInputDialog, QSplitter, QMenu, QStackedWidget,
-                             QWidget, QVBoxLayout, QWidgetAction, QSpinBox, QLabel, QHBoxLayout, QColorDialog, QComboBox)
+                             QWidget, QVBoxLayout, QWidgetAction, QSpinBox, QDoubleSpinBox, QLabel, QHBoxLayout, QColorDialog, QComboBox)
 from .backend_api import (BackendAPI, DEFAULT_DB_PATH, TYPE_NAMES,
                           RecoverableProjectError, ProjectLockedError, ProjectSaveError,
-                          UnsavedChangesError, TemplateEditActiveError, recover)
+                          UnsavedChangesError, TemplateEditActiveError, recover,
+                          format_schema_migration_error, units_to_mm, mm_to_units)
 from .records_table import RecordsWidget, PRINTED_FILTERS
 from .layout_editor import LayoutEditor
 from .object_properties import ObjectPropertiesDock
-from .main_view import (PreviewPanel, PrintQueueDialog, PositionDialog, SettingsDialog, FieldManager, ALIGN,
+from .main_view import (PreviewPanel, PrintQueueDialog, SettingsDialog, FieldManager, ALIGN,
                         aligned_geometry)
 from .ribbon import Ribbon, glyph
 from . import stage15
@@ -54,8 +55,10 @@ class StrokeWidthAction(QWidgetAction):
 
     def createWidget(self, parent):
         w = QWidget(parent); h = QVBoxLayout(w); h.setContentsMargins(2, 4, 2, 0); h.setSpacing(1)
-        sp = QSpinBox(); sp.setRange(0, 50); sp.setSuffix(" px"); sp.setToolTip("Толщина границы"); sp.setValue(self.value)
-        sp.editingFinished.connect(lambda sp=sp: self._changed(sp.value()))
+        sp = QDoubleSpinBox(); sp.setDecimals(1); sp.setSingleStep(0.1)
+        sp.setRange(0.0, 20.0); sp.setSuffix(" мм"); sp.setToolTip("Толщина границы")
+        sp.setValue(units_to_mm(self.value))
+        sp.editingFinished.connect(lambda sp=sp: self._changed(int(mm_to_units(sp.value()))))
         h.addWidget(QLabel("Толщина")); h.addWidget(sp); h.addStretch(1)
         self.spins.append(sp); w.destroyed.connect(lambda *_ , sp=sp: self.spins.remove(sp) if sp in self.spins else None)
         return w
@@ -65,9 +68,9 @@ class StrokeWidthAction(QWidgetAction):
         self.set_value(v); self.on_change(v)
 
     def set_value(self, v):
-        self.value = v
+        self.value = int(v)
         for sp in self.spins:
-            sp.blockSignals(True); sp.setValue(v); sp.blockSignals(False)
+            sp.blockSignals(True); sp.setValue(units_to_mm(self.value)); sp.blockSignals(False)
 
     @property
     def spin(self): return self.spins[0]
@@ -188,7 +191,7 @@ class MainWindow(QMainWindow):
             self.tool_actions[t] = A(f"act_tool_{t}", TYPE_NAMES[t], lambda _=False, t=t: le.run_tool(t), icons.get(t, t), k)
         self.act_style_fill = A("act_style_fill", "Цвет заливки…", lambda: self.pick_color("fill"), "fill", icon_text="Заливка")
         self.act_style_stroke = A("act_style_stroke", "Цвет границы…", lambda: self.pick_color("stroke"), "stroke", icon_text="Граница")
-        self.act_style_stroke_w = StrokeWidthAction(self, lambda v: le.set_prop("stroke_width", v))
+        self.act_style_stroke_w = StrokeWidthAction(self, lambda v: le.set_prop("border_width", v))
         self.act_align = A("act_align", "Выровнять", None, "align", icon_text="Выровнять")
         self.align_menu = QMenu("Выровнять", self); self.align_actions = {}
         for how, t in ALIGN:
@@ -202,6 +205,9 @@ class MainWindow(QMainWindow):
             def mk():
                 sp = QSpinBox(); sp.setRange(lo, hi); sp.setValue(v); sp.setSuffix(suf); return sp
             return mk
+        def _mm_padding():
+            sp = QDoubleSpinBox(); sp.setDecimals(1); sp.setSingleStep(0.1)
+            sp.setRange(0.0, 20.0); sp.setValue(0.0); sp.setSuffix(" мм"); return sp
         self.act_font = FieldWidgetAction(self, "act_font", "Шрифт", _font, self._bind_font, "Шрифт шаблона")
         def _bind_font_size(e):
             timer = QTimer(e, singleShot=True, interval=300)
@@ -209,8 +215,8 @@ class MainWindow(QMainWindow):
             e.valueChanged.connect(lambda *_e, timer=timer: timer.start())
         self.act_font_size = FieldWidgetAction(self, "act_font_size", "Размер", _spin(4, 200, 14, " pt"),
             _bind_font_size)
-        self.act_padding = FieldWidgetAction(self, "act_padding", "Отступы", _spin(0, 200, 0, " px"), self._bind_padding,
-                                             "Отступы шаблона (0…200 px)")
+        self.act_padding = FieldWidgetAction(self, "act_padding", "Отступы", _mm_padding, self._bind_padding,
+                                             "Отступы шаблона (0…20 мм)")
         self.act_text_color = A("act_text_color", "Цвет текста…", lambda: self.pick_color("color"), "text", icon_text="Цвет\nтекста")
         fp = stage15.TemplateTools(self, le)
         self.act_template_mode = A("act_template_mode", "Режим шаблона", fp.set_template_mode, "edit_card", checkable=True,
@@ -369,7 +375,10 @@ class MainWindow(QMainWindow):
         self.act_undo.setEnabled(self.api.can_undo()); self.act_redo.setEnabled(self.api.can_redo())
         if sel:
             st = self.layout_editor.current.el.get("style") or {}
-            self.act_style_stroke_w.set_value(int(st.get("stroke_width") or 0))
+            bw = st.get("border_width")
+            if bw is None:
+                bw = st.get("stroke_width")  # только показ старого ключа
+            self.act_style_stroke_w.set_value(int(bw or 0))
         has_rec = bool(self.records.selected_ids())
         for a in (self.act_queue_toggle, self.act_card_edit, self.act_card_delete, self.act_mark_printed, self.act_mark_unprinted):
             a.setEnabled(has_rec)
@@ -407,7 +416,13 @@ class MainWindow(QMainWindow):
             else:
                 st = le.current.el.get("style") or {}
                 from PyQt6.QtGui import QColor
-                c = QColorDialog.getColor(QColor(st.get(key) or "#000000"), self, "Цвет")
+                if key == "fill":
+                    current = st.get("bg_color") or st.get("fill") or "#FFFFFF"
+                elif key == "stroke":
+                    current = st.get("border_color") or st.get("stroke") or "#000000"
+                else:
+                    current = st.get(key) or "#000000"
+                c = QColorDialog.getColor(QColor(current), self, "Цвет")
                 color = c.name() if c.isValid() else None
         if not color: return None
         le.set_prop(key, color); self._sync_selection(); return color
@@ -431,7 +446,7 @@ class MainWindow(QMainWindow):
         r = self.api.redo(); self.layout_editor.reload(); self._sync_selection(); return r
 
     def edit_position(self):
-        """Одно место для X/Y/W/H — панель «Свойства объекта» (диалог PositionDialog больше не открывается)."""
+        """Одно место для X/Y/W/H — панель «Свойства объекта»."""
         le = self.layout_editor
         if not le.current:
             self.statusBar().showMessage("Выберите объект на холсте"); return None
@@ -661,7 +676,7 @@ class MainWindow(QMainWindow):
         e.currentTextChanged.connect(lambda name: self._set_template_style({"font_family": name}))
 
     def _bind_padding(self, e):
-        e.editingFinished.connect(lambda e=e: self._set_template_style({"padding": e.value()}))
+        e.editingFinished.connect(lambda e=e: self._set_template_style({"padding": int(mm_to_units(e.value()))}))
 
     def sync_template_style(self):
         if not hasattr(self, "act_font"): return None
@@ -677,7 +692,7 @@ class MainWindow(QMainWindow):
             w.blockSignals(False)
         if pad is not None:
             for w in self.act_padding.widgets:
-                w.blockSignals(True); w.setValue(int(pad)); w.blockSignals(False)
+                w.blockSignals(True); w.setValue(units_to_mm(int(pad))); w.blockSignals(False)
         return st
 
     def _set_template_style(self, style):
@@ -754,7 +769,7 @@ class MainWindow(QMainWindow):
         d = SettingsDialog(self.api, self.settings, self)
         if values is not None:
             if "base_dir" in values: d.base_dir.setText(values["base_dir"])
-            if "grid" in values: d.grid.setValue(values["grid"])
+            if "grid" in values: d.set_grid_units(values["grid"])
             res = d.apply()
         elif d.exec():
             res = d.apply()
@@ -815,6 +830,12 @@ class MainWindow(QMainWindow):
         except ProjectLockedError:
             stage15.show_project_locked(self)
             return BackendAPI(":memory:")
+        except Exception as e:
+            msg = format_schema_migration_error(e)
+            if msg:
+                QMessageBox.warning(self, "Проект", msg)
+                return BackendAPI(":memory:")
+            raise
 
     def _attach_session(self, path):
         """Открыть path в текущем api: сначала рабочая копия (RecoverableProjectError), без второго такого же вопроса."""
@@ -830,6 +851,11 @@ class MainWindow(QMainWindow):
             stage15.show_project_locked(self); return False
         except (FileNotFoundError, FileExistsError, OSError, ValueError) as e:
             QMessageBox.warning(self, "Проект", str(e)); return False
+        except Exception as e:
+            msg = format_schema_migration_error(e)
+            if msg:
+                QMessageBox.warning(self, "Проект", msg); return False
+            raise
 
     def switch_db(self, path):
         if not self._attach_session(path): return None

@@ -35,8 +35,9 @@ TOOLS = [(t, TYPE_NAMES[t], t) for t in ("field", "photo", "barcode", "qr", "tex
 DEFAULT_SIZE = {"text": (400, 80), "field": (400, 80), "image": (200, 200), "photo": (300, 400), "rect": (400, 250),
                 "ellipse": (300, 200), "line": (600, 0), "barcode": (420, 140), "qr": (220, 220)}
 DEFAULT_STYLE = {"text": {"font_size": 14, "color": "#000000"}, "field": {"font_size": 14, "color": "#000000"},
-                 "rect": {"stroke": "#1F4E8C", "stroke_width": 3},
-                 "ellipse": {"stroke": "#1F4E8C", "stroke_width": 3}, "line": {"stroke": "#1F4E8C", "stroke_width": 3},
+                 "rect": {"border_style": "solid", "border_width": 3, "border_color": "#1F4E8C"},
+                 "ellipse": {"border_style": "solid", "border_width": 3, "border_color": "#1F4E8C"},
+                 "line": {"border_style": "solid", "border_width": 3, "border_color": "#1F4E8C"},
                  "barcode": {"format": "code128", "show_text": True, "quiet_zone": 10, "font_size": 8},
                  "qr": {"error_correction": "M", "border": 4}, "photo": {}, "image": {"fit": "contain"}}
 FORMATS = [("code128", "Code128"), ("ean13", "EAN-13")]      # style["format"] (старый ключ symbology — только чтение)

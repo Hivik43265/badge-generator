@@ -1,14 +1,14 @@
 """Главный вид: собственные простые иконки, панель «Предпросмотр / Поля», диалоги
-«Очередь печати», «Положение», «Настройка», «Захват изображения».
+«Очередь печати», «Настройка», «Захват изображения».
 Весь рендер — только через Backend (render_card); SQL нет."""
 import os
 from PyQt6.QtCore import Qt, QPointF, QRectF, QSize
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen, QBrush, QPolygonF, QFont
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTabWidget, QListWidget, QListWidgetItem,
                              QTableWidget, QTableWidgetItem, QHeaderView, QDialog, QDialogButtonBox, QFormLayout,
-                             QLineEdit, QPushButton, QSpinBox, QGridLayout, QFileDialog, QSplitter, QSizePolicy,
+                             QLineEdit, QPushButton, QGridLayout, QFileDialog, QSplitter, QSizePolicy,
                              QAbstractItemView, QDoubleSpinBox, QMessageBox, QComboBox)
-from .backend_api import BackendAPI, CARD_W_PX, CARD_H_PX, scene_width, scene_height
+from .backend_api import BackendAPI, scene_width, scene_height, units_to_mm, mm_to_units
 from .preview_jobs import RenderCardJob, RenderSignals, render_pool
 from .layout_editor import element_caption
 from .records_table import format_printed_at
@@ -427,22 +427,6 @@ def aligned_geometry(el, how, margin=0):
     return {"x": int(x), "y": int(y)}
 
 
-class PositionDialog(QDialog):
-    """Положение выбранного элемента: только численный ввод X/Y (выравнивание — «Выровнять ▾» в ленте)."""
-
-    def __init__(self, el, parent=None):
-        super().__init__(parent); self.setWindowTitle("Положение элемента"); self.el = dict(el)
-        self.x = QSpinBox(); self.y = QSpinBox()
-        for s_, v in ((self.x, el["x"]), (self.y, el["y"])): s_.setRange(-2000, 2000); s_.setValue(v)
-        form = QFormLayout(); form.addRow("X, px:", self.x); form.addRow("Y, px:", self.y)
-        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject)
-        lay = QVBoxLayout(self); lay.addWidget(QLabel(element_caption(el))); lay.addLayout(form); lay.addWidget(bb)
-
-    def value(self):
-        return {"x": self.x.value(), "y": self.y.value()}
-
-
 class SettingsDialog(QDialog):
     """Настройка: каталог фото/изображений (база относительных путей) и масштаб предпросмотра."""
 
@@ -451,13 +435,24 @@ class SettingsDialog(QDialog):
         self.base_dir = QLineEdit(str(api.base_dir or "")); pick = QPushButton("…")
         pick.clicked.connect(lambda: (lambda d: d and self.base_dir.setText(d))(QFileDialog.getExistingDirectory(self, "Каталог фото", self.base_dir.text())))
         row = QHBoxLayout(); row.addWidget(self.base_dir, 1); row.addWidget(pick)
-        self.grid = QSpinBox(); self.grid.setRange(5, 200); self.grid.setValue(int(settings.value("editor/grid", 20)))
-        form = QFormLayout(); form.addRow("Каталог фото и изображений:", row); form.addRow("Шаг сетки редактора, px:", self.grid)
+        # editor/grid хранится как целое шаг сцены (после v8 — единицы 0.1 мм; старые 20 не пересчитываем).
+        self.grid = QDoubleSpinBox(); self.grid.setDecimals(1); self.grid.setSingleStep(0.1)
+        self.grid.setRange(units_to_mm(5), units_to_mm(200)); self.grid.setSuffix(" мм")
+        self.set_grid_units(int(settings.value("editor/grid", 20)))
+        form = QFormLayout(); form.addRow("Каталог фото и изображений:", row); form.addRow("Шаг сетки редактора, мм:", self.grid)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         bb.accepted.connect(self.accept); bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self); lay.addLayout(form); lay.addWidget(bb)
 
+    def set_grid_units(self, units):
+        """units — значение настройки editor/grid (шаг сцены), не миллиметры."""
+        self.grid.setValue(units_to_mm(int(units)))
+
+    def grid_units(self):
+        return max(1, min(200, int(mm_to_units(self.grid.value()))))
+
     def apply(self):
         if self.base_dir.text().strip(): self.api.base_dir = self.base_dir.text().strip()
-        self.settings.setValue("editor/grid", self.grid.value())
-        return {"base_dir": self.api.base_dir, "grid": self.grid.value()}
+        step = self.grid_units()
+        self.settings.setValue("editor/grid", step)
+        return {"base_dir": self.api.base_dir, "grid": step}

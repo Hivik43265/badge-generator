@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .backend_api import (
-    SIDE_NAMES, mm_to_stored, stored_to_mm, uses_grid_units, px_to_units,
+    SIDE_NAMES, mm_to_stored, stored_to_mm, uses_grid_units,
     update_element_style_available,
 )
 
@@ -611,17 +611,12 @@ class ObjectPropertiesPanel(QWidget):
             width = max(0, min(200, width))
         color = self.w_bcolor.color_hex() or "#000000"
         keys = {"border_style": style, "border_width": int(width), "border_color": color}
-        if not uses_grid_units():
-            keys["stroke"] = color if style != "none" else None
-            keys["stroke_width"] = int(width)
         return keys
 
     def _style_payload_bg(self):
         on = self.w_fill_on.currentIndex() == 1
         color = self.w_fill_color.color_hex() or "#FFFFFF"
         keys = {"bg_fill": on, "bg_color": color}
-        if not uses_grid_units():
-            keys["fill"] = color if on else None
         return keys
 
     def _apply_geometry(self):
@@ -810,23 +805,17 @@ class ObjectPropertiesPanel(QWidget):
             hx = _as_hex(values["fill"]) or "#FFFFFF"
             style_keys["bg_fill"] = True
             style_keys["bg_color"] = hx
-            if not uses_grid_units():
-                style_keys["fill"] = hx
         if "stroke" in values:
             hx = _as_hex(values["stroke"]) or "#000000"
             style_keys["border_color"] = hx
             if (_style_of(self.editor.current.el).get("border_style") or "none") == "none":
                 style_keys["border_style"] = "solid"
-            if not uses_grid_units():
-                style_keys["stroke"] = hx
         if "stroke_width" in values:
+            # лента/старые вызовы: значение уже в единицах хранения (как border_width)
             v = int(values["stroke_width"])
-            bw = px_to_units(v) if uses_grid_units() else v
             if uses_grid_units():
-                bw = max(0, min(200, int(bw)))
-            style_keys["border_width"] = int(bw)
-            if not uses_grid_units():
-                style_keys["stroke_width"] = v
+                v = max(0, min(200, v))
+            style_keys["border_width"] = v
         if "border_width" in values:
             style_keys["border_width"] = int(values["border_width"])
         if "radius" in values:

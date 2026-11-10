@@ -681,10 +681,12 @@ did = w.duplicate(); assert len(api.list_elements("front")) == n0 + 2
 w.act_cut.trigger(); assert len(api.list_elements("front")) == n0 + 1 and w.clipboard
 w.act_undo.trigger(); assert len(api.list_elements("front")) == n0 + 2
 w.act_redo.trigger(); assert len(api.list_elements("front")) == n0 + 1
+from ui.backend_api import units_to_mm
 le.select(pid_); w.pick_color("fill", "#AABBCC"); w.pick_color("stroke", "#334455")
-le.select(pid_); w.act_style_stroke_w.spin.setValue(3); w.act_style_stroke_w.spin.editingFinished.emit()
+le.select(pid_); w.act_style_stroke_w.spin.setValue(units_to_mm(3)); w.act_style_stroke_w.spin.editingFinished.emit()
 st = next(e for e in api.list_elements("front") if e["id"] == pid_)["style"]
-assert st.get("fill") in ("#AABBCC", None) and st.get("stroke_width") in (3, None)
+assert st.get("bg_color") == "#AABBCC" and int(st.get("border_width") or 0) == 3 and st.get("border_color") == "#334455"
+assert "fill" not in st and "stroke_width" not in st and "stroke" not in st
 le.select(pid_); w.align_actions["left"].trigger(); assert next(e for e in api.list_elements("front") if e["id"] == pid_)["x"] == 0
 w.act_undo.trigger(); assert next(e for e in api.list_elements("front") if e["id"] == pid_)["x"] == src["x"] + 20
 for _ in range(10): w.undo()
@@ -695,16 +697,17 @@ eid_e = w.layout_editor.run_tool("ellipse"); assert eid_e and next(e for e in ap
 assert any(i.el["type"] == "ellipse" for i in le.items())
 w.delete_element(); assert all(e["id"] != eid_e for e in api.list_elements())
 ok("Эллипс: create_element('ellipse') → рендер Backend; удаление")
-# положение
+# положение: «Положение…» открывает панель свойств (диалога больше нет)
 el0 = api.list_elements("front")[-1]; le.load("front", el0["id"])
-from ui.main_view import PositionDialog
-pd_ = PositionDialog({**el0}, w); assert pd_.findChildren(QPushButton) == [] or all(b.text() in ("OK", "&OK", "Cancel", "&Cancel", "Отмена") for b in pd_.findChildren(QPushButton))
-assert not hasattr(pd_, "align")
-mwm.position_hook = lambda d: (d.x.setValue(123), d.y.setValue(45), d.value())[2]; v = w.edit_position(); mwm.position_hook = None
+from ui import main_view as _mv
+assert not hasattr(_mv, "PositionDialog")
+v = w.edit_position(); assert v is None and w.props_dock.isVisible()
+le.set_props(x=123, y=45)
 e1 = next(e for e in api.list_elements("front") if e["id"] == el0["id"]); assert (e1["x"], e1["y"]) == (123, 45), e1
 le.select(el0["id"]); w.align_actions["hcenter"].trigger()
-e1 = next(e for e in api.list_elements("front") if e["id"] == el0["id"]); assert e1["x"] == (1011 - abs(e1["w"])) // 2 - min(0, e1["w"]), e1
-ok(f"«Положение»: только X/Y (кнопок выравнивания нет) → (123, 45); центр — через «Выровнять ▾» → x={e1['x']}")
+from ui.backend_api import scene_width
+e1 = next(e for e in api.list_elements("front") if e["id"] == el0["id"]); assert e1["x"] == (scene_width() - abs(e1["w"])) // 2 - min(0, e1["w"]), e1
+ok(f"«Положение»: панель свойств, X/Y → (123, 45); центр — через «Выровнять ▾» → x={e1['x']}")
 api.update_element(el0["id"], x=el0["x"], y=el0["y"]); le.load("front")
 # менеджер полей
 from ui.main_view import FieldManager
