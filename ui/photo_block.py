@@ -1,5 +1,6 @@
-"""Блок фото формы записи (D22): живая камера (QtMultimedia) с выбором устройства, «Сфотографировать»,
-«Переснять», «Из файла…». Без камеры/QtMultimedia — понятная надпись, работает «Из файла…».
+"""Блок фото формы записи (D22): выбор камеры, «Сделать фото», «Переснять», «Из файла…».
+Живое изображение в этом блоке не показывается — «Сделать фото» открывает WebcamCaptureDialog.
+Без камеры/QtMultimedia — понятная надпись, работает «Из файла…».
 
 Снимок сразу попадает в превью (временный файл). При сохранении записи commit() передаёт байты в Backend
 save_photo (fa29d7d) → относительный photo_path «photos/<name>».
@@ -31,13 +32,14 @@ class PhotoBlock(QWidget):
     def __init__(self, base_dir, photo_path="", parent=None):
         super().__init__(parent)
         self.base_dir, self.path, self.captured = base_dir or ".", photo_path or "", None
-        self.cam = self.session = self.cap = self.video = None
+        self.cam = self.cap = self.video = None   # камера живёт в WebcamCaptureDialog, не здесь
+        self._webcam_dlg = None
         self.camera_combo = QComboBox(); self.camera_combo.setMinimumWidth(180)
         self.status = QLabel(); self.status.setWordWrap(True); self.status.setStyleSheet("color:#6B7280;")
         self.stack = QStackedWidget(); self.stack.setMinimumSize(240, 180)
         self.still = QLabel(alignment=Qt.AlignmentFlag.AlignCenter); self.still.setStyleSheet("background:#F4F7F7; border:1px solid #D5DCDA;")
         self.stack.addWidget(self.still)
-        self.b_shot, self.b_retake, self.b_file = QPushButton("Сфотографировать"), QPushButton("Переснять"), QPushButton("Из файла…")
+        self.b_shot, self.b_retake, self.b_file = QPushButton("Сделать фото"), QPushButton("Переснять"), QPushButton("Из файла…")
         self.b_shot.clicked.connect(lambda: self.shoot()); self.b_retake.clicked.connect(lambda: self.retake())
         self.b_file.clicked.connect(lambda: self.from_file())
         top = QHBoxLayout(); top.addWidget(QLabel("Камера:")); top.addWidget(self.camera_combo, 1)
@@ -49,8 +51,7 @@ class PhotoBlock(QWidget):
         self.has_camera = ok
         if ok:
             for d in QMD.videoInputs(): self.camera_combo.addItem(d.description(), d)
-            self.camera_combo.currentIndexChanged.connect(lambda *_: self._start())
-            self._setup_camera()
+            self.status.setText("Нажмите «Сделать фото», чтобы открыть камеру")
         else:
             self.camera_combo.addItem("— нет камеры —"); self.camera_combo.setEnabled(False)
             self.status.setText(msg)
@@ -64,43 +65,32 @@ class PhotoBlock(QWidget):
         self.still.installEventFilter(self); self.still.setToolTip("Двойной клик — редактировать изображение")
         self._update_buttons(); self._show_still()
 
-    # ---- камера ----
-    def _setup_camera(self):
-        try:
-            from PyQt6.QtMultimedia import QMediaCaptureSession, QImageCapture
-            from PyQt6.QtMultimediaWidgets import QVideoWidget
-            self.session = QMediaCaptureSession(); self.cap = QImageCapture(); self.session.setImageCapture(self.cap)
-            self.video = QVideoWidget(); self.session.setVideoOutput(self.video); self.stack.addWidget(self.video)
-            self.cap.imageCaptured.connect(lambda _id, img: self.set_captured(img))
-            self.cap.errorOccurred.connect(lambda *_a: self.status.setText(f"Ошибка камеры: {self.cap.errorString()}"))
-            self._start()
-        except Exception as e:  # noqa: BLE001
-            self.has_camera = False; self.status.setText(f"Камера недоступна: {e}"); self._update_buttons()
-
-    def _start(self):
-        from PyQt6.QtMultimedia import QCamera
-        if self.cam is not None: self.cam.stop()
-        dev = self.camera_combo.currentData()
-        self.cam = QCamera(dev) if dev is not None else QCamera()
-        self.cam.errorOccurred.connect(lambda *_a: self.status.setText(f"Ошибка камеры: {self.cam.errorString()}"))
-        self.session.setCamera(self.cam); self.cam.start()
-        if self.captured is None: self.stack.setCurrentWidget(self.video)
-        self.status.setText("Живое изображение — нажмите «Сфотографировать»")
-
+    # ---- камера (живое превью только в WebcamCaptureDialog) ----
     def shoot(self):
-        if not self.has_camera or self.cap is None: return False
-        if not self.cap.isReadyForCapture():
-            self.status.setText("Камера ещё не готова"); return False
-        self.cap.capture(); return True
+        """Открыть отдельное окно камеры; принятый кадр → set_captured (тот же путь, что раньше)."""
+        if not self.has_camera: return False
+        from PyQt6.QtWidgets import QDialog
+        from .webcam_dialog import WebcamCaptureDialog
+        dlg = self._webcam_dlg = WebcamCaptureDialog(self.camera_combo.currentData(), self)
+        try:
+            ok = dlg.exec() == QDialog.DialogCode.Accepted
+        finally:
+            self._webcam_dlg = None
+        if not ok:
+            return False
+        img = dlg.captured_image()
+        if img is None or img.isNull():
+            self.status.setText("Кадр с камеры не получен"); return False
+        return self.set_captured(img)
 
     def retake(self):
         self.captured = None
-        if self.has_camera and self.video is not None:
-            self.stack.setCurrentWidget(self.video)
-            if self.cam is not None and not self.cam.isActive(): self.cam.start()
-        self._update_buttons(); return True
+        self._show_still(); self._update_buttons()
+        return self.shoot() if self.has_camera else True
 
     def stop(self):
+        if self._webcam_dlg is not None:
+            self._webcam_dlg.reject(); self._webcam_dlg = None
         if self.cam is not None: self.cam.stop()
 
     # ---- снимок / файл ----
@@ -143,7 +133,7 @@ class PhotoBlock(QWidget):
         pm = QPixmap(self._abs(self.path)) if self.path else QPixmap()
         if pm.isNull(): self.still.setPixmap(QPixmap()); self.still.setText("нет фото")
         else: self.still.setPixmap(pm.scaled(220, 170, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-        if self.captured is not None or not self.has_camera or self.video is None: self.stack.setCurrentWidget(self.still)
+        self.stack.setCurrentWidget(self.still)
 
     def eventFilter(self, obj, ev):
         from PyQt6.QtCore import QEvent
