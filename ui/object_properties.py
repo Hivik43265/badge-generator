@@ -168,10 +168,11 @@ class ObjectPropertiesPanel(QWidget):
         self.tree.setAnimated(False)
         self.tree.setColumnWidth(0, 150)
         self.tree.setStyleSheet(
-            "QTreeWidget{border:none; background:#F3F3F3; font-size:11px;}"
-            "QTreeWidget::item{padding:1px 0;}"
+            "QTreeWidget{border:none; background:#F3F3F3; font-size:11px; color:#222;}"
+            "QTreeWidget::item{padding:1px 0; color:#222;}"
             "QTreeWidget::item:selected{background:#D0E4F5; color:#000;}"
-            "QComboBox,QDoubleSpinBox,QSpinBox,QLineEdit,QCheckBox{font-size:11px; min-height:18px;}"
+            "QTreeWidget:disabled, QTreeWidget::item:!enabled{color:#333;}"
+            "QComboBox,QDoubleSpinBox,QSpinBox,QLineEdit,QCheckBox,QPlainTextEdit{font-size:11px; min-height:18px;}"
         )
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -187,6 +188,12 @@ class ObjectPropertiesPanel(QWidget):
         g.setFont(0, f)
         bg = QColor("#C0C0C0")
         g.setBackground(0, bg); g.setBackground(1, bg)
+        # Явный цвет заголовка: при Disabled у палитры текст иначе сливается с #C0C0C0.
+        fg = self.tree.palette().color(self.tree.palette().ColorGroup.Disabled,
+                                       self.tree.palette().ColorRole.WindowText)
+        if fg.value() > 180:  # слишком светлый — заголовок пропадёт
+            fg = QColor("#333333")
+        g.setForeground(0, fg)
         g.setFlags(Qt.ItemFlag.ItemIsEnabled)
         self.tree.addTopLevelItem(g)
         g.setExpanded(expanded)
@@ -357,13 +364,30 @@ class ObjectPropertiesPanel(QWidget):
     def _can_move(self):
         return bool(getattr(self.editor, "template_mode", False)) and not self._locked()
 
+    def _field_widgets(self):
+        """Виджеты значений (не заголовки групп): их гасим, само дерево — нет."""
+        out = []
+        for i in range(self.tree.topLevelItemCount()):
+            g = self.tree.topLevelItem(i)
+            for j in range(g.childCount()):
+                w = self.tree.itemWidget(g.child(j), 1)
+                if w is not None:
+                    out.append(w)
+        return out
+
+    def _set_fields_enabled(self, on):
+        for w in self._field_widgets():
+            w.setEnabled(on)
+
     def sync(self):
         ed = self.editor
         cur = getattr(ed, "current", None)
         self._loading = True
         try:
             enabled = cur is not None
-            self.tree.setEnabled(enabled)
+            # Дерево (заголовки База/Position/…) остаётся включённым и читаемым.
+            self.tree.setEnabled(True)
+            self._set_fields_enabled(enabled)
             if not enabled:
                 self._font_timer.stop()
                 self._radius_timer.stop()

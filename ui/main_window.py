@@ -139,6 +139,7 @@ class MainWindow(QMainWindow):
         self.props_dock = ObjectPropertiesDock(le, self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.props_dock)
         le.object_props = self.props_dock.panel
+        self.props_dock.panel.sync()  # load() в LayoutEditor шёл до появления панели
         self.pos_label = QLabel("X: —  Y: — мм"); self.statusBar().addPermanentWidget(self.pos_label)
 
         self._build_actions(); self._build_ribbon(); self._build_context_menus()
@@ -949,13 +950,17 @@ class MainWindow(QMainWindow):
         finally:
             self._suspend_sel = False
         pid = self.selected_person_id()
+        # Всегда пересобираем холст при смене сессии, даже если вкладка «База данных»
+        # сверху: иначе остаётся старое выделение, не связанное с панелью.
+        self.layout_editor.set_person(pid)
+        self.layout_editor.reload()
         if self.stack.currentWidget() is self.layout_editor:
-            self.layout_editor.set_person(pid)
-            self.layout_editor.reload()
             self.preview_panel.person_id = pid
         else:
-            self.layout_editor.set_person(pid)
             self.preview_panel.set_person(pid)
+        op = getattr(self.layout_editor, "object_props", None)
+        if op is not None:
+            op.sync()
         self.sync_template_style(); self._update_title()
 
     def _open_api(self, path):
