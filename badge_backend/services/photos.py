@@ -5,6 +5,7 @@ save_photo(con, image_bytes, *, person_id=None, ext='jpg', base_dir=None) -> 'ph
 """
 from __future__ import annotations
 import io, re, uuid
+from collections import OrderedDict
 from pathlib import Path
 
 PHOTO_SUBDIR = "photos"
@@ -85,18 +86,40 @@ def _coerce_path_str(rel) -> str | None:
             return bytes(rel).decode("utf-8", "surrogateescape")
     return str(rel).strip() or None
 
+_PHOTO_CACHE_MAX = 4
+_photo_cache: OrderedDict = OrderedDict()
+
+def _photo_cache_key(path):
+    """Ключ кэша декодированного фото: абсолютный путь + mtime + размер."""
+    try:
+        p = Path(path); st = p.stat()
+        return (str(p.resolve()), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
 def open_photo_file(path) -> "Image.Image":
     """Открыть файл картинки с EXIF-поворотом.
     Файл читается через Python (Path.read_bytes), затем Pillow из памяти:
-    на Windows C-fopen / cv2.imread не открывают путь с кириллицей и другими не-ASCII."""
+    на Windows C-fopen / cv2.imread не открывают путь с кириллицей и другими не-ASCII.
+    Декодированный и повёрнутый по EXIF снимок кэшируется (LRU, ключ путь+mtime+размер)."""
     from PIL import Image, ImageOps
+    key = _photo_cache_key(path)
+    if key and key in _photo_cache:
+        _photo_cache.move_to_end(key)
+        return _photo_cache[key].copy()
     data = Path(path).read_bytes()
     if not data:
         raise ValueError("пустой файл")
     with Image.open(io.BytesIO(data)) as im:
         im = ImageOps.exif_transpose(im)
         im.load()
-        return im.copy()
+        out = im.copy()
+    if key:
+        _photo_cache[key] = out
+        while len(_photo_cache) > _PHOTO_CACHE_MAX:
+            _photo_cache.popitem(last=False)
+        return out.copy()
+    return out
 
 def open_photo_bytes(data) -> "Image.Image":
     """Открыть картинку из байтов (с EXIF-поворотом)."""

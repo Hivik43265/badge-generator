@@ -134,6 +134,8 @@ def _classifier():
         _clf = c
     return _clf
 
+DETECT_MAX_SIDE = 800   # Haar на уменьшенной копии; тестовые фикстуры ≤800 px не масштабируются
+
 def detect_face_crop(img: Image.Image, aspect: float):
     """Рамка (x, y, w, h) в пикселях img по самому крупному лицу; нет лица → None. D40/D42 (слова Ивана:
     «рамка не должна полностью брать лицо, учитывается размер рамки в шаблоне»).
@@ -141,16 +143,25 @@ def detect_face_crop(img: Image.Image, aspect: float):
     Макушка = верх Haar − HEAD_TOP·fh; подбородок ≈ низ прямоугольника Haar. Голова занимает HEAD_SHARE
     высоты рамки, над макушкой HEADROOM высоты, остальное (~40 %) — шея и плечи. Лицо по центру по горизонтали.
     Рамка за краем фото: сначала сдвиг внутрь; если рамка больше фото — уменьшение (aspect сохраняется,
-    центр по горизонтали — лицо, верх — по возможности на месте) и снова сдвиг."""
+    центр по горизонтали — лицо, верх — по возможности на месте) и снова сдвиг.
+    Поиск лица — на копии не шире DETECT_MAX_SIDE (рамка пересчитывается в пиксели img)."""
     import numpy as np
     aspect = float(aspect)
     if not aspect > 0: raise ValueError("aspect должен быть > 0")
-    g = np.asarray(img.convert("L"))
+    iw, ih = img.width, img.height
+    gray = img if img.mode == "L" else img.convert("L")
+    max_side = max(iw, ih)
+    if max_side > DETECT_MAX_SIDE:
+        k = DETECT_MAX_SIDE / max_side
+        det = gray.resize((max(1, round(iw * k)), max(1, round(ih * k))), Image.BILINEAR)
+        back = 1.0 / k
+    else:
+        det, back = gray, 1.0
+    g = np.asarray(det)
     m = max(20, min(g.shape) // 12)
     faces = _classifier().detectMultiScale(g, scaleFactor=1.1, minNeighbors=5, minSize=(m, m))
     if len(faces) == 0: return None
-    fx, fy, fw, fh = (float(v) for v in max(faces, key=lambda f: int(f[2]) * int(f[3])))
-    iw, ih = img.width, img.height
+    fx, fy, fw, fh = (float(v) * back for v in max(faces, key=lambda f: int(f[2]) * int(f[3])))
     head_top = fy - HEAD_TOP * fh; head_h = fy + fh - head_top
     H = head_h / HEAD_SHARE; W = H * aspect
     cx = fx + fw / 2; y = head_top - HEADROOM * H
@@ -348,13 +359,41 @@ def set_photo_view(con, person_id: int, params: dict | None, field_name: str | N
                     (int(person_id), key, json.dumps(p), _now()))
     return p
 
+_VIEW_OVERSAMPLE = 1.25   # запас пикселей над рамкой, чтобы cover/LANCZOS не мылил печать 300 DPI
+
+def _src_for_frame(src: Image.Image, p: dict, w: int, h: int):
+    """Уменьшить исходник так, чтобы после scale/crop размер был чуть больше рамки w×h.
+    crop задан в координатах после scale/rotate — умножается на тот же коэффициент.
+    placement не трогаем: его координаты привязаны к полному результату apply_photo_edit."""
+    p = dict(p)
+    sc = (p.get("scale") or 100) / 100.0
+    if p.get("crop"):
+        cw, ch = float(p["crop"][2]), float(p["crop"][3])
+    else:
+        cw, ch = src.width * sc, src.height * sc
+    cw, ch = max(1.0, cw), max(1.0, ch)
+    need = max(w / cw, h / ch) * _VIEW_OVERSAMPLE
+    if need >= 0.99:
+        return src, p
+    nw, nh = max(1, round(src.width * need)), max(1, round(src.height * need))
+    if nw >= src.width and nh >= src.height:
+        return src, p
+    src2 = src.resize((nw, nh), Image.BILINEAR)
+    if p.get("crop"):
+        x, y, cw, ch = p["crop"]
+        p["crop"] = (int(round(x * need)), int(round(y * need)),
+                     max(1, int(round(cw * need))), max(1, int(round(ch * need))))
+    return src2, p
+
 def apply_photo_view(src: Image.Image, w: int, h: int, params: dict | None) -> Image.Image:
     """Единственный путь рендера фото в рамку w×h (общий с карточкой): apply_photo_edit к исходнику
-    в памяти, затем 'placement' (перенесённый photo_config) через transform_photo, без него — cover w×h."""
+    в памяти, затем 'placement' (перенесённый photo_config) через transform_photo, без него — cover w×h.
+    Без placement исходник заранее уменьшается до размера рамки (печать остаётся в 300 DPI рамки)."""
     from ..render import transform_photo, _cover_crop
     params = dict(params or {}); placement = params.pop("placement", None)
     try:
-        im = apply_photo_edit(src, params)
+        work, p = (src, params) if placement else _src_for_frame(src, normalize_params(params), w, h)
+        im = apply_photo_edit(work, p)
     except ValueError as e:
         log.warning("вид фото не применён (%s) — исходник целиком", e); im = src
     if placement:
@@ -385,9 +424,20 @@ def portrait_params(img: Image.Image, aspect: float, params: dict | None = None)
     → полный нормализованный набор с crop=(x,y,w,h) в тех же координатах (после scale/rotate) и
     portrait=True (маркер UI, рендер флаг игнорирует). Лицо не найдено → None. Пиксели не меняются."""
     p = normalize_params(params)
-    base = apply_photo_edit(img, {**p, "crop": None, "autoeffect": False, "brightness": 0, "contrast": 0})
-    box = detect_face_crop(base, aspect)
-    if box is None: return None
+    geo = {**p, "crop": None, "autoeffect": False, "brightness": 0, "contrast": 0}
+    iw, ih = img.width, img.height
+    max_side = max(iw, ih)
+    if max_side > DETECT_MAX_SIDE:
+        k = DETECT_MAX_SIDE / max_side
+        work = img.resize((max(1, round(iw * k)), max(1, round(ih * k))), Image.BILINEAR)
+        base = apply_photo_edit(work, geo)
+        box = detect_face_crop(base, aspect)
+        if box is None: return None
+        box = tuple(int(round(v / k)) for v in box)
+    else:
+        base = apply_photo_edit(img, geo)
+        box = detect_face_crop(base, aspect)
+        if box is None: return None
     p["crop"] = tuple(int(v) for v in box); p["portrait"] = True
     return p
 
