@@ -129,3 +129,29 @@ def test_setup_printer_landscape_cr80_page(app, tmp_path):
     assert abs(r.width() / paper.width() * mm.width() - 85.6) < 0.3
     assert abs(r.height() / paper.height() * mm.height() - 54.0) < 0.3
     assert r.width() > r.height()
+
+def test_print_snapshot_requires_gui_thread(app, demo_db, tmp_path):
+    """С рабочего QThread — RuntimeError (процесс не падает); с GUI-потока PDF CR80 как раньше."""
+    from PyQt6.QtCore import QThread, QEventLoop
+    from badge_backend.services.exporter import snapshot
+    from badge_backend.services.print_service import print_snapshot, pdf_pages_are_cr80
+    c, ids, d = demo_db
+    snap = snapshot(c, [ids[0]], "front")
+    pr = _pdf(tmp_path, "gui.pdf")
+    r = print_snapshot(snap, pr, base_dir=d, allow_missing_photo=True)
+    assert r == 1 and pdf_pages_are_cr80(tmp_path / "gui.pdf")
+    pr2 = _pdf(tmp_path, "thr.pdf")
+    box = {"err": None, "res": None}
+
+    class Worker(QThread):
+        def run(self):
+            try:
+                box["res"] = print_snapshot(snap, pr2, base_dir=d, allow_missing_photo=True)
+            except Exception as e:  # noqa: BLE001
+                box["err"] = e
+
+    w = Worker()
+    loop = QEventLoop(); w.finished.connect(loop.quit)
+    w.start(); loop.exec(); w.wait()
+    assert isinstance(box["err"], RuntimeError) and "главного потока" in str(box["err"])
+    assert box["res"] is None
