@@ -168,68 +168,67 @@ def _ellipsize(d, line, font, width):
     return t + ELLIPSIS if _tw(d, t + ELLIPSIS, font) <= width else ""
 
 def _fit_text(d, text, w, h, size_px, min_px, fam, bold, fpath, wrap, spacing):
-    """1) перенос по пробелам, затем по дефисам/тире/слэшу; 2) уменьшение до min_px;
-    3) при min_px: слово шире рамки режется по символам; лишние по высоте строки отбрасываются целиком,
-    у последней видимой — «…». → (font, lines, ys, widths, bbox, notes) — notes: список причин обрезки."""
-    size = max(1, int(round(size_px))); min_px = max(1, int(round(min_px)))
-    while True:
-        f = get_font(size, fam, bold, fpath)
-        lines = _wrap(d, text, f, w)[0] if wrap else str(text).split("\n")
-        ys, ws, bb, _ = _layout(d, lines, f, spacing)
-        fits = (bb[2] - min(0, bb[0])) <= w and (bb[3] - bb[1]) <= h
-        if fits: return f, lines, ys, ws, bb, []
-        if size <= min_px: break
-        size = max(min_px, min(size - 1, int(size * 0.92)))
+    """Перенос на строго заданном кегле, без уменьшения.
+
+    1) перенос по пробелам, затем по дефисам/тире/слэшу;
+    2) слово шире рамки режется по символам (force wrap);
+    3) строки, не влезающие по высоте, не отбрасываются и не получают «…» —
+       обрезка делается при рисовании по внутренней рамке.
+
+    min_px сохранён в сигнатуре (ключ min_size в стиле принимается), но не используется.
+    → (font, lines, ys, widths, bbox, notes)
+    """
+    size = max(1, int(round(size_px)))
+    f = get_font(size, fam, bold, fpath)
     notes = []
-    if wrap and any(_tw(d, l, f) > w for l in lines):
-        lines, cut = _wrap(d, text, f, w, force=True)
-        if cut: notes.append("слово разрезано по символам")
+    if wrap:
+        # сначала обычный перенос (пробелы, дефисы); force — только если строка всё ещё шире рамки
+        lines, cut = _wrap(d, text, f, w, force=False)
+        if any(_tw(d, l, f) > w for l in lines):
+            lines, cut = _wrap(d, text, f, w, force=True)
+            if cut:
+                notes.append("слово разрезано по символам")
+    else:
+        lines = str(text).split("\n")
     ys, ws, bb, _ = _layout(d, lines, f, spacing)
+    if (bb[2] - min(0, bb[0])) > w or any(_tw(d, l, f) > w for l in lines):
+        notes.append("обрезано по ширине")
     if (bb[3] - bb[1]) > h:
-        n = len(lines)
-        while n > 0:
-            ys2, _, bb2, _ = _layout(d, lines[:n], f, spacing)
-            if bb2[3] - bb2[1] <= h: break
-            n -= 1
-        keep = lines[:n]
-        if keep:
-            keep[-1] = _ellipsize(d, keep[-1], f, w)
-        notes.append(f"показано строк {n} из {len(lines)}")
-        lines = keep
-        ys, ws, bb, _ = _layout(d, lines, f, spacing) if lines else ([], [], (0, 0, 0, 0), 0)
-    if any(_tw(d, l, f) > w for l in lines): notes.append("обрезано по ширине")
-    return f, lines, ys, ws, bb, notes or ["обрезано"]
+        notes.append("обрезано по высоте")
+    return f, lines, ys, ws, bb, notes
 
 def _draw_text(img, el, text, st):
-    """Текст строго внутри рамки w×h: перенос → автоуменьшение до min_size (pt, default 8) →
-    если всё равно не влезает — обрезка по рамке (рисование в слой w×h) + warning."""
+    """Текст рисуется строго заданным font_size (pt → px = pt×DPI/72).
+    Всё, что выходит за внутреннюю рамку (w×h минус padding; в padding уже входит
+    толщина рамки), обрезается по ней. min_size в стиле принимается и игнорируется."""
     x, y, w, h = el["x"], el["y"], el["w"], el["h"]
     if text is None or str(text) == "": return
     pad = int(st.get("padding", 0)); iw, ih = max(1, w - 2 * pad), max(1, h - 2 * pad)
-    layer = Image.new("RGBA", (w, h), (0, 0, 0, 0)); d = ImageDraw.Draw(layer)
+    # слой ровно внутреннего размера — ничего не попадает в padding/бордюр
+    layer = Image.new("RGBA", (iw, ih), (0, 0, 0, 0)); d = ImageDraw.Draw(layer)
     size = float(st.get("font_size", 10)) * DPI / 72
-    min_px = float(st.get("min_size", 8)) * DPI / 72
-    f, lines, ys, ws, bb, notes = _fit_text(d, str(text), iw, ih, size, min(min_px, size), st.get("font_family"),
+    f, lines, ys, ws, bb, notes = _fit_text(d, str(text), iw, ih, size, 0, st.get("font_family"),
                                            bool(st.get("bold")), st.get("font_path"), st.get("wrap", True),
                                            float(st.get("line_spacing", 1.0)))
-    fits = not notes
     if notes:
-        msg = (f"элемент {el.get('id')}: текст {str(text)[:30]!r} не помещается в {w}×{h} даже при min_size — "
-               f"обрезан ({'; '.join(notes)})")
+        msg = (f"элемент {el.get('id')}: текст {str(text)[:30]!r} не помещается в {w}×{h} "
+               f"при заданном размере — обрезан ({'; '.join(notes)})")
         log.warning(msg); warnings.warn(msg, RuntimeWarning, stacklevel=3)
     color = _color(st.get("color"), (0, 0, 0, 255)); align = st.get("align", "left"); va = st.get("valign", "top")
-    if not lines: img.paste(layer, (x, y), layer); return
+    if not lines:
+        img.paste(layer, (x + pad, y + pad), layer); return
     th = bb[3] - bb[1]
-    oy = pad - bb[1] + {"middle": (ih - th) / 2, "center": (ih - th) / 2, "bottom": ih - th}.get(va, 0)
-    oy = min(max(oy, pad - bb[1]), pad + ih - bb[3]) if th <= ih else pad - bb[1]      # гарантия: внутри рамки
+    oy = -bb[1] + {"middle": (ih - th) / 2, "center": (ih - th) / 2, "bottom": ih - th}.get(va, 0)
+    oy = min(max(oy, -bb[1]), ih - bb[3]) if th <= ih else -bb[1]      # если выше рамки — сверху, низ обрежется
     for line, ly, lw in zip(lines, ys, ws):
         if not line: continue
         lb = d.textbbox((0, 0), line, font=f, anchor="la")
         gw = lb[2] - min(0, lb[0])
-        ox = pad - min(0, lb[0]) + {"center": (iw - gw) / 2, "right": iw - gw}.get(align, 0)
-        if gw <= iw: ox = min(max(ox, pad - min(0, lb[0])), pad + iw - lb[2])
+        ox = -min(0, lb[0]) + {"center": (iw - gw) / 2, "right": iw - gw}.get(align, 0)
+        if gw <= iw:
+            ox = min(max(ox, -min(0, lb[0])), iw - lb[2])
         d.text((ox, oy + ly), line, font=f, fill=color, anchor="la")
-    img.paste(layer, (x, y), layer)    # всё за пределами w×h отсечено слоем
+    img.paste(layer, (x + pad, y + pad), layer)
 
 # ---------- прочие элементы ----------
 def _px(st, key):

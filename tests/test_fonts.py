@@ -49,3 +49,16 @@ def test_larger_pt_gives_larger_bbox_when_text_fits():
     h12 = bb12[3] - bb12[1]
     h36 = bb36[3] - bb36[1]
     assert h36 > h12
+
+
+def test_larger_pt_gives_larger_glyphs_when_overflowing():
+    """В маленькой рамке больший pt всё равно даёт больший глиф (автоподбор выключен)."""
+    draw = ImageDraw.Draw(Image.new("RGB", (16, 16)))
+    f18, _l, _y, _w, bb18, n18 = _fit_text(
+        draw, "Ag", 40, 20, 18 * 300 / 72, 8 * 300 / 72, None, False, None, False, 1.0)
+    f48, _l, _y, _w, bb48, n48 = _fit_text(
+        draw, "Ag", 40, 20, 48 * 300 / 72, 8 * 300 / 72, None, False, None, False, 1.0)
+    assert f18.size == round(18 * 300 / 72)
+    assert f48.size == round(48 * 300 / 72)
+    assert (bb48[3] - bb48[1]) > (bb18[3] - bb18[1])
+    assert n18 and n48

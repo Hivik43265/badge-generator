@@ -53,13 +53,16 @@ def test_align(align, side):
     bb = ImageChops.difference(render_card(None, [el]), render_card(None, [])).getbbox()
     assert (bb[0] < 50) if side == "l" else (bb[2] > 950)
 
-def test_text_autoshrink_stays_in_box():
+def test_text_clipped_stays_in_box():
+    """Длинный текст при большом кегле обрезается по рамке, без автоуменьшения."""
+    from badge_backend import units_to_px, DPI
     el = dict(type="text", x=100, y=100, w=200, h=60, static_value="Очень длинная строка " * 10,
               style_json='{"font_size":40}')
     with pytest.warns(RuntimeWarning, match="обрезан"):
         im = render_card(None, [el])
     bb = ImageChops.difference(im, render_card(None, [])).getbbox()
-    assert bb and bb[0] >= 100 and bb[1] >= 100 and bb[2] <= 300 and bb[3] <= 160
+    xp, yp, wp, hp = (units_to_px(v, DPI) for v in (100, 100, 200, 60))
+    assert bb and bb[0] >= xp and bb[1] >= yp and bb[2] <= xp + wp and bb[3] <= yp + hp
 
 def test_rect_border_radius():
     el = dict(type="rect", x=100, y=100, w=200, h=200,
