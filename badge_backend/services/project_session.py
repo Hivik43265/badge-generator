@@ -52,6 +52,24 @@ def _host():
 def _pid_alive(pid, host=None) -> bool:
     if not pid: return False
     if host and host != _host(): return False
+    if os.name == "nt":
+        # os.kill(pid, 0) на Windows = CTRL_C_EVENT всей консольной группе.
+        import ctypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = ctypes.c_void_p
+        k32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        k32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+        k32.CloseHandle.argtypes = [ctypes.c_void_p]
+        h = k32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED -> жив
+        try:
+            code = ctypes.c_uint32()
+            if not k32.GetExitCodeProcess(h, ctypes.byref(code)):
+                return False
+            return code.value == 259  # STILL_ACTIVE
+        finally:
+            k32.CloseHandle(h)
     try:
         os.kill(int(pid), 0)
         return True
