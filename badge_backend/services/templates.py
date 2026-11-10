@@ -146,9 +146,9 @@ def update_element_style(con, element_id: int, **changes) -> dict | None:
     return st
 
 def list_font_families() -> list[str]:
-    """Семейства шрифтов, для которых найден TTF (кириллица), для списка «Шрифт»."""
-    from ..render.fonts import _FAMILIES, _find
-    return [f for f, (reg, _b) in _FAMILIES.items() if _find(reg)]
+    """Семейства шрифтов, которые рендерер реально может загрузить. Алиас list_fonts()."""
+    from ..render.fonts import list_fonts
+    return list_fonts()
 
 
 # ---------- режим правки шаблона: черновик через снимок (project_settings, без новой таблицы) ----------

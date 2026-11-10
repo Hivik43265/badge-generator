@@ -475,3 +475,4 @@ from .services.project_session import (  # noqa: F401,E402
     open_project, create_project, recover, list_recoverable_sessions)
 from .services.template_file import export_template, import_template, preview_template_file  # noqa: F401,E402
 from .services.smartid import import_smartid  # noqa: F401,E402
+from .render.fonts import list_fonts  # noqa: F401,E402
