@@ -1236,6 +1236,36 @@ if srcp.is_file() and hasattr(api, "get_photo_editor_state"):
 else:
     ok("редактор фото: нет файла/API — проверка вида пропущена")
 
+# --- открытие .csd как нового несохранённого проекта (без диалогов) ---
+_csd_cands = [
+    Path("/workspace/smartid_samples/license_to_firearms.csd"),
+    ROOT.parent / "smartid_samples" / "license_to_firearms.csd",
+    ROOT / "tests" / "fixtures" / "license_to_firearms.csd",
+]
+_csd = next((p for p in _csd_cands if p.is_file()), None)
+assert _csd is not None, f"нет demo license_to_firearms.csd, искали {_csd_cands}"
+_prev_path = w.api.session.source_path if w.api.session is not None else tmp / "test.db"
+_s15f.smartid_report_hook = lambda r: r
+_s15f.save_changes_hook = lambda: False
+res_sid = w.open_smartid(_csd)
+assert res_sid is not None and isinstance(res_sid.get("report"), dict), res_sid
+sess_sid = w.api.session
+assert sess_sid.source_path is None, sess_sid.source_path
+assert sess_sid.suggested_name == "license_to_firearms.db", sess_sid.suggested_name
+assert w.is_project_dirty()
+_keep_sid = sess_sid
+_s15f.save_changes_hook = lambda: None
+assert w.switch_db(tmp / "should_not_replace.db") is None
+assert w.api.session is _keep_sid and w.api.session.source_path is None
+_s15f.save_changes_hook = lambda: False
+if _prev_path and Path(_prev_path).exists():
+    w.switch_db(_prev_path)
+else:
+    w.switch_db(tmp / "test.db")
+_s15f.save_changes_hook = None
+_s15f.smartid_report_hook = None
+ok("открытие .csd: новый проект, путь пуст, suggested_name=license_to_firearms.db, отчёт получен; Отмена не заменяет грязную сессию")
+
 # ===== self-test (тот же сценарий click-all, что и --self-test) =====
 from ui import self_test
 rc = self_test.run(["x"], app=app, log_file=str(tmp / "self_test.log"))

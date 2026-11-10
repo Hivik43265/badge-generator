@@ -5,7 +5,7 @@ SQL и обработка изображений здесь запрещены: 
 from pathlib import Path
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (QHBoxLayout, QVBoxLayout, QPushButton, QLabel, QDialog, QListWidget, QListWidgetItem,
-                             QMessageBox, QFileDialog)
+                             QMessageBox, QFileDialog, QTextEdit)
 
 UNLINKED_COLOR = "#E07A00"      # рамка объекта шаблона «не связан» (после «Отвязать поле»)
 LINKED_COLOR = "#3070d0"        # обычная рамка (как в layout_editor.ElementItem)
@@ -22,6 +22,7 @@ save_template_project_hook = None  # тесты: hook() -> True (Да) | False (
 replace_template_hook = None  # тесты: hook() -> True | False
 recover_work_hook = None      # тесты: hook() -> True (Да) | False (Нет) | None (закрыть)
 bgt_path_hook = None          # тесты: hook("export"|"import") -> путь | None
+smartid_report_hook = None    # тесты: hook(result) вместо окна отчёта
 
 
 def stub_message(parent, title, text=STUB):
@@ -423,3 +424,58 @@ class TemplateManagerDialog(QDialog):
         parent = self.parent()
         if parent is not None and hasattr(parent, "refresh_all"): parent.refresh_all()
         return r
+
+def format_smartid_report(result):
+    """Текст отчёта импорта .csd/.csp — только отображение полученных данных."""
+    result = result or {}
+    rep = result.get("report") or {}
+    def _n(v):
+        if isinstance(v, int):
+            return v
+        return len(v or [])
+    imported, skipped, guessed = _n(rep.get("imported")), _n(rep.get("skipped")), _n(rep.get("guessed"))
+    created = list(rep.get("created_fields") or [])
+    warnings = list(rep.get("warnings") or [])
+    persons = int(result.get("persons_imported") or 0)
+    lines = [
+        f"Импортировано объектов: {imported}",
+        f"Пропущено объектов: {skipped}",
+        f"Догадок при разборе: {guessed}",
+    ]
+    if created:
+        lines.append("Созданы поля: " + ", ".join(str(x) for x in created))
+    else:
+        lines.append("Новых полей не создано.")
+    lines.append(f"Добавлено записей: {persons}")
+    if warnings:
+        lines.append("Предупреждения:")
+        for w in warnings:
+            lines.append(f"• {w}")
+    else:
+        lines.append("Предупреждений нет.")
+    return "\n".join(lines)
+
+
+class SmartIdImportReportDialog(QDialog):
+    """Окно отчёта после открытия .csd/.csp."""
+
+    def __init__(self, result, parent=None):
+        super().__init__(parent)
+        self.result = result or {}
+        self.setObjectName("dlg_smartid_import_report")
+        self.setWindowTitle("Отчёт об импорте")
+        self.resize(520, 380)
+        text = QTextEdit(); text.setReadOnly(True); text.setObjectName("txt_smartid_report")
+        text.setPlainText(format_smartid_report(self.result))
+        ok = QPushButton("ОК"); ok.setDefault(True); ok.clicked.connect(self.accept)
+        lay = QVBoxLayout(self); lay.addWidget(QLabel("Импорт из Smart ID Designer")); lay.addWidget(text, 1)
+        btns = QHBoxLayout(); btns.addStretch(1); btns.addWidget(ok); lay.addLayout(btns)
+
+
+def show_smartid_import_report(parent, result):
+    """Показать отчёт. Тесты подменяют диалог через smartid_report_hook."""
+    if smartid_report_hook is not None:
+        return smartid_report_hook(result)
+    d = SmartIdImportReportDialog(result, parent)
+    d.exec()
+    return d

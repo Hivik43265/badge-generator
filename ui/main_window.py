@@ -6,7 +6,8 @@ from pathlib import Path
 from PyQt6.QtCore import QSettings, Qt, QTimer, QThreadPool
 from PyQt6.QtGui import QAction, QActionGroup, QKeySequence
 from PyQt6.QtWidgets import (QMainWindow, QFileDialog, QMessageBox, QInputDialog, QSplitter, QMenu, QStackedWidget,
-                             QWidget, QVBoxLayout, QWidgetAction, QSpinBox, QDoubleSpinBox, QLabel, QHBoxLayout, QColorDialog, QComboBox)
+                             QWidget, QVBoxLayout, QWidgetAction, QSpinBox, QDoubleSpinBox, QLabel, QHBoxLayout, QColorDialog, QComboBox,
+                             QApplication)
 from .backend_api import (BackendAPI, DEFAULT_DB_PATH, TYPE_NAMES,
                           RecoverableProjectError, ProjectLockedError, ProjectSaveError,
                           UnsavedChangesError, TemplateEditActiveError, recover,
@@ -28,6 +29,16 @@ clear_marks_hook = None
 position_hook = None
 about_hook = None
 ask_hook = None
+
+# «Открыть»: наши проекты и Smart ID Designer рядом, плюс общий список типов.
+OPEN_FILE_FILTERS = (
+    "Все поддерживаемые (*.db *.sqlite *.csp *.csd);;"
+    "SQLite (*.db *.sqlite);;"
+    "Smart ID Designer (*.csp *.csd);;"
+    "Все файлы (*)"
+)
+SMARTID_SUFFIXES = {".csd", ".csp"}
+
 
 STYLE = """
 QMainWindow { background:#F6F8F7; }
@@ -490,7 +501,7 @@ class MainWindow(QMainWindow):
         db = self.stack.currentWidget() is self.db_page
         if db:
             self.preview_panel.set_person(pid)
-            self.layout_editor._set_person_meta(pid)
+            self.layout_editor.set_person(pid)
         else:
             self.layout_editor.set_person(pid)
             self.preview_panel.person_id = pid
@@ -575,11 +586,50 @@ class MainWindow(QMainWindow):
         suf = p.suffix or ".db"
         return str(p.with_name(f"{p.stem}_копия{suf}"))
 
+    def _save_as_start(self):
+        """Имя по умолчанию для «Сохранить как…»: suggested_name у несохранённого проекта
+        в последней папке проекта (settings db_path), иначе только имя."""
+        sess = getattr(self.api, "session", None)
+        if sess is not None and sess.source_path is None and getattr(sess, "suggested_name", None):
+            name = sess.suggested_name
+            last = str(self.settings.value("db_path", "") or "")
+            if last and last not in (":memory:", "", "."):
+                folder = Path(last).parent
+                if folder.is_dir() and str(folder) not in (".", ""):
+                    return str(folder / name)
+            return name
+        return self._copy_project_name()
+
     def _ask_path(self, kind, title, save=True, filt="SQLite (*.db *.sqlite)"):
         if ask_hook is not None: return ask_hook(kind, self)
-        start = self._copy_project_name() if kind == "save_as" else str(self.api.db_path)
+        start = self._save_as_start() if kind == "save_as" else str(self.api.db_path)
         f = QFileDialog.getSaveFileName if save else QFileDialog.getOpenFileName
         p, _ = f(self, title, start, filt); return p or None
+
+    def _confirm_save_if_dirty(self):
+        """До замены сессии: Да — сохранить; Нет — продолжить без записи; Отмена — False.
+        Без вопроса, если изменений нет. В смоуке без hook не показываем модальный диалог."""
+        sess = getattr(self.api, "session", None)
+        dirty = self.is_project_dirty()
+        if not dirty:
+            return True
+        if not (self._own_api or stage15.save_changes_hook is not None):
+            return True
+        ans = stage15.ask_save_changes(self)
+        if ans is None:
+            return False
+        if ans is True:
+            r = self.save_project()
+            if r is None and self.is_project_dirty():
+                return False
+        return True
+
+    def _reset_template_mode_ui(self):
+        tt = getattr(self, "template_tools", None)
+        if tt is not None and tt.template_mode:
+            tt._saving = True
+            try: tt.set_template_mode(False)
+            finally: tt._saving = False
 
     def new_project(self, path=None):
         path = path or self._ask_path("new", "Новый проект (файл БД)")
@@ -589,9 +639,37 @@ class MainWindow(QMainWindow):
         self.switch_db(path); return path
 
     def open_db(self, path=None):
-        path = path or self._ask_path("open", "Открыть проект", save=False)
-        if path: self.switch_db(path)
+        path = path or self._ask_path("open", "Открыть проект", save=False, filt=OPEN_FILE_FILTERS)
+        if not path: return None
+        if Path(path).suffix.lower() in SMARTID_SUFFIXES:
+            return self.open_smartid(path)
+        self.switch_db(path)
         return path
+
+    def open_smartid(self, path, confirm=True):
+        """Открыть .csd/.csp как новый несохранённый проект (без диалога выбора файла)."""
+        if confirm and not self._confirm_save_if_dirty():
+            return None
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            _session, result = self.api.import_smartid_as_new_project(path)
+        except TemplateEditActiveError:
+            QMessageBox.warning(self, "Импорт из Smart ID Designer", "Сначала выйдите из режима шаблона")
+            return None
+        except FileNotFoundError as e:
+            QMessageBox.warning(self, "Файл не найден", str(e))
+            return None
+        except ValueError as e:
+            QMessageBox.warning(self, "Не удалось импортировать", str(e))
+            return None
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.clipboard = None
+        self._dirty_override = None
+        self._reset_template_mode_ui()
+        self.refresh_all()
+        stage15.show_smartid_import_report(self, result)
+        return result
 
     def connect_db(self, path=None):
         if path is None and ask_hook is None:
@@ -807,11 +885,11 @@ class MainWindow(QMainWindow):
             self._suspend_sel = False
         pid = self.selected_person_id()
         if self.stack.currentWidget() is self.layout_editor:
-            self.layout_editor._set_person_meta(pid)
+            self.layout_editor.set_person(pid)
             self.layout_editor.reload()
             self.preview_panel.person_id = pid
         else:
-            self.layout_editor._set_person_meta(pid)
+            self.layout_editor.set_person(pid)
             self.preview_panel.set_person(pid)
         self.sync_template_style(); self._update_title()
 
@@ -858,9 +936,13 @@ class MainWindow(QMainWindow):
             raise
 
     def switch_db(self, path):
+        if not self._confirm_save_if_dirty(): return None
         if not self._attach_session(path): return None
-        if str(self.api.db_path) != ":memory:": self.settings.setValue("db_path", str(self.api.db_path))
+        sess = getattr(self.api, "session", None)
+        if sess is not None and sess.source_path is not None:
+            self.settings.setValue("db_path", str(self.api.db_path))
         self.clipboard = None; self._dirty_override = None
+        self._reset_template_mode_ui()
         self.refresh_all(); self._update_title()
         self.offer_template_restore()   # после рабочей копии — снимок шаблона, если он есть
 
@@ -916,39 +998,16 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, ev):
         sess = getattr(self.api, "session", None)
-        dirty = self.is_project_dirty()
-        # Вопрос «Сохранить изменения?» — своё окно приложения или явный test hook.
-        # Иначе w.close() в самотесте/смоуке зависает на модальном диалоге (сессия общая и dirty).
-        if dirty and (self._own_api or stage15.save_changes_hook is not None):
-            ans = stage15.ask_save_changes(self)
-            if ans is None:
-                ev.ignore(); return
-            if ans is True:
-                r = self.save_project()
-                if r is None and self.is_project_dirty():
-                    ev.ignore(); return
-            elif self._own_api and sess is not None:
-                try: sess.close(save=False)
-                except Exception:
-                    try: sess.discard()
-                    except Exception: pass
-                self.api.session = None; self.api.con = None
-        elif self._own_api and sess is not None:
+        # Тот же вопрос «Сохранить изменения?», что и при открытии/смене проекта.
+        # В смоуке без hook модальный диалог не показываем (иначе w.close() зависает).
+        if not self._confirm_save_if_dirty():
+            ev.ignore(); return
+        if self._own_api and sess is not None and getattr(self.api, "session", None) is sess:
             try:
-                sess.close()
-            except UnsavedChangesError:
-                ans = stage15.ask_save_changes(self)
-                if ans is None:
-                    ev.ignore(); return
-                try: sess.close(save=bool(ans))
-                except TemplateEditActiveError:
-                    if not stage15.ask_save_template_and_project(self):
-                        ev.ignore(); return
-                    try: sess.close(save=bool(ans), commit_template=True)
-                    except ProjectSaveError as e:
-                        stage15.show_save_error(self, e); ev.ignore(); return
-                except ProjectSaveError as e:
-                    stage15.show_save_error(self, e); ev.ignore(); return
+                sess.close(save=False)
+            except Exception:
+                try: sess.discard()
+                except Exception: pass
             self.api.session = None; self.api.con = None
         self.save_layout()          # расположение окна сохраняется автоматически
         if self._own_api and getattr(self.api, "con", None) is not None: self.api.close()
