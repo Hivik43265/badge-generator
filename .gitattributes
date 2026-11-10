@@ -1,0 +1,8 @@
+# Двоичные форматы: не подменять байты при checkout на Windows (CRLF).
+*.csd binary
+*.db binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary

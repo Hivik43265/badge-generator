@@ -123,19 +123,48 @@ def _read_dpi(data: bytes, size_off: int | None) -> int:
     return STORAGE_DPI
 
 
+def _printer_name_score(s: str) -> int:
+    """Оценка кандидата имени принтера. Сдвинутый UTF-16 (䤀䐀倀) даёт отрицательный балл."""
+    if len(s) < 3 or sum(c.isalpha() for c in s) < 3:
+        return -1
+    # ASCII, прочитанный на байт раньше: U+4100 вместо 'A' (0x41, 0x00)
+    if any(ord(c) > 127 and (ord(c) & 0xFF) == 0 and 0x20 <= (ord(c) >> 8) < 0x7F for c in s):
+        return -1
+    score = 0
+    for c in s:
+        o = ord(c)
+        if c.isascii() and (c.isprintable() or c.isspace()):
+            score += 2 if c.isalpha() else 1
+        elif 0x0400 <= o <= 0x04FF or 0x00C0 <= o <= 0x024F:
+            score += 2
+        else:
+            score -= 4
+    return score
+
+
 def _read_printer(data: bytes) -> str:
     j = data.find(b"PRN\x00")
     if j < 0:
         return ""
-    # после PRN\0 обычно несколько служебных байт, затем UTF-16 имя
+    # после PRN\0 несколько служебных байт, затем UTF-16LE имя.
+    # В образце IDP имя на смещении файла 29 (= j+8 при PRN на 21, 4 байта после PRN\0).
+    # Синтетический заголовок теста кладёт имя на нечётном смещении (j+7): нельзя
+    # искать только с шагом 2 и нельзя принимать любой isalpha() — иначе
+    # «\x00I\x00D…» читается как 䤀䐀倀.
     region = data[j + 4:j + 200]
-    # ищем начало печатной UTF-16 строки
-    for off in range(0, min(12, len(region) - 4), 2):
+    best = ""
+    best_score = 0
+    limit = min(16, max(0, len(region) - 4))
+    for off in range(0, limit):
         s = _utf16z(region, off, 64)
-        if len(s) >= 3 and any(c.isalpha() for c in s):
-            return s
+        sc = _printer_name_score(s)
+        if sc > best_score or (sc == best_score and sc > 0 and len(s) > len(best)):
+            best, best_score = s, sc
+    if best:
+        return best
+    # фиксированное смещение образца IDP: 4 байта после маркера PRN\0
     s = _utf16z(region, 4, 64)
-    return s
+    return s if _printer_name_score(s) > 0 else _clean_u16(s)
 
 
 def _scan_objects(data: bytes) -> list[int]:
