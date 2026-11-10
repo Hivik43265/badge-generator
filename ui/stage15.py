@@ -479,3 +479,22 @@ def show_smartid_import_report(parent, result):
     d = SmartIdImportReportDialog(result, parent)
     d.exec()
     return d
+
+def dropped_warning_box(parent, dropped):
+    """Немодальное предупреждение: что не попало в .csd, но осталось в проекте."""
+    box = QMessageBox(parent)
+    box.setObjectName("dlg_dropped_warning")
+    box.setWindowTitle("Сохранение")
+    box.setIcon(QMessageBox.Icon.Warning)
+    items = "\n".join(f"• {x}" for x in (dropped or []))
+    box.setText("В .csd не попало (в проекте сохранено):\n" + items)
+    box.addButton("ОК", QMessageBox.ButtonRole.AcceptRole)
+    return box
+
+
+def show_dropped_warning(parent, dropped):
+    """Показать список dropped через show(), не exec()."""
+    box = dropped_warning_box(parent, dropped)
+    box.show()
+    return box
+

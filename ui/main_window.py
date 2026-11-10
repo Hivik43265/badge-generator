@@ -37,6 +37,8 @@ OPEN_FILE_FILTERS = (
     "Smart ID Designer (*.csp *.csd);;"
     "Все файлы (*)"
 )
+# «Новый проект» / «Сохранить как…»: тройку (.csp + .csd + .db) пишет Backend.
+CSP_SAVE_FILTER = "Badge Generator / Smart ID (*.csp)"
 SMARTID_SUFFIXES = {".csd", ".csp"}
 
 
@@ -579,32 +581,77 @@ class MainWindow(QMainWindow):
                           QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows)
         self._sync_selection()
 
+    def _as_csp_name(self, name):
+        """Имя файла с суффиксом .csp (suggested_name или текущее имя)."""
+        p = Path(str(name or ""))
+        if not p or str(p) in (":memory:", "", "."):
+            return "проект.csp"
+        return str(p.with_suffix(".csp"))
+
     def _copy_project_name(self):
         p = Path(str(self.api.db_path))
         if not p or str(p) in (":memory:", "", "."):
-            return "проект_копия.db"
-        suf = p.suffix or ".db"
-        return str(p.with_name(f"{p.stem}_копия{suf}"))
+            return "проект_копия.csp"
+        return str(p.with_name(f"{p.stem}_копия.csp"))
+
+    def _project_title_name(self):
+        """Имя в заголовке окна: свой .csp, иначе .csp от suggested_name / текущего пути."""
+        sess = getattr(self.api, "session", None)
+        if sess is not None and getattr(sess, "csp_path", None):
+            return Path(sess.csp_path).name
+        if sess is not None and sess.source_path is None and getattr(sess, "suggested_name", None):
+            return Path(self._as_csp_name(sess.suggested_name)).name
+        p = Path(str(self.api.db_path))
+        if not p or str(p) in (":memory:", "", "."):
+            return str(p) if p else ":memory:"
+        if p.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
+            return p.with_suffix(".csp").name
+        return p.name
 
     def _save_as_start(self):
-        """Имя по умолчанию для «Сохранить как…»: suggested_name у несохранённого проекта
+        """Имя по умолчанию для «Сохранить как…»: .csp от suggested_name или текущего имени
         в последней папке проекта (settings db_path), иначе только имя."""
         sess = getattr(self.api, "session", None)
         if sess is not None and sess.source_path is None and getattr(sess, "suggested_name", None):
-            name = sess.suggested_name
+            name = self._as_csp_name(sess.suggested_name)
             last = str(self.settings.value("db_path", "") or "")
             if last and last not in (":memory:", "", "."):
                 folder = Path(last).parent
                 if folder.is_dir() and str(folder) not in (".", ""):
-                    return str(folder / name)
+                    return str(folder / Path(name).name)
             return name
+        if sess is not None and getattr(sess, "csp_path", None):
+            p = Path(sess.csp_path)
+            return str(p.with_name(f"{p.stem}_копия.csp"))
         return self._copy_project_name()
 
-    def _ask_path(self, kind, title, save=True, filt="SQLite (*.db *.sqlite)"):
+    def _new_project_start(self):
+        last = str(self.settings.value("db_path", "") or "")
+        name = "проект.csp"
+        if last and last not in (":memory:", "", "."):
+            folder = Path(last).parent
+            if folder.is_dir() and str(folder) not in (".", ""):
+                return str(folder / name)
+        return name
+
+    def _ask_path(self, kind, title, save=True, filt="SQLite (*.db *.sqlite)", start=None):
         if ask_hook is not None: return ask_hook(kind, self)
-        start = self._save_as_start() if kind == "save_as" else str(self.api.db_path)
+        if start is None:
+            if kind == "save_as":
+                start = self._save_as_start()
+            elif kind == "new":
+                start = self._new_project_start()
+            else:
+                start = str(self.api.db_path)
         f = QFileDialog.getSaveFileName if save else QFileDialog.getOpenFileName
         p, _ = f(self, title, start, filt); return p or None
+
+    def _show_dropped(self, result):
+        dropped = (result or {}).get("dropped") or []
+        if not dropped:
+            return None
+        self._dropped_box = stage15.show_dropped_warning(self, dropped)
+        return self._dropped_box
 
     def _confirm_save_if_dirty(self):
         """До замены сессии: Да — сохранить; Нет — продолжить без записи; Отмена — False.
@@ -632,11 +679,24 @@ class MainWindow(QMainWindow):
             finally: tt._saving = False
 
     def new_project(self, path=None):
-        path = path or self._ask_path("new", "Новый проект (файл БД)")
+        path = path or self._ask_path("new", "Новый проект", save=True, filt=CSP_SAVE_FILTER)
         if not path: return None
         if os.path.exists(path):
             QMessageBox.warning(self, "Новый проект", "Файл уже существует — используйте «Открыть»."); return None
-        self.switch_db(path); return path
+        if not self._confirm_save_if_dirty(): return None
+        try:
+            self.api.create_project(path)
+        except FileExistsError:
+            QMessageBox.warning(self, "Новый проект", "Файл уже существует — используйте «Открыть»."); return None
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, "Новый проект", str(e)); return None
+        sess = getattr(self.api, "session", None)
+        if sess is not None and sess.source_path is not None:
+            self.settings.setValue("db_path", str(sess.source_path))
+        self.clipboard = None; self._dirty_override = None
+        self._reset_template_mode_ui()
+        self.refresh_all(); self._update_title()
+        return path
 
     def open_db(self, path=None):
         path = path or self._ask_path("open", "Открыть проект", save=False, filt=OPEN_FILE_FILTERS)
@@ -668,7 +728,8 @@ class MainWindow(QMainWindow):
         self._dirty_override = None
         self._reset_template_mode_ui()
         self.refresh_all()
-        stage15.show_smartid_import_report(self, result)
+        if (result or {}).get("kind") != "own_project":
+            stage15.show_smartid_import_report(self, result)
         return result
 
     def connect_db(self, path=None):
@@ -725,12 +786,12 @@ class MainWindow(QMainWindow):
         if sess.source_path is None:
             return self.save_as()
         try:
-            r = sess.save()
+            r = self.api.save()
         except TemplateEditActiveError:
             if not stage15.ask_save_template_and_project(self):
                 return None
             try:
-                r = sess.save(commit_template=True)
+                r = self.api.save(commit_template=True)
             except ProjectSaveError as e:
                 stage15.show_save_error(self, e); return None
             self._after_template_committed()
@@ -743,6 +804,7 @@ class MainWindow(QMainWindow):
         self._dirty_override = None
         self._sync_api_from_session(); self._update_title()
         self.statusBar().showMessage("Проект сохранён")
+        self._show_dropped(r)
         return r
 
     def _bind_font(self, e):
@@ -797,28 +859,30 @@ class MainWindow(QMainWindow):
         self.refresh_all(); return choice
 
     def save_as(self, dest=None):
-        dest = dest or self._ask_path("save_as", "Сохранить как…")
+        dest = dest or self._ask_path("save_as", "Сохранить как…", filt=CSP_SAVE_FILTER)
         if not dest: return None
         sess = getattr(self.api, "session", None)
         if sess is None:
             stage15.show_save_error(self, "нет открытой сессии проекта"); return None
         try:
-            r = sess.save_as(dest, overwrite=True)
+            r = self.api.save_as(dest, overwrite=True)
         except TemplateEditActiveError:
             if not stage15.ask_save_template_and_project(self):
                 return None
             try:
-                r = sess.save_as(dest, overwrite=True, commit_template=True)
+                r = self.api.save_as(dest, overwrite=True, commit_template=True)
             except (ProjectSaveError, ValueError, FileExistsError) as e:
                 stage15.show_save_error(self, e); return None
         except (ProjectSaveError, ValueError, FileExistsError) as e:
             stage15.show_save_error(self, e); return None
-        self.api.adopt_session(sess)
         self._after_template_committed()
         self._dirty_override = None
-        if str(self.api.db_path) != ":memory:":
-            self.settings.setValue("db_path", str(self.api.db_path))
-        self.refresh_all(); self.statusBar().showMessage(f"Проект сохранён как: {self.api.db_path}")
+        if sess.source_path is not None or getattr(self.api, "db_path", None) not in (None, Path(":memory:")):
+            src = getattr(self.api.session, "source_path", None) or self.api.db_path
+            if str(src) not in (":memory:", ""):
+                self.settings.setValue("db_path", str(src))
+        self.refresh_all(); self.statusBar().showMessage(f"Проект сохранён как: {self._project_title_name()}")
+        self._show_dropped(r)
         return r
 
     def compact(self, backup_dir=None):
@@ -874,8 +938,9 @@ class MainWindow(QMainWindow):
 
     def _update_title(self):
         star = "* " if self.is_project_dirty() else ""
-        self.setWindowTitle(f"{star}Генератор пропусков — {self.api.db_path}")
-        self.statusBar().showMessage(f"БД: {self.api.db_path}; база путей фото: {self.api.base_dir}")
+        name = self._project_title_name()
+        self.setWindowTitle(f"{star}Генератор пропусков — {name}")
+        self.statusBar().showMessage(f"Проект: {name}; база путей фото: {self.api.base_dir}")
 
     def refresh_all(self):
         self._suspend_sel = True

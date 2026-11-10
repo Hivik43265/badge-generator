@@ -279,6 +279,22 @@ class BackendAPI:
         self.adopt_session(session)
         return session, result
 
+    def create_project(self, path):
+        """Создать проект-тройку (.csp + .csd + .db) и открыть сессию. Файл есть → FileExistsError."""
+        sess = _api.create_project(path)
+        self.adopt_session(sess)
+        return sess
+
+    def save(self, *, commit_template=False):
+        """session.save(); в результате есть dropped (что не попало в .csd)."""
+        return self.session.save(commit_template=commit_template)
+
+    def save_as(self, dest, *, overwrite=False, commit_template=False):
+        """session.save_as(); тройку пишет Backend. Результат содержит dropped."""
+        r = self.session.save_as(dest, overwrite=overwrite, commit_template=commit_template)
+        self.adopt_session(self.session)
+        return r
+
     # --- записи ---
     def list_fields(self): return _api.list_fields(self.con)
     def save_photo(self, image_bytes, *, person_id=None, ext="jpg"):
