@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import logging
+import os
+import sys
 
 from PIL import Image, ImageDraw, ImageFont
 
 from badge_backend.render import _fit_text
 from badge_backend.render.fonts import (
     FALLBACK_FAMILIES,
+    _font_dirs,
     fallback_family,
     get_font,
     list_font_families,
@@ -62,3 +65,11 @@ def test_larger_pt_gives_larger_glyphs_when_overflowing():
     assert f48.size == round(48 * 300 / 72)
     assert (bb48[3] - bb48[1]) > (bb18[3] - bb18[1])
     assert n18 and n48
+
+
+def test_font_dirs_includes_bundled_assets_when_not_frozen():
+    """Из исходников в сканируемые каталоги входит badge_backend/assets/fonts."""
+    assert getattr(sys, "_MEIPASS", None) is None
+    expected = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "badge_backend", "assets", "fonts"))
+    scanned = [os.path.abspath(d) for d in _font_dirs()]
+    assert expected in scanned

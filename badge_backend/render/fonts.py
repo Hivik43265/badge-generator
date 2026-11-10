@@ -35,6 +35,10 @@ def _font_dirs() -> list[str]:
     mei = getattr(sys, "_MEIPASS", None)
     if mei:
         dirs.extend((mei, os.path.join(mei, "fonts"), os.path.join(mei, "badge_backend", "fonts")))
+    else:
+        # Запуск из исходников: вшитые DejaVu в badge_backend/assets/fonts
+        bundled = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "assets", "fonts"))
+        dirs.append(bundled)
     return [d for d in dirs if d and os.path.isdir(d)]
 
 
