@@ -214,7 +214,11 @@ def photo_target(con, keys=()) -> str:
     return next((k for k in img if k in set(keys)), img[0] if img else "photo_path")
 
 def _file_backed_base(con):
-    """Каталог проекта для photos/ (D39); БД в памяти → None (копирование не выполняется)."""
+    """Каталог проекта для photos/ (D39); БД в памяти → None (копирование не выполняется).
+    Если задан set_project_base_dir (исходник сессии, не каталог .work в %TEMP%), берём его."""
+    from .photos import _CON_BASE_DIR
+    custom = _CON_BASE_DIR.get(id(con))
+    if custom: return custom
     for _, name, file in con.execute("PRAGMA database_list"):
         if name == "main": return Path(file).resolve().parent if file else None
     return None

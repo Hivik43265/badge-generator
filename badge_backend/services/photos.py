@@ -56,6 +56,56 @@ def save_photo(con, image_bytes, *, person_id=None, ext: str = "jpg", base_dir=N
     return rel
 
 
+_IMAGE_MAGICS = (b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n", b"GIF87a", b"GIF89a")
+
+def photo_image_bytes(value) -> bytes | None:
+    """Если value — сами байты картинки (JPEG/PNG/GIF), а не путь, вернуть байты.
+    Бывает, когда в image-поле сохранили содержимое файла (в т.ч. как latin-1 строку)."""
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        b = bytes(value)
+        return b if b.startswith(_IMAGE_MAGICS) else None
+    if isinstance(value, str) and value[:1] in ("\xff", "\x89", "G"):
+        try:
+            b = value.encode("latin-1")
+        except UnicodeEncodeError:
+            return None
+        return b if b.startswith(_IMAGE_MAGICS) else None
+    return None
+
+def _coerce_path_str(rel) -> str | None:
+    """Привести значение поля к строке пути; байты картинки / пусто → None."""
+    if rel in (None, ""):
+        return None
+    if photo_image_bytes(rel) is not None:
+        return None
+    if isinstance(rel, (bytes, bytearray, memoryview)):
+        try:
+            return bytes(rel).decode("utf-8")
+        except UnicodeDecodeError:
+            return bytes(rel).decode("utf-8", "surrogateescape")
+    return str(rel).strip() or None
+
+def open_photo_file(path) -> "Image.Image":
+    """Открыть файл картинки с EXIF-поворотом.
+    Файл читается через Python (Path.read_bytes), затем Pillow из памяти:
+    на Windows C-fopen / cv2.imread не открывают путь с кириллицей и другими не-ASCII."""
+    from PIL import Image, ImageOps
+    data = Path(path).read_bytes()
+    if not data:
+        raise ValueError("пустой файл")
+    with Image.open(io.BytesIO(data)) as im:
+        im = ImageOps.exif_transpose(im)
+        im.load()
+        return im.copy()
+
+def open_photo_bytes(data) -> "Image.Image":
+    """Открыть картинку из байтов (с EXIF-поворотом)."""
+    from PIL import Image, ImageOps
+    with Image.open(io.BytesIO(bytes(data))) as im:
+        im = ImageOps.exif_transpose(im)
+        im.load()
+        return im.copy()
+
 def _person_fields(person) -> dict:
     import json
     if not person: return {}
@@ -67,24 +117,45 @@ def _person_fields(person) -> dict:
     except (TypeError, ValueError): return {}
 
 def abs_path(rel, base_dir=None) -> Path | None:
-    """Относительный путь проекта → абсолютный Path (база base_dir, иначе cwd); пусто → None."""
+    """Относительный путь проекта → абсолютный Path (база base_dir, иначе cwd); пусто → None.
+    Если файла нет по указанному относительному пути, ищется ещё в <base>/photos/
+    (импорт часто пишет только имя файла при базе photo_dir)."""
+    rel = _coerce_path_str(rel)
     if rel in (None, ""): return None
-    p = Path(str(rel))
-    if not p.is_absolute(): p = Path(base_dir or Path.cwd()) / p
-    return p.absolute()
+    p = Path(rel)
+    if p.is_absolute():
+        return p.absolute()
+    base = Path(base_dir or Path.cwd())
+    primary = base / p
+    if primary.is_file():
+        return primary.absolute()
+    alts = []
+    if p.parts[:1] != (PHOTO_SUBDIR,):
+        alts.append(base / PHOTO_SUBDIR / p)
+    if len(p.parts) != 1:
+        alts.append(base / PHOTO_SUBDIR / p.name)
+    for c in alts:
+        if c.is_file():
+            return c.absolute()
+    return primary.absolute()
+
+def photo_field_value(person, element=None):
+    """Сырое значение фото: image-поле элемента (если непусто), иначе persons.photo_path."""
+    if person is not None and not isinstance(person, dict): person = dict(person)
+    fname = element if isinstance(element, str) else (element or {}).get("field_name")
+    if fname:
+        v = _person_fields(person).get(fname)
+        if v not in (None, ""): return v
+    return (person or {}).get("photo_path")
 
 def resolve_photo_path(person, element=None, base_dir=None) -> Path | None:
     """Единое правило фото записи (вариант (a)).
     person   dict/Row записи: fields_json (str|dict) или {'fields': {...}}, photo_path.
     element  элемент photo (dict с 'field_name') или имя image-поля (str); None — только photo_path.
     Значение привязанного image-поля, если непусто, иначе persons.photo_path → абсолютный Path; нет обоих → None.
-    Существование файла не проверяется (вызывающий решает: placeholder / warning)."""
-    if person is not None and not isinstance(person, dict): person = dict(person)
-    fname = element if isinstance(element, str) else (element or {}).get("field_name")
-    if fname:
-        v = _person_fields(person).get(fname)
-        if v not in (None, ""): return abs_path(v, base_dir)
-    return abs_path((person or {}).get("photo_path"), base_dir)
+    Существование файла не проверяется (вызывающий решает: placeholder / warning), кроме fallback в photos/.
+    Если в поле лежат байты картинки, а не путь, → None (см. photo_image_bytes)."""
+    return abs_path(photo_field_value(person, element), base_dir)
 
 def photo_file_issue(path) -> str | None:
     """None — файл есть и читается; иначе 'PHOTO_NOT_FOUND' | 'PHOTO_EMPTY' | 'PHOTO_BROKEN'."""
@@ -92,8 +163,7 @@ def photo_file_issue(path) -> str | None:
     if not p.is_file(): return "PHOTO_NOT_FOUND"
     if p.stat().st_size == 0: return "PHOTO_EMPTY"
     try:
-        from PIL import Image
-        with Image.open(p) as im: im.verify()
+        open_photo_file(p)
     except Exception:
         return "PHOTO_BROKEN"
     return None

@@ -241,14 +241,20 @@ def load_photo_for_edit(path, base_dir=None) -> Image.Image:
     """Открыть фото для редактора/сохранения: относительный путь — от base_dir (иначе cwd), EXIF-поворот
     (ImageOps.exif_transpose), режим → RGB (прозрачность → RGBA, оттенки серого → L). Файл закрывается.
     Нет файла/не картинка → ValueError. Единая точка для UI-превью и apply_and_save_photo."""
-    from .photos import abs_path
-    src = abs_path(path, base_dir)
-    if src is None: raise ValueError("путь к фото пуст")
-    try:
-        with Image.open(src) as im:
-            im = ImageOps.exif_transpose(im); im.load()
-    except (OSError, ValueError, SyntaxError) as e:
-        raise ValueError(f"не удалось открыть фото {path}: {e}") from None
+    from .photos import abs_path, open_photo_file, open_photo_bytes, photo_image_bytes
+    blob = photo_image_bytes(path)
+    if blob is not None:
+        try:
+            im = open_photo_bytes(blob)
+        except (OSError, ValueError, SyntaxError) as e:
+            raise ValueError(f"не удалось открыть фото {path}: {e}") from None
+    else:
+        src = abs_path(path, base_dir)
+        if src is None: raise ValueError("путь к фото пуст")
+        try:
+            im = open_photo_file(src)
+        except (OSError, ValueError, SyntaxError) as e:
+            raise ValueError(f"не удалось открыть фото {path}: {e}") from None
     if im.mode in ("RGB", "L", "RGBA"): return im
     has_alpha = im.mode in ("LA", "PA") or (im.mode == "P" and "transparency" in im.info)
     return im.convert("RGBA" if has_alpha else "L" if im.mode in ("1", "I", "I;16", "F") else "RGB")

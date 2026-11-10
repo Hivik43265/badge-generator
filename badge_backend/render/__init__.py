@@ -28,17 +28,30 @@ def _color(v, default=None):
     try: return ImageColor.getcolor(v, "RGBA") if isinstance(v, str) else tuple(v)
     except ValueError: return default
 
-from ..services.photos import resolve_photo_path  # noqa: E402
+from ..services.photos import resolve_photo_path, open_photo_file, open_photo_bytes, photo_image_bytes, photo_field_value  # noqa: E402
 
 def _resolve(path, base_dir):
     if not path: return None
     return path if os.path.isabs(path) or not base_dir else os.path.join(base_dir, path)
 
 def _open(path):
+    if not path: return None
     try:
-        im = Image.open(path); im.load(); return ImageOps.exif_transpose(im).convert("RGBA")
+        return open_photo_file(path).convert("RGBA")
     except Exception as e:  # noqa
         log.warning("не удалось открыть %s: %s", path, e); return None
+
+def _open_photo(person, el, base_dir):
+    """Исходник фото записи: путь (в т.ч. кириллица / photos/) или байты, лежащие в поле."""
+    pp = resolve_photo_path(person, el, base_dir)
+    src = _open(pp) if pp else None
+    if src is not None: return src
+    blob = photo_image_bytes(photo_field_value(person, el))
+    if not blob: return None
+    try:
+        return open_photo_bytes(blob).convert("RGBA")
+    except Exception as e:  # noqa
+        log.warning("не удалось открыть фото из значения поля: %s", e); return None
 
 def _cover(im, w, h):
     s = max(w / im.width, h / im.height)
@@ -313,8 +326,7 @@ def render_card(person, elements, side: str = "front", background=None, base_dir
                 if t == "field" and el.get("data_type"): val = format_value(el["data_type"], val) if val is not None else val
                 _draw_text(img, el, val, st)
             elif t == "photo":
-                pp = resolve_photo_path(person, el, base_dir)
-                src = _open(pp) if pp else None
+                src = _open_photo(person, el, base_dir)
                 view = _photo_view(person, el)
                 if src: tile = _view_tile(src, el["w"], el["h"], view)
                 else: tile = _placeholder(el["w"], el["h"])

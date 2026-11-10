@@ -21,22 +21,26 @@ def _qimage(pil_img):
     return q
 
 def setup_printer(printer) -> None:
-    """Выставить страницу CR80 85.6×54 мм, нулевые поля, FullPage.
+    """Выставить страницу CR80 85.6×54 мм (альбомная), нулевые поля, FullPage.
 
     FuzzyMatch, не ExactMatch: карточный принтер часто заявляет ISO ID-1 85.60×53.98 мм.
     ExactMatch с высотой, отличающейся на сотые мм, не совпадает — setPageLayout тихо отказывает, страница
     остаётся A4 (после QPrintDialog), и drawImage на весь paperRect растягивал пропуск до A4.
+    Ориентация только Landscape: QPageSize хранит размер книжно (53.98×85.6), Portrait обрезал бы карточку справа.
     """
     from PyQt6.QtCore import QSizeF, QMarginsF
     from PyQt6.QtGui import QPageSize, QPageLayout
     size = QPageSize(QSizeF(CARD_W_MM, CARD_H_MM), QPageSize.Unit.Millimeter, "CR80",
                      QPageSize.SizeMatchPolicy.FuzzyMatch)
     margins = QMarginsF(0, 0, 0, 0)
-    layout = QPageLayout(size, QPageLayout.Orientation.Portrait, margins,
+    # QPageSize всегда хранит размер в книжном виде (меньшая сторона — ширина):
+    # 85.6×53.98 превращается в 53.98×85.6. Portrait оставил бы страницу вертикальной
+    # и обрезал правый край карточки. Карточка всегда горизонтальная — только Landscape.
+    layout = QPageLayout(size, QPageLayout.Orientation.Landscape, margins,
                          QPageLayout.Unit.Millimeter, margins)
     if not printer.setPageLayout(layout):
         printer.setPageSize(size)
-        printer.setPageOrientation(QPageLayout.Orientation.Portrait)
+        printer.setPageOrientation(QPageLayout.Orientation.Landscape)
         printer.setPageMargins(margins, QPageLayout.Unit.Millimeter)
     printer.setFullPage(True)   # после setPageLayout, иначе сбрасывается
 
