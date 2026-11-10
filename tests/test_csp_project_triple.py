@@ -46,6 +46,14 @@ def test_csp_project_triple(tmp_path):
         assert session.last_save_dropped == r["dropped"]
         assert dest.with_suffix(".csd").is_file()
         assert dest.with_suffix(".csp").is_file()
+        own_csd = dest.with_suffix(".csd")
+        assert Path(r["reference_csd"]).resolve() == own_csd.resolve()
+        assert Path(r["reference_csd"]).resolve() != ref.resolve()
+        marker = b"BG_OWN_CSD_MARKER_v1"
+        own_csd.write_bytes(own_csd.read_bytes() + marker)
+        r_again = session.save()
+        assert Path(r_again["reference_csd"]).resolve() == own_csd.resolve()
+        assert own_csd.read_bytes().endswith(marker)
     finally:
         session.discard()
 
@@ -82,8 +90,20 @@ def test_csp_project_triple(tmp_path):
         assert "dropped" in saved
         with pytest.raises(ValueError, match="Smart ID Designer"):
             imported.save_as(sample)
-    finally:
         imported.discard()
+        imported = None
+        reopened, own_res = api.open_csd_or_csp(out.with_suffix(".csp"))
+        try:
+            assert own_res["kind"] == "own_project"
+            r_own = reopened.save()
+            assert Path(r_own["reference_csd"]).resolve() == out.with_suffix(".csd").resolve()
+            assert Path(r_own["reference_csd"]).resolve() != sample.resolve()
+            assert Path(r_own["reference_csd"]).resolve() != ref.resolve()
+        finally:
+            reopened.discard()
+    finally:
+        if imported is not None:
+            imported.discard()
 
     old = tmp_path / "legacy" / "oldonly.db"
     old.parent.mkdir(parents=True)
@@ -109,3 +129,13 @@ def test_csp_project_triple(tmp_path):
         assert Path(r2["reference_csd"]).resolve() == ref.resolve()
     finally:
         legacy.discard()
+
+    from badge_backend.services.project_session import create_unsaved_project
+    fresh = create_unsaved_project("fresh")
+    try:
+        assert fresh.source_path is None
+        assert not fresh.import_source_paths
+        rf = fresh.save_as(tmp_path / "fresh" / "fresh.db")
+        assert Path(rf["reference_csd"]).resolve() == ref.resolve()
+    finally:
+        fresh.discard()

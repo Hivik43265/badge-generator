@@ -1,8 +1,7 @@
 """Запись .csd/.csp и круговой прогон через import_smartid.
 
 Не запускать на Linux — только Windows CI. Фикстура демо-макета:
-tests/fixtures/license_to_firearms.csd (~10 МБ), тот же путь, что ищет
-smoke-тест Frontend (коммит 017d12a).
+badge_backend/assets/smartid/reference.csd (~10 МБ).
 """
 import io
 import sqlite3
@@ -14,7 +13,8 @@ from badge_backend import api
 from badge_backend.services import smartid
 from badge_backend.services.smartid_write import SmartIdSourceProtectedError
 
-FIXTURE = Path(__file__).resolve().parent / "fixtures" / "license_to_firearms.csd"
+FIXTURE = (Path(__file__).resolve().parents[1] / "badge_backend" /
+           "assets" / "smartid" / "reference.csd")
 
 
 def _png(w=8, h=8, color=(10, 20, 30)):

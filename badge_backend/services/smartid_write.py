@@ -53,8 +53,8 @@ dict одного из двух видов (ключи можно смешива
 
 Неизвестные байты (заголовок до фонового PNG, хвост после таблицы CGFld,
 неразобранные поля каждой записи) копируются как есть из эталонного .csd:
-исходник шаблона (template["source"] / import_source_paths), иначе демо
-tests/fixtures/license_to_firearms.csd; явно — параметр reference_csd.
+исходник шаблона (template["source"] / import_source_paths), иначе
+встроенный badge_backend/assets/smartid/reference.csd; явно — параметр reference_csd.
 Известные поля (размер карточки, dpi, принтер, геометрия, шрифт, цвет,
 выравнивание, текст, PNG, имена полей) записываются поверх эталона.
 
@@ -307,16 +307,8 @@ def bundled_reference_csd() -> Path | None:
 
 
 def default_reference_csd() -> Path | None:
-    """Эталон неизвестных байтов: встроенный ресурс, иначе tests/fixtures."""
-    found = bundled_reference_csd()
-    if found is not None:
-        return found
-    name = Path("tests") / "fixtures" / "license_to_firearms.csd"
-    here = Path(__file__).resolve()
-    cands = [parent / name for parent in here.parents]
-    cands.append(Path("/workspace/smartid_samples/license_to_firearms.csd"))
-    cands.append(Path.cwd() / name)
-    return _first_existing(cands)
+    """Эталон неизвестных байтов: встроенный ресурс."""
+    return bundled_reference_csd()
 
 
 def _first_existing(cands) -> Path | None:
@@ -908,7 +900,7 @@ def write_csd(template, path, *, overwrite: bool = False, import_source_paths=No
     overwrite=True разрешает заменить файл, но не исходник Smart ID
     (см. import_source_paths и template["source"] в docstring модуля).
     reference_csd — явный эталон неизвестных байтов; иначе исходник шаблона
-    или tests/fixtures/license_to_firearms.csd.
+    или badge_backend/assets/smartid/reference.csd.
     """
     dest = _check_target(path, overwrite=overwrite, template=template,
                          import_source_paths=import_source_paths)

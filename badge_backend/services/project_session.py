@@ -681,10 +681,9 @@ class ProjectSession:
         """True, если сессия уже привязана к своему .csp (не любой файл рядом)."""
         return bool(self.csp_path and self.csd_path)
 
-    def _reference_csd(self):
-        """Исходный .csd импорта Smart ID или встроенный эталон."""
+    def _import_source_csd(self):
+        """Исходный .csd импорта Smart ID (из import_source_paths), если есть."""
         from .smartid import parse_csp, resolve_csp_csd
-        from .smartid_write import bundled_reference_csd
         for raw in self.import_source_paths or []:
             if raw is None:
                 continue
@@ -698,7 +697,10 @@ class ProjectSession:
             if raw is None:
                 continue
             q = Path(raw)
-            if not (q.is_file() and q.suffix.lower() == ".csp"):
+            try:
+                if not (q.is_file() and q.suffix.lower() == ".csp"):
+                    continue
+            except OSError:
                 continue
             try:
                 csd = resolve_csp_csd(parse_csp(q))
@@ -706,6 +708,31 @@ class ProjectSession:
                 continue
             if csd.is_file():
                 return csd
+        return None
+
+    def _own_csd_file(self):
+        """Существующий .csd этого проекта (после создания или Save As)."""
+        if self.csd_path:
+            p = Path(self.csd_path)
+            if p.is_file():
+                return p
+        if self.source_path:
+            p = Path(self.source_path).with_suffix(".csd")
+            if p.is_file():
+                return p
+        return None
+
+    def _reference_csd(self):
+        """Эталон для write_csd: (a) исходный .csd импорта — только пока сессия
+        несохранена; (b) свой уже записанный .csd; (c) встроенный ресурс."""
+        from .smartid_write import bundled_reference_csd
+        if self.source_path is None:
+            src = self._import_source_csd()
+            if src is not None:
+                return src
+        own = self._own_csd_file()
+        if own is not None:
+            return own
         return bundled_reference_csd()
 
     def _write_companions(self, dest_db: Path, *, overwrite: bool, required: bool) -> dict:
@@ -740,8 +767,23 @@ class ProjectSession:
             self.con, base_dir=self.base_dir,
             import_source_paths=self.import_source_paths,
         )
-        ref = self._reference_csd()
+        logical_ref = self._reference_csd()
+        ref_tmp = None
         try:
+            ref = logical_ref
+            # (b) свой .csd = и эталон, и назначение: сначала снимок в память/temp,
+            # затем write_csd атомарно перезаписывает назначение (temp + os.replace).
+            if (logical_ref is not None and Path(csd).exists()
+                    and _same_path(logical_ref, csd)):
+                blob = Path(logical_ref).read_bytes()
+                fd, tmp_name = tempfile.mkstemp(
+                    prefix=Path(csd).name + ".", suffix=".ref.csd",
+                    dir=str(Path(csd).parent),
+                )
+                os.close(fd)
+                ref_tmp = Path(tmp_name)
+                ref_tmp.write_bytes(blob)
+                ref = ref_tmp
             wr = write_csd(
                 tmpl, csd, overwrite=overwrite,
                 import_source_paths=self.import_source_paths,
@@ -758,6 +800,12 @@ class ProjectSession:
                 "нельзя сохранить проект поверх исходного файла Smart ID Designer "
                 f"(.csp, .csd или его базы данных):\n{e}"
             ) from e
+        finally:
+            if ref_tmp is not None:
+                try:
+                    ref_tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
         dropped = list(wr.get("dropped") or []) + list(wr2.get("dropped") or [])
         self.csp_path = Path(wr2["path"]).resolve() if wr2.get("path") else csp.resolve()
         self.csd_path = Path(wr["path"]).resolve() if wr.get("path") else csd.resolve()
@@ -767,7 +815,7 @@ class ProjectSession:
             "csd_path": self.csd_path,
             "csp_path": self.csp_path,
             "db_path": dest_db,
-            "reference_csd": ref,
+            "reference_csd": logical_ref,
         }
 
     def _rm_owned_base_dir(self, path: Path | None) -> None:

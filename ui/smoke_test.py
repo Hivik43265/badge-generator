@@ -1240,10 +1240,10 @@ else:
 _csd_cands = [
     Path("/workspace/smartid_samples/license_to_firearms.csd"),
     ROOT.parent / "smartid_samples" / "license_to_firearms.csd",
-    ROOT / "tests" / "fixtures" / "license_to_firearms.csd",
+    ROOT / "badge_backend" / "assets" / "smartid" / "reference.csd",
 ]
 _csd = next((p for p in _csd_cands if p.is_file()), None)
-assert _csd is not None, f"нет demo license_to_firearms.csd, искали {_csd_cands}"
+assert _csd is not None, f"нет demo reference.csd / license_to_firearms.csd, искали {_csd_cands}"
 _prev_path = w.api.session.source_path if w.api.session is not None else tmp / "test.db"
 _s15f.smartid_report_hook = lambda r: r
 _s15f.save_changes_hook = lambda: False
@@ -1251,7 +1251,7 @@ res_sid = w.open_smartid(_csd)
 assert res_sid is not None and isinstance(res_sid.get("report"), dict), res_sid
 sess_sid = w.api.session
 assert sess_sid.source_path is None, sess_sid.source_path
-assert sess_sid.suggested_name == "license_to_firearms.db", sess_sid.suggested_name
+assert sess_sid.suggested_name == f"{_csd.stem}.db", sess_sid.suggested_name
 assert w.is_project_dirty()
 _keep_sid = sess_sid
 _s15f.save_changes_hook = lambda: None
