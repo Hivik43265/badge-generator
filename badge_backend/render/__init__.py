@@ -5,7 +5,7 @@
 Элементы рисуются по возрастанию z_order (затем id).
 """
 from __future__ import annotations
-import json, logging, os, warnings
+import json, logging, math, os, warnings
 from ..fields import format_value
 from PIL import Image, ImageDraw, ImageColor, ImageOps
 from .. import CARD_W_PX, CARD_H_PX, DPI, CARD_W_UNITS, CARD_H_UNITS, units_to_px
@@ -374,6 +374,19 @@ def _prep_style(st):
         except (TypeError, ValueError): pass
     return st
 
+def _line_points(el, st):
+    """Концы линии (px); при rotation — поворот по часовой стрелке вокруг центра рамки."""
+    x0, y0, x1, y1 = el["x"], el["y"], el["x"] + el["w"], el["y"] + el["h"]
+    rot = float(st.get("rotation") or 0)
+    if rot % 360 == 0:
+        return (x0, y0, x1, y1)
+    a = math.radians(rot); ca, sa = math.cos(a), math.sin(a)
+    cx, cy = el["x"] + el["w"] / 2, el["y"] + el["h"] / 2
+    def r(px, py):
+        dx, dy = px - cx, py - cy
+        return (cx + dx * ca - dy * sa, cy + dx * sa + dy * ca)   # ось y вниз → по часовой
+    return (*r(x0, y0), *r(x1, y1))
+
 def _composite_layer(img, layer, el, st):
     """Наклеить слой w×h; при rotation — вокруг центра рамки по часовой стрелке."""
     rot = float(st.get("rotation") or 0)
@@ -420,7 +433,8 @@ def render_card(person, elements, side: str = "front", background=None, base_dir
                 c = bc or _color(st.get("stroke", st.get("color")), (0, 0, 0, 255))
                 sw = bw or max(1, round(_px(st, "stroke_width") or 1))
                 layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
-                ImageDraw.Draw(layer).line((el["x"], el["y"], el["x"] + el["w"], el["y"] + el["h"]), fill=c, width=sw)
+                pts = _line_points(el, st)
+                ImageDraw.Draw(layer).line(pts, fill=c, width=sw)
                 img.alpha_composite(layer)
                 continue
             tile = Image.new("RGBA", (max(1, el["w"]), max(1, el["h"])), (0, 0, 0, 0))
