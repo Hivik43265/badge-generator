@@ -3,7 +3,7 @@
 Версия 1 = schema.sql. Новые версии добавляются в MIGRATIONS как ALTER-скрипты
 и применяются по порядку и к новым, и к существующим БД.
 """
-import json, logging, sqlite3
+import json, logging, re, sqlite3
 from pathlib import Path
 DEFAULT_DB_PATH = "project.db"   # имя файла БД проекта; относительный путь — от каталога проекта (по умолчанию cwd)
 log = logging.getLogger(__name__)
@@ -157,8 +157,8 @@ def _v7_templates(con):
     2) template_elements пересобирается: + template_id, снят CHECK «field ⇒ field_name» (отвязанный объект остаётся полем);
     3) template_backgrounds2 (template_id, side); старая template_backgrounds не удаляется (legacy, только чтение);
     4) person_photo_views (вид фото записи, исходник не меняется);
-    5) есть фото (photo_path у записей или фото-объекты) и нет ни одного image-поля → создаётся «Фото», persons.photo_path копируется в него, несвязанные фото-объекты
-       связываются с ним (файлы и photo_path не трогаются);
+    5) (снято замечанием №4, 11.11) раньше здесь создавалось поле «Фото»; теперь полей миграция не создаёт —
+       несвязанный фото-объект рисует persons.photo_path (photos.photo_field_value), данные не теряются;
     7) persons.photo_config → person_photo_views[''] {'placement': ...} + триггеры синхронизации (колонка остаётся);
     6) время: триггеры пишут локальное время со смещением; старые created_at/updated_at (UTC) → локальные."""
     con.execute("""CREATE TABLE IF NOT EXISTS templates (
@@ -199,18 +199,8 @@ def _v7_templates(con):
             created_at = CASE WHEN instr(NEW.created_at, 'T') = 0 THEN {LOCAL_NOW_SQL} ELSE NEW.created_at END,
             updated_at = CASE WHEN instr(NEW.updated_at, 'T') = 0 THEN {LOCAL_NOW_SQL} ELSE NEW.updated_at END
         WHERE id = NEW.id; END""")
-    has_photo = con.execute("SELECT 1 FROM persons WHERE COALESCE(photo_path, '') <> '' UNION ALL "
-                            "SELECT 1 FROM template_elements WHERE type='photo' LIMIT 1").fetchone() is not None
-    # D24: пустой/новый проект полей не получает — «Фото» создаётся только там, где фото уже используется
-    if has_photo and con.execute("SELECT 1 FROM person_fields WHERE data_type='image'").fetchone() is None:
-        so = con.execute("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM person_fields").fetchone()[0]
-        con.execute("INSERT INTO person_fields(name, label, sort_order, data_type) VALUES (?, ?, ?, 'image') "
-                    "ON CONFLICT(name) DO UPDATE SET data_type='image'", (PHOTO_FIELD, PHOTO_FIELD, so))
-        con.execute("UPDATE persons SET fields_json = json_set(fields_json, ?, photo_path) "
-                    "WHERE COALESCE(photo_path, '') <> '' AND COALESCE(json_extract(fields_json, ?), '') = ''",
-                    ('$."Фото"', '$."Фото"'))
-        con.execute("UPDATE template_elements SET field_name=? WHERE type='photo' AND COALESCE(field_name, '') = ''",
-                    (PHOTO_FIELD,))
+    # Замечание №4 (11.11): автоматических полей нет (кроме «Дата печати»): «Фото» здесь больше не создаётся,
+    # persons.photo_path и несвязанные фото-объекты остаются как есть (рендер берёт photo_path).
     _sync_photo_config_views(con)
     rows = con.execute("SELECT id, created_at, updated_at FROM persons").fetchall()
     for pid, c, u in rows:
@@ -367,7 +357,77 @@ def _v8_units(con):
     log.info("схема v7→v8, координаты пересчитаны в 0,1 мм")
 
 
-MIGRATIONS = [SCHEMA, _v2_printed_at, _v3_line, _v4_ellipse_defaults, _v5_field_types, _V6_SETTINGS, _v7_templates, _v8_units]   # индекс + 1 = user_version; str — SQL-скрипт, callable — шаг на Python
+# ---------- v9 (замечание №4, 11.11): чистка автоматических полей-дублей ----------
+_AUTO_PHOTO_RE = re.compile(r"^Фото(?: [0-9]+)?$")
+
+
+def _is_auto_image_field(name) -> bool:
+    """Поле, которое создавала сама программа: «Фото», «Фото 2», «Фото 3», … (ensure_photo_field / v7) или «logo»."""
+    n = str(name or "")
+    return bool(_AUTO_PHOTO_RE.match(n)) or n.casefold() == "logo"
+
+
+def _v9_auto_fields(con):
+    """v9: убрать авто-поля «Фото N»/«logo» (только data_type='image'), если у пользователя есть СВОЁ image-поле.
+    Своё поле — первое image-поле не из авто-набора (sort_order, name). Своего нет → ничего не меняется.
+    Для каждого авто-поля:
+      1) persons.fields_json: значение переносится в своё поле, только если там пусто (None/''); после переноса,
+         а также если авто-значение пустое или совпадает со своим, ключ авто-поля удаляется. Оба значения
+         непустые и разные → ключ авто-поля остаётся в fields_json (данные не теряются);
+      2) template_elements (все шаблоны) и снимок правки шаблона: field_name авто-поля → своё поле;
+      3) person_photo_views: вид фото авто-поля переходит своему полю, если у записи там вида нет;
+      4) строка person_fields авто-поля удаляется.
+    updated_at записей не меняется (триггер persons_touch снимается на время шага и ставится обратно).
+    Шаг в общей транзакции migrate(): ошибка → ROLLBACK и MigrationError, файл не меняется."""
+    names = [r[0] for r in con.execute("SELECT name FROM person_fields WHERE data_type='image' ORDER BY sort_order, name")]
+    auto = [n for n in names if _is_auto_image_field(n)]
+    own = [n for n in names if n not in auto]
+    if not auto or not own:
+        return
+    target = own[0]
+    trg = con.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='persons_touch'").fetchone()
+    if trg: con.execute("DROP TRIGGER persons_touch")
+    moved = 0
+    for pid, fj in con.execute("SELECT id, fields_json FROM persons").fetchall():
+        try: f = json.loads(fj or "{}")
+        except (TypeError, ValueError): continue
+        if not isinstance(f, dict): continue
+        changed = False
+        for a in auto:
+            if a not in f: continue
+            v, tv = f[a], f.get(target)
+            if v in (None, ""):
+                f.pop(a); changed = True
+            elif tv in (None, ""):
+                f[target] = v; f.pop(a); changed = True; moved += 1
+            elif tv == v:
+                f.pop(a); changed = True
+        if changed:
+            con.execute("UPDATE persons SET fields_json=? WHERE id=?", (json.dumps(f, ensure_ascii=False), pid))
+    qm = ",".join("?" * len(auto))
+    con.execute(f"UPDATE template_elements SET field_name=? WHERE field_name IN ({qm})", (target, *auto))
+    tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "person_photo_views" in tables:
+        con.execute(f"UPDATE OR IGNORE person_photo_views SET field_name=? WHERE field_name IN ({qm})", (target, *auto))
+        con.execute(f"DELETE FROM person_photo_views WHERE field_name IN ({qm})", tuple(auto))
+    row = con.execute("SELECT value FROM project_settings WHERE key='template_edit_snapshot'").fetchone() \
+        if "project_settings" in tables else None
+    if row:
+        try: snap = json.loads(row[0])
+        except (TypeError, ValueError): snap = None
+        els = snap.get("elements") if isinstance(snap, dict) else None
+        if isinstance(els, list):
+            for e in els:
+                if isinstance(e, dict) and e.get("field_name") in auto: e["field_name"] = target
+            con.execute("UPDATE project_settings SET value=? WHERE key='template_edit_snapshot'",
+                        (json.dumps(snap, ensure_ascii=False),))
+    con.execute(f"DELETE FROM person_fields WHERE name IN ({qm})", tuple(auto))
+    if trg: con.execute(trg[0])
+    log.info("схема v8→v9: авто-поля %s сведены в «%s» (перенесено значений: %d)", auto, target, moved)
+
+
+MIGRATIONS = [SCHEMA, _v2_printed_at, _v3_line, _v4_ellipse_defaults, _v5_field_types, _V6_SETTINGS, _v7_templates, _v8_units,
+              _v9_auto_fields]   # индекс + 1 = user_version; str — SQL-скрипт, callable — шаг на Python
 LATEST = len(MIGRATIONS)
 
 def now_iso() -> str:

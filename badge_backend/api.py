@@ -110,6 +110,11 @@ def list_fields(con) -> list[dict]:
     D24: person_fields — единственный источник полей; новая БД полей не содержит."""
     return [dict(r) for r in con.execute("SELECT * FROM person_fields ORDER BY sort_order, name")]
 
+def list_image_fields(con) -> list[dict]:
+    """Замечание №4: поля типа «изображение» (data_type='image') в порядке sort_order, name —
+    те же ключи, что у list_fields (name, label, sort_order, default_value, data_type). Пусто — [] (ничего не создаётся)."""
+    return [dict(r) for r in con.execute("SELECT * FROM person_fields WHERE data_type='image' ORDER BY sort_order, name")]
+
 def upsert_field(con, name: str, label: str, sort_order: int = 0, default_value: str | None = ...,
                  data_type: str | None = None) -> None:
     """Создать/обновить поле — единственный способ создать поле (D24).
@@ -148,13 +153,13 @@ def _el_vals(d):
 
 def create_element(con, type: str, x: int, y: int, w: int, h: int, side: str = "front", z_order: int = 0,
                    field_name: str | None = None, static_value: str | None = None, style: dict | None = None,
-                   *, template_id: int | None = None, auto_photo_field: bool = True) -> int:
+                   *, template_id: int | None = None) -> int:
     """Добавить элемент (type: text|field|photo|image|rect|qr|barcode|line; у line w,h — вектор, может быть ≤0, но не (0,0)). Нарушение CHECK → sqlite3.IntegrityError.
-    Этап 15: элемент попадает в template_id (None — активный шаблон). type='photo' без field_name и
-    auto_photo_field=True → создаётся (если нет) поле «Фото» типа image и объект сразу с ним связан (ensure_photo_field).
+    Этап 15: элемент попадает в template_id (None — активный шаблон).
+    Замечание №4 (11.11): полей автоматически не создаётся — type='photo' без field_name создаётся НЕпривязанным
+    (рисует persons.photo_path записи, иначе заглушку); привязка — link_field к image-полю (list_image_fields).
     type='field' без field_name → IntegrityError (поле без связи бывает только после unlink_field)."""
     if type == "field" and not field_name: raise _sqlite3.IntegrityError("элемент 'field' требует field_name")
-    if type == "photo" and not field_name and auto_photo_field: field_name = ensure_photo_field(con)
     tid = template_id or active_template_id(con)
     v = _el_vals(dict(type=type, x=x, y=y, w=w, h=h, side=side, z_order=z_order, field_name=field_name,
                       static_value=static_value, style_json=style or {}))
@@ -447,20 +452,6 @@ from .services.photo_edit import get_photo_frame_spec, photo_edit_target  # noqa
 from .services.photo_edit import (DEFAULT_PHOTO_EDIT, apply_photo_edit, detect_face_crop,  # noqa: F401,E402
                                   get_photo_edit_defaults, set_photo_edit_defaults, apply_and_save_photo,
                                   load_photo_for_edit, load_photo_for_preview)
-
-# ---------- этап 15 ----------
-def ensure_photo_field(con) -> str:
-    """Поле «Фото» типа image: есть — его имя; нет — создаётся (label «Фото», в конце списка).
-    Имя «Фото» занято полем другого типа → создаётся «Фото 2» (3, …). → имя поля."""
-    base = _db.PHOTO_FIELD; name = base; n = 1
-    while True:
-        r = con.execute("SELECT data_type FROM person_fields WHERE name=?", (name,)).fetchone()
-        if r is None: break
-        if r[0] == "image": return name
-        n += 1; name = f"{base} {n}"
-    so = con.execute("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM person_fields").fetchone()[0]
-    upsert_field(con, name, name, so, data_type="image")
-    return name
 
 from .services.templates import (list_templates, get_template, get_active_template, set_active_template,  # noqa: F401,E402
                                  create_template, rename_template, delete_template, save_template,
