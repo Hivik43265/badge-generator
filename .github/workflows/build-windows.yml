@@ -103,7 +103,27 @@ jobs:
           Start-Sleep -Seconds 15
           if ($p.HasExited) { throw "BadgeGenerator.exe exited early, code $($p.ExitCode)" }
           Stop-Process -Id $p.Id -Force
-          if (-not (Test-Path "$env:APPDATA\BadgeGenerator\project.db")) { throw "project.db not created in %APPDATA%\BadgeGenerator" }
+          # Замечание №1 (доп.): БД exe по умолчанию — рядом с exe, dist\BadgeGenerator\projects\project.db (не %APPDATA%)
+          if (-not (Test-Path "dist\BadgeGenerator\projects\project.db")) { throw "project.db not created in dist\BadgeGenerator\projects" }
+          if (Test-Path "$env:APPDATA\BadgeGenerator\project.db") { throw "project.db must not be created in %APPDATA%\BadgeGenerator any more" }
+
+      - name: Smoke test (old %APPDATA% DB is copied next to exe, original kept)
+        # Замечание №1 (доп.): в новом месте БД нет, в старом %APPDATA%\BadgeGenerator есть → копия (не перенос).
+        # Корень программы подменён через BG_APP_ROOT, чтобы не трогать dist\BadgeGenerator.
+        shell: pwsh
+        run: |
+          $env:APPDATA = "$env:RUNNER_TEMP\appdata-migr"
+          $env:BG_APP_ROOT = "$env:RUNNER_TEMP\approot-migr"
+          New-Item -ItemType Directory -Force -Path "$env:APPDATA\BadgeGenerator\photos" | Out-Null
+          Copy-Item "dist\BadgeGenerator\projects\project.db" "$env:APPDATA\BadgeGenerator\project.db"
+          Set-Content -Path "$env:APPDATA\BadgeGenerator\photos\marker.txt" -Value "x"
+          $p = Start-Process -FilePath .\dist\BadgeGenerator\BadgeGenerator.exe -PassThru
+          Start-Sleep -Seconds 10
+          if ($p.HasExited) { throw "BadgeGenerator.exe exited early, code $($p.ExitCode)" }
+          Stop-Process -Id $p.Id -Force
+          if (-not (Test-Path "$env:BG_APP_ROOT\projects\project.db")) { throw "old DB was not copied to BG_APP_ROOT\projects" }
+          if (-not (Test-Path "$env:BG_APP_ROOT\projects\photos\marker.txt")) { throw "photos\ was not copied with the DB" }
+          if (-not (Test-Path "$env:APPDATA\BadgeGenerator\project.db")) { throw "old DB must be kept (copy, not move)" }
 
       - name: Self-test (GUI exe --self-test)
         # Контракт (Frontend, ui/self_test.py): BadgeGenerator.exe --self-test --log <path>

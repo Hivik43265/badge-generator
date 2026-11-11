@@ -12,23 +12,86 @@ log = logging.getLogger(__name__)
 class MigrationError(RuntimeError):
     """Миграция схемы не применилась; транзакция шага откачена, файл не изменён."""
 
-def _frozen_data_dir() -> Path:
-    """Каталог данных для собранного exe (PyInstaller): %APPDATA%\\BadgeGenerator (иначе ~/.BadgeGenerator)."""
-    import os
-    base = os.environ.get("APPDATA")
-    d = Path(base) / "BadgeGenerator" if base else Path.home() / ".BadgeGenerator"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+def _legacy_frozen_db_path() -> Path | None:
+    """Где exe держал БД до замечания №1: %APPDATA%\\BadgeGenerator\\project.db (нет APPDATA — ~/.BadgeGenerator).
+    Ничего не создаёт."""
+    from .app_paths import legacy_appdata_dir
+    d = legacy_appdata_dir()
+    return d / DEFAULT_DB_PATH if d else None
+
+
+def _copy_legacy_db(old: Path, new: Path) -> bool:
+    """Скопировать старую БД в новое место (backup API: согласованная копия, включая WAL). Старый файл не меняется
+    и не удаляется. Новое место уже занято или ошибка → False (ошибка — в лог, без исключения)."""
+    if new.exists() or not old.is_file(): return False
+    tmp = new.with_name(new.name + ".copying")
+    try:
+        new.parent.mkdir(parents=True, exist_ok=True)
+        tmp.unlink(missing_ok=True)
+        src = sqlite3.connect(f"file:{old.resolve().as_posix()}?mode=ro", uri=True)
+        try:
+            dst = sqlite3.connect(str(tmp))
+            try: src.backup(dst)
+            finally: dst.close()
+        finally:
+            src.close()
+        if new.exists():          # другой экземпляр успел раньше — его копию не трогаем
+            tmp.unlink(missing_ok=True); return False
+        tmp.replace(new)
+        log.info("БД перенесена копированием: %s → %s (старый файл оставлен)", old, new)
+        return True
+    except Exception as e:  # noqa: BLE001 — старт программы не должен падать
+        log.error("не удалось скопировать БД %s → %s: %s", old, new, e)
+        try: tmp.unlink(missing_ok=True)
+        except OSError: pass
+        return False
+
+
+def _frozen_default_db_path() -> Path:
+    """Замечание №1 (доп., 11.11): БД собранного exe по умолчанию — app_paths.projects_dir()/project.db
+    (<папка exe>/projects/project.db; нет прав — %LOCALAPPDATA%\\BadgeGenerator\\projects\\project.db).
+    Миграция: в новом месте БД нет, а в старом %APPDATA%\\BadgeGenerator\\project.db есть → КОПИЯ (не перенос);
+    старый файл никогда не удаляется и не меняется. Вместе с БД копируются photos/, template_bg/, .csd/.csp."""
+    from .app_paths import projects_dir
+    new = projects_dir() / DEFAULT_DB_PATH
+    old = _legacy_frozen_db_path()
+    if old is not None and not new.exists() and old.is_file():
+        if _copy_legacy_db(old, new):
+            _copy_legacy_companions(old, new)
+    return new
+
+
+_COMPANION_DIRS = ("photos", "template_bg")   # относительные пути фото и фонов в БД — от папки БД
+
+
+def _copy_legacy_companions(old: Path, new: Path) -> None:
+    """Вместе с БД копируются её спутники, иначе относительные пути сломаются: папки photos/ и template_bg/
+    (только если в новом месте такой папки ещё нет) и <имя>.csd / <имя>.csp (если нет). Оригиналы не трогаются."""
+    import shutil
+    for d in _COMPANION_DIRS:
+        src, dst = old.parent / d, new.parent / d
+        try:
+            if src.is_dir() and not dst.exists(): shutil.copytree(src, dst)
+        except OSError as e:
+            log.error("не удалось скопировать %s → %s: %s", src, dst, e)
+    for ext in (".csd", ".csp"):
+        src, dst = old.with_suffix(ext), new.with_suffix(ext)
+        try:
+            if src.is_file() and not dst.exists(): shutil.copy2(src, dst)
+        except OSError as e:
+            log.error("не удалось скопировать %s → %s: %s", src, dst, e)
+
 
 def default_db_path(project_dir=None) -> Path:
     """Путь к БД по умолчанию: <project_dir или cwd>/project.db.
-    В frozen-режиме (PyInstaller) каталог внутри _MEIPASS (или не задан) заменяется на %APPDATA%\\BadgeGenerator."""
+    В frozen-режиме (PyInstaller) каталог внутри _MEIPASS (или не задан) заменяется на
+    _frozen_default_db_path() — <папка exe>/projects/project.db (замечание №1; раньше %APPDATA%\\BadgeGenerator)."""
     import sys
     if getattr(sys, "frozen", False):
         mei = getattr(sys, "_MEIPASS", None)
         pd = Path(project_dir).resolve() if project_dir else None
         if pd is None or (mei and (pd == Path(mei).resolve() or Path(mei).resolve() in pd.parents)):
-            return _frozen_data_dir() / DEFAULT_DB_PATH
+            return _frozen_default_db_path()
     return Path(project_dir or Path.cwd()) / DEFAULT_DB_PATH
 
 def _schema_path() -> Path:

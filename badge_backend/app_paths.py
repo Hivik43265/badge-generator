@@ -7,7 +7,8 @@ app_root()     — корень программы:
 work_dir()     — <root>/work      рабочие копии проектов, несохранённые проекты (project_session);
 import_dir()   — <root>/import    временные мигрированные копии .db-импорта (sources);
 logs_dir()     — <root>/logs      логи;
-projects_dir() — <root>/projects  проекты пользователя по умолчанию;
+projects_dir() — <root>/projects  проекты пользователя по умолчанию: БД exe по умолчанию (project.db, см.
+                 db.default_db_path) и настройки программы settings_path() = projects/settings.ini;
 assets_dir()   — <root>/assets    шрифты (assets/fonts) и эталон smartid (assets/smartid/reference.csd).
                  В exe лежит рядом с BadgeGenerator.exe (onedir), НЕ в _MEIPASS. Из исходников
                  <repo>/assets обычно нет — поиск ресурсов тогда идёт в badge_backend/assets (см. asset_candidates).
@@ -113,6 +114,23 @@ def projects_dir() -> Path:
     return _data_dir("projects")
 
 
+SETTINGS_FILE = "settings.ini"
+
+
+def settings_path() -> Path:
+    """Замечание №1 (доп.): файл настроек программы (последний проект db_path, окно, сетка) —
+    projects_dir()/settings.ini, формат INI (QSettings IniFormat). Файл не создаётся — только путь;
+    папка projects/ создаётся (см. projects_dir)."""
+    return projects_dir() / SETTINGS_FILE
+
+
+def legacy_appdata_dir() -> Path | None:
+    """Где exe держал данные до замечания №1: %APPDATA%\\BadgeGenerator (нет APPDATA — ~/.BadgeGenerator).
+    Только для однократного КОПИРОВАНИЯ старых данных в новые папки; ничего не создаёт и не удаляет."""
+    base = (os.environ.get("APPDATA") or "").strip()
+    return Path(base) / APP_NAME if base else Path.home() / ".BadgeGenerator"
+
+
 def assets_dir() -> Path:
     """<root>/assets — только чтение, не создаётся."""
     return app_root() / "assets"
@@ -143,5 +161,6 @@ def find_asset(*parts: str) -> Path | None:
     return None
 
 
-__all__ = ["ENV_ROOT", "APP_NAME", "is_frozen", "app_root", "fallback_root", "work_dir", "import_dir",
-           "logs_dir", "projects_dir", "assets_dir", "asset_candidates", "find_asset"]
+__all__ = ["ENV_ROOT", "APP_NAME", "SETTINGS_FILE", "is_frozen", "app_root", "fallback_root", "work_dir", "import_dir",
+           "logs_dir", "projects_dir", "settings_path", "legacy_appdata_dir", "assets_dir", "asset_candidates",
+           "find_asset"]
