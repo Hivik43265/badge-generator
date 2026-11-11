@@ -297,6 +297,29 @@ class BackendAPI:
 
     # --- записи ---
     def list_fields(self): return _api.list_fields(self.con)
+
+    def list_image_fields(self):
+        """api.list_image_fields(con). Нет функции → LookupError."""
+        fn = _backend_fn("list_image_fields")
+        if fn is None:
+            raise LookupError(missing_backend("list_image_fields"))
+        return list(fn(self.con))
+
+    def image_field_names(self):
+        """Имена image-полей: list_image_fields(), иначе data_type=image из list_fields()."""
+        try:
+            fields = self.list_image_fields()
+        except LookupError:
+            fields = [f for f in self.list_fields() if field_type(f) == "image"]
+        names = []
+        for f in fields or []:
+            if isinstance(f, dict):
+                n = f.get("name") or f.get("field_name")
+            else:
+                n = f
+            if n:
+                names.append(str(n))
+        return names
     def save_photo(self, image_bytes, *, person_id=None, ext="jpg"):
         """Backend fa29d7d: файл в папку фото проекта → "photos/<name>"; с person_id сам пишет photo_path. ValueError — пусто/битые."""
         return _api.save_photo(self.con, image_bytes, person_id=person_id, ext=ext, base_dir=self.base_dir)
@@ -547,6 +570,17 @@ def open_image(path, base_dir=None):
     fn = getattr(_api, "load_photo_for_edit", None)
     if fn is None: raise LookupError("Редактор недоступен: нет load_photo_for_edit")
     return fn(path, base_dir=base_dir)
+
+
+def load_preview_image(path, base_dir=None, max_side=72):
+    """Миниатюра через существующую функцию Backend (load_photo_for_preview, иначе load_photo_for_edit). Без Pillow в UI."""
+    fn = _backend_fn("load_photo_for_preview")
+    if fn is not None:
+        try:
+            return fn(path, max_side=max_side, base_dir=base_dir)
+        except TypeError:
+            return fn(path, base_dir=base_dir)
+    return open_image(path, base_dir=base_dir)
 
 
 def apply_photo_edit(img, params):

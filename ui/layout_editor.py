@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QGraphicsView, QGraphicsScene
                              QInputDialog, QFileDialog, QColorDialog, QSizePolicy)
 from .stage15 import UNLINKED_COLOR, PHOTO_FIELD_LABEL, PHOTO_FIELD_TYPE
 from .backend_api import (
-    BackendAPI, CARD_W_PX, CARD_H_PX, TYPE_NAMES, SIDE_NAMES,
+    BackendAPI, CARD_W_PX, CARD_H_PX, TYPE_NAMES, SIDE_NAMES, field_type,
     scene_width, scene_height, uses_grid_units, px_to_units, units_to_mm, snap_scene,
 )
 from .preview_jobs import RenderCardJob, RenderSignals, render_pool
@@ -522,6 +522,25 @@ class LayoutEditor(QWidget):
             if not name: raise _Cancelled
         return name
 
+    def _image_field_names(self):
+        """Список image-полей: api.list_image_fields(), иначе data_type=image из list_fields()."""
+        fn = getattr(self.api, "image_field_names", None)
+        if callable(fn):
+            return list(fn())
+        return [f["name"] for f in self.api.list_fields() if field_type(f) == "image"]
+
+    def _pick_photo_field(self):
+        """При добавлении фото: одно поле — сразу, несколько — выбор, нет — объект без связи."""
+        names = self._image_field_names()
+        if not names:
+            return None
+        if len(names) == 1:
+            return names[0]
+        name, ok = QInputDialog.getItem(self, "Поле фото", "Выберите поле изображения:", names, 0, False)
+        if not ok or not name:
+            raise _Cancelled
+        return name
+
     def _new_field(self):
         """«Новое поле…» → Менеджер полей; возвращает имя только что созданного поля (или None)."""
         from .main_view import FieldManager
@@ -548,6 +567,7 @@ class LayoutEditor(QWidget):
         if self._locked("Добавить элемент"): return None
         t = dict((k, tt) for k, _l, tt in TOOLS)[kind]
         if t == "field" and field_name is None: field_name = self._ask_field()
+        if t == "photo" and field_name is None: field_name = self._pick_photo_field()
         if t == "image" and image_path is None: image_path = self._ask_file("Изображение (логотип)")
         w, h = DEFAULT_SIZE[t]
         if uses_grid_units():

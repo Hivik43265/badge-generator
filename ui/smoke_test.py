@@ -600,7 +600,7 @@ w.show_main(); app.processEvents()
 assert w.stack.currentWidget() is w.db_page and w.splitter.widget(0) is w.records and w.splitter.widget(1) is w.preview_panel
 m = w.records.model; hdr = [m.headerData(c, Qt.Orientation.Horizontal) for c in range(m.columnCount())]
 lab = {f["name"]: f["label"] for f in api.list_fields()}
-assert hdr[:3] == ["Печать", "Логотип", "Фото"] and hdr[3:-1] == [f["label"] or f["name"] for f in api.list_fields() if f["name"] != "logo"] and hdr[-1] == "Напечатано", hdr
+assert hdr[0] == "Печать" and hdr[1:-1] == [f["label"] or f["name"] for f in api.list_fields()] and hdr[-1] == "Напечатано", hdr
 ok(f"таблица: колонки {hdr}")
 pp = w.preview_panel
 people = api.list_persons(); a_id, b_id = people[0]["id"], people[1]["id"]

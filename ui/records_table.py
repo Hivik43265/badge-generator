@@ -40,7 +40,7 @@ THUMB = 36
 
 class PersonsModel(QAbstractTableModel):
     queue_toggle_requested = pyqtSignal(int)
-    """Колонки: Печать | [Логотип] | [Фото] | поля list_fields() в его порядке | Напечатано."""
+    """Колонки: Печать | ровно list_fields() в его порядке | Напечатано. Image-поля — миниатюра."""
 
     def __init__(self, api: BackendAPI, parent=None):
         super().__init__(parent)
@@ -53,24 +53,15 @@ class PersonsModel(QAbstractTableModel):
         self.fields = self.api.list_fields()
         self.rows = self.api.list_persons()
         self._thumbs.clear()
-        self.template_logo = next((e.get("static_value") for e in sorted(self.api.list_elements(), key=lambda e: e["side"] != "front")
-                                   if e["type"] == "image" and e.get("static_value")), None)
-        self.types = {f["name"]: field_type(f) for f in self.api.list_fields()}
+        self.types = {f["name"]: field_type(f) for f in self.fields}
         self.cols = self._build_cols()
         self.endResetModel()
 
     def _build_cols(self):
-        names = [f["name"] for f in self.fields]; label = {f["name"]: f["label"] for f in self.fields}
         cols = [("mark", "Печать", None)]
-        if self.template_logo or any(p["fields"].get("logo") for p in self.rows):
-            cols.append(("logo", "Логотип", None))
-        img_names = [n for n, typ in self.types.items() if typ == "image" and n != "logo"]
-        if any(p.get("photo_path") for p in self.rows) or any(
-            (p.get("fields") or {}).get(n) for p in self.rows for n in img_names
-        ):
-            cols.append(("photo", "Фото", None))
-        for n in names:                                   # D19: ровно list_fields(), в его порядке
-            if n != "logo": cols.append(("field", label[n] or n, n))
+        for f in self.fields:                             # ровно list_fields(), в его порядке
+            n = f["name"]
+            cols.append(("field", f.get("label") or n, n))
         cols.append(("printed", PRINTED_LABEL, None))
         return cols
 
@@ -94,27 +85,13 @@ class PersonsModel(QAbstractTableModel):
             return self.cols[section][1]
         return super().headerData(section, orientation, role)
 
-    def _photo_src(self, person):
-        """Путь/значение для колонки «Фото»: persons.photo_path или первое непустое image-поле (не logo)."""
-        rp = self.api.resolve_photo_path(person, None)
-        if rp: return rp
-        for n, typ in self.types.items():
-            if typ != "image" or n == "logo":
-                continue
-            rp = self.api.resolve_photo_path(person, n)
-            if rp: return rp
-            v = (person.get("fields") or {}).get(n)
-            if v not in (None, ""):
-                return v
-        return person.get("photo_path") or None
-
     def _thumb(self, path):
         if path in (None, ""): return None
         key = path if isinstance(path, (str, Path)) else ("blob", type(path), len(path) if hasattr(path, "__len__") else 0)
         if key not in self._thumbs:
             try:
-                from .backend_api import open_image, pil_to_qimage
-                img = open_image(path, base_dir=self.api.base_dir)
+                from .backend_api import load_preview_image, pil_to_qimage
+                img = load_preview_image(path, base_dir=self.api.base_dir, max_side=THUMB * 2)
                 pm = QPixmap.fromImage(pil_to_qimage(img))
                 self._thumbs[key] = None if pm.isNull() else pm.scaled(THUMB, THUMB, Qt.AspectRatioMode.KeepAspectRatio,
                                                                         Qt.TransformationMode.SmoothTransformation)
@@ -129,12 +106,6 @@ class PersonsModel(QAbstractTableModel):
                 return ""
             return display_value(self.types.get(n), p["fields"].get(n, ""))
         if kind == "printed": return format_printed_at(p.get("printed_at"))
-        if kind == "photo":
-            src = self._photo_src(p)
-            if isinstance(src, (str, Path)) and 0 < len(str(src)) < 512:
-                return os.path.basename(str(src))
-            return ""
-        if kind == "logo": return os.path.basename(p["fields"].get("logo") or self.template_logo or "")
         return ""
 
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
@@ -153,14 +124,6 @@ class PersonsModel(QAbstractTableModel):
             if role == Qt.ItemDataRole.UserRole:   # сортировка по реальному времени; пустые — в начале
                 dt = parse_printed_at(raw); return dt.timestamp() if dt else float("-inf")
             if role == Qt.ItemDataRole.ToolTipRole: return raw or "не печаталось"
-            return None
-        if kind in ("photo", "logo"):
-            path = self._photo_src(p) if kind == "photo" else (p["fields"].get("logo") or self.template_logo)
-            if role == Qt.ItemDataRole.DecorationRole: return self._thumb(path)
-            tip = path if isinstance(path, (str, Path)) and len(str(path)) < 512 else ""
-            if role == Qt.ItemDataRole.ToolTipRole: return str(tip) if tip else ""
-            if role == Qt.ItemDataRole.UserRole: return str(tip) if tip else ""
-            if role == Qt.ItemDataRole.SizeHintRole: return QSize(THUMB + 8, THUMB + 4)
             return None
         if kind == "field" and self.types.get(self.cols[c][2]) == "image":
             fn = self.cols[c][2]

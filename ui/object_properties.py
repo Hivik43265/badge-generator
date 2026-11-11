@@ -480,15 +480,13 @@ class ObjectPropertiesPanel(QWidget):
             self.w_bold.setChecked(bool(st.get("bold")))
             self.w_italic.setChecked(bool(st.get("italic")))
 
-            from .stage15 import PHOTO_FIELD_LABEL, PHOTO_FIELD_TYPE
+            from .stage15 import PHOTO_FIELD_TYPE
             if t == "photo":
                 fn = e.get("field_name")
                 if fn:
                     self.w_photo_link.setText(f"Связан с полем «{fn}» (тип «{PHOTO_FIELD_TYPE}»)")
                 else:
-                    self.w_photo_link.setText(
-                        f"Не связан — при вставке фото создаётся поле «{PHOTO_FIELD_LABEL}»"
-                    )
+                    self.w_photo_link.setText("Не связан — выберите поле")
             else:
                 self.w_photo_link.setText("—")
 
