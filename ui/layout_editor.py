@@ -399,6 +399,10 @@ class LayoutEditor(QWidget):
         gen = self._render_gen
         if field_names is None:
             field_names = self._editor_field_names(person_id)
+        # Имена полей Backend рисует только при person=None: рендер выключен (или записи нет)
+        # → всегда (None, True), независимо от выбранной записи; рендер включён с записью → (id, False).
+        if field_names:
+            person_id = None
         try:
             payload = self.api.gather_render_args(person_id, side, field_names=field_names)
         except KeyError:
