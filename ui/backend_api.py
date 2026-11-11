@@ -433,9 +433,20 @@ class BackendAPI:
         return r
 
     # --- рендер (Backend) ---
-    def render_card(self, person, side="front"):
-        """person: id | dict | None. Возвращает QImage 1011x638 из badge_backend.render."""
-        return pil_to_qimage(_api.render_card_db(self.con, person, side, self.base_dir))
+    def render_card(self, person, side="front", *, field_names=False):
+        """person: id | dict | None. field_names=True — имена полей вместо данных (контракт render_card_db).
+        Нет поддержки field_names → LookupError."""
+        fn = getattr(_api, "render_card_db", None)
+        if not callable(fn):
+            raise LookupError(missing_backend("render_card_db"))
+        kw = {"field_names": True} if field_names else {}
+        try:
+            im = fn(self.con, person, side, self.base_dir, **kw)
+        except TypeError:
+            if field_names:
+                raise LookupError(missing_backend("render_card_db"))
+            im = fn(self.con, person, side, self.base_dir)
+        return pil_to_qimage(im)
 
     def render_preview(self, person, side="front", scale=0.5):
         return pil_to_qimage(_api.render_preview(self.con, person, side, scale, self.base_dir))
