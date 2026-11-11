@@ -99,10 +99,10 @@ def _v8_with_auto(path):
     finally: db.LATEST = v0
     raw.executescript("""
       INSERT INTO person_fields(name,label,sort_order,data_type) VALUES ('pic','Портрет',0,'image'),('Фото','Фото',1,'image'),('Фото 2','Фото 2',2,'image');
-      INSERT INTO persons(fields_json,print_mark,updated_at) VALUES
-        ('{"Фото":"a.jpg"}',0,'2026-01-01T10:00:00+03:00'),
-        ('{"pic":"own.jpg","Фото":"other.jpg"}',0,'2026-01-01T10:00:00+03:00'),
-        ('{"pic":"same.jpg","Фото 2":"same.jpg"}',0,'2026-01-01T10:00:00+03:00');
+      INSERT INTO persons(fields_json,print_mark,created_at,updated_at) VALUES
+        ('{"Фото":"a.jpg"}',0,'2026-01-01T09:00:00+03:00','2026-01-01T10:00:00+03:00'),
+        ('{"pic":"own.jpg","Фото":"other.jpg"}',0,'2026-01-01T09:00:00+03:00','2026-01-01T10:00:00+03:00'),
+        ('{"pic":"same.jpg","Фото 2":"same.jpg"}',0,'2026-01-01T09:00:00+03:00','2026-01-01T10:00:00+03:00');
       INSERT INTO template_elements(type,x,y,w,h,field_name,side,z_order,template_id) VALUES ('photo',0,0,100,120,'Фото','front',0,1);
     """); raw.commit(); raw.close()
 

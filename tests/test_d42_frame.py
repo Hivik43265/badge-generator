@@ -72,7 +72,7 @@ def test_two_templates_different_aspects(tmp_path):
 def test_shift_then_shrink():
     img = Image.open(FIX).convert("RGB")
     fx, fy, fw, fh = _haar(img)
-    left = img.crop((int(fx) - 80, 0, img.width, img.height))             # лицо у левого края → сдвиг
+    left = img.crop((int(fx) - 30, 0, img.width, img.height))             # лицо у левого края → сдвиг (№2: рамка уже — ближе к краю)
     x, y, w, h = pe.detect_face_crop(left, 0.78)
     lfx, lfy, lfw, lfh = _haar(left)
     assert x == 0 and h == pytest.approx((1 + pe.HEAD_TOP) / pe.HEAD_SHARE * lfh, abs=2)  # размер не уменьшен

@@ -20,11 +20,10 @@ def test_migrate_old_v1_db(tmp_path):
     assert con.execute("PRAGMA user_version").fetchone()[0] == db.LATEST
     assert "printed_at" in db._cols(con, "persons")
     after = [tuple(r) for r in con.execute("SELECT * FROM persons ORDER BY id")]
-    # v7: photo_path копируется в новое поле «Фото», created_at/updated_at (UTC) → локальное время со смещением
+    # v7: created_at/updated_at (UTC) → локальное время со смещением; замечание №4: поле «Фото» не создаётся
     exp = []
     for b in before:
         fj = json.loads(b[1])
-        if b[2]: fj["Фото"] = b[2]
         exp.append((b[0], fj, *b[2:5], db._utc_to_local(b[5]), db._utc_to_local(b[6])))
     assert [(a[0], json.loads(a[1]), *a[2:5], a[5], a[6]) for a in after] == exp and all(a[-1] is None for a in after)
     assert all("T" in a[5] and "T" in a[6] for a in after)
