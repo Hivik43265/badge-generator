@@ -530,7 +530,7 @@ def render_card(person, elements, side: str = "front", background=None, base_dir
                 src = _open_photo(person, el, base_dir)
                 view = _photo_view(person, el)
                 if src: ph = _view_tile(src, el["w"], el["h"], view)
-                else: ph = _placeholder(el["w"], el["h"])
+                else: ph = _placeholder(el["w"], el["h"], el.get("_placeholder_label") or "нет фото")
                 _paste_clipped(tile, loc, ph, st)
             elif t == "image":
                 src = _open(_resolve(el.get("static_value"), base_dir))
@@ -573,7 +573,7 @@ def load_elements(con, side=None, template_id=None):
     from ..db import active_template_id
     tid = template_id or active_template_id(con)
     tst = json.loads((con.execute("SELECT style_json FROM templates WHERE id=?", (tid,)).fetchone() or ["{}"])[0] or "{}")
-    q = ("SELECT e.*, f.default_value AS default_value, f.data_type AS data_type FROM template_elements e "
+    q = ("SELECT e.*, f.default_value AS default_value, f.data_type AS data_type, f.label AS field_label FROM template_elements e "
          "LEFT JOIN person_fields f ON f.name = e.field_name WHERE e.template_id=?" + (" AND e.side=?" if side else "")
          + " ORDER BY e.z_order, e.id")
     out = []
@@ -596,8 +596,26 @@ def load_photo_views(con, person_id) -> dict:
     return {r[0]: json.loads(r[1]) for r in con.execute(
         "SELECT field_name, params_json FROM person_photo_views WHERE person_id=?", (person_id,))}
 
-def render_card_db(con, person, side="front", base_dir=None) -> Image.Image:
-    """render_card по данным из БД. person — id или row; None — пустой шаблон."""
+def _field_name_view(elements) -> list[dict]:
+    """Замечание №5а: элементы для вида «шаблон с названиями полей» (без записи).
+    Привязанный text/field → постоянный текст = название поля (label, иначе имя) своим шрифтом и стилем;
+    привязанный photo → заглушка с названием поля; остальное (постоянный текст, картинки, фигуры, коды) — как есть.
+    Красные #поле здесь не рисуются никогда — это разметка редактора (Frontend, Qt)."""
+    out = []
+    for e in elements:
+        e = dict(_d(e)); fn = e.get("field_name"); t = e.get("type")
+        if fn and t in ("text", "field"):
+            e.update(type="text", static_value=e.get("field_label") or fn, data_type=None)
+        elif fn and t == "photo":
+            e["_placeholder_label"] = e.get("field_label") or fn
+        out.append(e)
+    return out
+
+def render_card_db(con, person=None, side="front", base_dir=None, *, field_names: bool = True) -> Image.Image:
+    """render_card по данным из БД. person — id или row; None — пустой шаблон.
+    field_names (замечание №5а, только при person=None): True — привязанные текстовые объекты рисуются названием
+    поля (label) своим шрифтом/стилем, фото-объект — заглушкой с названием поля; постоянный текст и картинки — как есть.
+    False — прежний пустой шаблон (значения по умолчанию полей, заглушка «нет фото»). С записью field_names не влияет."""
     if isinstance(person, int):
         r = con.execute("SELECT * FROM persons WHERE id=?", (person,)).fetchone()
         if r is None: raise KeyError(f"person {person} не найден")
@@ -605,7 +623,9 @@ def render_card_db(con, person, side="front", base_dir=None) -> Image.Image:
     if person is not None:
         person = dict(person)
         if "photo_views" not in person and person.get("id") is not None: person["photo_views"] = load_photo_views(con, person["id"])
-    return render_card(person, load_elements(con, side), side, load_background(con, side), base_dir)
+    els = load_elements(con, side)
+    if person is None and field_names: els = _field_name_view(els)
+    return render_card(person, els, side, load_background(con, side), base_dir)
 
 def render_preview(con, person, side="front", scale: float = 0.5, base_dir=None) -> Image.Image:
     """Уменьшенное превью для Frontend (scale 0<s<=1, размер round(1011*s)×round(638*s))."""

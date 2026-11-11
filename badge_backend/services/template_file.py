@@ -1,9 +1,26 @@
-"""Этап 15 B4: шаблон как файл .bgt (ZIP + template.json + картинки фонов/элементов).
+"""Этап 15 B4 / замечание №5б (11.11): шаблон как отдельный файл .bgt — самодостаточный, без ссылок на диск.
 
-import_template полностью заменяет АКТИВНЫЙ шаблон (id и active_template_id не меняются).
+Формат .bgt = ZIP:
+  template.json          UTF-8 JSON:
+      format          "badge-generator-template"
+      format_version  2 (v1 — геометрия в px @ 300 DPI, при импорте переводится в 0,1 мм)
+      schema_min      8;  units "0.1mm";  exported_at ISO 8601
+      template        {"name": str, "style": {font_family, padding, …}}
+      elements        [{type, x, y, w, h, field_name, static_value, side, z_order, style: {...}}, …]
+                      по возрастанию z_order; постоянный текст — в static_value (text / непривязанный field);
+                      у type="image" static_value — ИМЯ ФАЙЛА В АРХИВЕ (images/…), не путь на диске;
+                      field_name — только имя поля (поля не создаются; нет в проекте → объект импортируется отвязанным)
+      backgrounds     [{side, color, image: "backgrounds/<side>.<ext>" | null}, …]
+      missing_images  [исходные пути картинок, файлов которых не было при экспорте] (необязательно)
+  images/<sha1-12>.<ext>   байты картинок объектов (одинаковые картинки — один файл)
+  backgrounds/<side>.<ext> байты картинок фона
+Картинки — png/jpg/jpeg/webp/bmp; иной формат при экспорте перекодируется в PNG.
+Импорт (import_template) полностью заменяет АКТИВНЫЙ шаблон (id и active_template_id не меняются); байты картинок
+пишутся в <папка проекта>/template_bg/ под новыми именами, в БД — относительный путь template_bg/<имя>.
+Картинки, которой нет в архиве (старый файл со ссылкой на путь), → объект без картинки (static_value=NULL).
 """
 from __future__ import annotations
-import io, json, os, posixpath, tempfile, zipfile
+import hashlib, io, json, logging, os, posixpath, tempfile, zipfile
 from pathlib import Path
 from .. import db as _db
 from ..db import now_iso
@@ -23,6 +40,25 @@ MAX_UNCOMP = 50 * 1024 * 1024
 ZIP_BOMB_RATIO = 100
 ZIP_BOMB_MIN = 1024 * 1024
 EL_COLS = ("type", "x", "y", "w", "h", "field_name", "static_value", "style_json", "side", "z_order")
+log = logging.getLogger(__name__)
+
+
+def _embed_image(src: Path) -> tuple[bytes, str] | None:
+    """Байты картинки и расширение для архива; формат вне IMAGE_EXT → перекодировка в PNG. Не читается → None."""
+    try:
+        raw = src.read_bytes()
+    except OSError as e:
+        log.warning("картинка шаблона %s не прочитана: %s", src, e); return None
+    ext = src.suffix.lower()
+    if ext in IMAGE_EXT:
+        return raw, (".jpg" if ext == ".jpeg" else ext)
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(raw)) as im:
+            buf = io.BytesIO(); im.save(buf, "PNG")
+        return buf.getvalue(), ".png"
+    except Exception as e:  # noqa: BLE001
+        log.warning("картинка шаблона %s не перекодирована в PNG: %s", src, e); return None
 
 
 def _safe_member(name: str) -> str:
@@ -228,6 +264,12 @@ def _store_bytes(base: Path, data: bytes, ext: str, subdir: str) -> str:
             return f"{subdir}/{name}"
 
 
+def _member_name(rel) -> str | None:
+    """Нормализованное имя члена архива или None (абсолютный/опасный путь — это не член архива)."""
+    try: return _safe_member(str(rel))
+    except ValueError: return None
+
+
 def _extract_member(zf: zipfile.ZipFile, rel: str) -> bytes:
     rel = _safe_member(rel)
     return zf.read(rel)
@@ -245,31 +287,42 @@ def export_template(con, dest_path, template_id: int | None = None, *, overwrite
     t = con.execute("SELECT * FROM templates WHERE id=?", (tid,)).fetchone()
     if t is None: raise ValueError(f"нет шаблона id={tid}")
     base = project_base_dir(con)
-    els, bgs, files = [], [], {}
+    els, bgs, files, missing = [], [], {}, []
+    def _src(v):
+        return Path(v) if Path(v).is_absolute() else base / v
     for r in con.execute("SELECT type,x,y,w,h,field_name,static_value,style_json,side,z_order "
-                         "FROM template_elements WHERE template_id=? ORDER BY z_order, id", (tid,)):
+                         "FROM template_elements WHERE template_id=? ORDER BY side, z_order, id", (tid,)):
         e = {k: r[k] for k in ("type", "x", "y", "w", "h", "field_name", "static_value", "side", "z_order")}
         e["style"] = json.loads(r["style_json"] or "{}")
         if e["type"] == "image" and e.get("static_value"):
-            src = Path(e["static_value"]) if Path(e["static_value"]).is_absolute() else base / e["static_value"]
-            if src.is_file():
-                arc = f"images/{src.name}"
-                files[arc] = src.read_bytes()
-                e["static_value"] = arc
+            src = _src(e["static_value"])
+            got = _embed_image(src) if src.is_file() else None
+            if got is None:   # в файл шаблона пути на диск не попадают
+                missing.append(str(e["static_value"])); e["static_value"] = None
+            else:
+                raw, ext = got
+                arc = f"images/{hashlib.sha1(raw).hexdigest()[:12]}{ext}"
+                files[arc] = raw; e["static_value"] = arc
         els.append(e)
     for r in con.execute("SELECT side, image_path, color FROM template_backgrounds2 WHERE template_id=?", (tid,)):
         img = None
         if r["image_path"]:
-            src = Path(r["image_path"]) if Path(r["image_path"]).is_absolute() else base / r["image_path"]
-            if src.is_file():
-                ext = src.suffix.lower().lstrip(".") or "png"
-                img = f"backgrounds/{r['side']}.{ext}"
-                files[img] = src.read_bytes()
+            src = _src(r["image_path"])
+            got = _embed_image(src) if src.is_file() else None
+            if got is None:
+                missing.append(str(r["image_path"]))
+            else:
+                raw, ext = got
+                img = f"backgrounds/{r['side']}{ext}"
+                files[img] = raw
         bgs.append({"side": r["side"], "color": r["color"] or "#FFFFFF", "image": img})
+    if missing:
+        log.warning("экспорт шаблона: нет файлов картинок %s — объекты сохранены без картинки", missing)
     payload = {"format": FORMAT, "format_version": FORMAT_VERSION, "schema_min": SCHEMA_MIN,
                "units": "0.1mm", "exported_at": now_iso(),
                "template": {"name": t["name"], "style": json.loads(t["style_json"] or "{}")},
                "elements": els, "backgrounds": bgs}
+    if missing: payload["missing_images"] = missing
     dest.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=dest.name + ".", suffix=".tmp", dir=str(dest.parent))
     os.close(fd)
@@ -320,9 +373,12 @@ def import_template(con, src_path) -> dict:
                 if fn and fn not in fields: fn = None
                 sv = e.get("static_value")
                 if e.get("type") == "image" and sv:
-                    raw = _extract_member(zf, sv)
-                    _verify_image(raw, sv)
-                    sv = _store_bytes(base, raw, Path(sv).suffix, "template_bg")
+                    if _member_name(sv) not in data["_members"]:   # путь на диск из старого файла — не восстановить
+                        sv = None
+                    else:
+                        raw = _extract_member(zf, sv)
+                        _verify_image(raw, sv)
+                        sv = _store_bytes(base, raw, Path(sv).suffix, "template_bg")
                 con.execute(
                     f"INSERT INTO template_elements({','.join(EL_COLS)},template_id) VALUES ({','.join('?'*len(EL_COLS))},?)",
                     (e["type"], int(e["x"]), int(e["y"]), int(e["w"]), int(e["h"]), fn, sv,
@@ -331,7 +387,7 @@ def import_template(con, src_path) -> dict:
             for b in data.get("backgrounds") or []:
                 if not isinstance(b, dict) or b.get("side") not in SIDES: continue
                 img_path = None
-                if b.get("image"):
+                if b.get("image") and _member_name(b["image"]) in data["_members"]:
                     raw = _extract_member(zf, b["image"])
                     _verify_image(raw, b["image"])
                     img_path = _store_bytes(base, raw, Path(b["image"]).suffix, "template_bg")
