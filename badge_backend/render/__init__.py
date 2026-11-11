@@ -612,11 +612,13 @@ def _field_name_view(elements) -> list[dict]:
         out.append(e)
     return out
 
-def render_card_db(con, person=None, side="front", base_dir=None, *, field_names: bool = True) -> Image.Image:
+def render_card_db(con, person=None, side="front", base_dir=None, *, field_names: bool = False) -> Image.Image:
     """render_card по данным из БД. person — id или row; None — пустой шаблон.
-    field_names (замечание №5а, только при person=None): True — привязанные текстовые объекты рисуются названием
-    поля (label) своим шрифтом/стилем, фото-объект — заглушкой с названием поля; постоянный текст и картинки — как есть.
-    False — прежний пустой шаблон (значения по умолчанию полей, заглушка «нет фото»). С записью field_names не влияет."""
+    field_names (замечание №5а, только при person=None), по умолчанию False — прежний пустой шаблон
+    (значения по умолчанию полей, заглушка «нет фото»). True — ТОЛЬКО по явному запросу редактора: привязанные
+    текстовые объекты рисуются названием поля (label) своим шрифтом/стилем, фото-объект — заглушкой с названием поля;
+    постоянный текст и картинки — как есть. С записью field_names не влияет. Печать/PNG/PDF рендерят записи
+    через render_card и названий полей не получают независимо от флага."""
     if isinstance(person, int):
         r = con.execute("SELECT * FROM persons WHERE id=?", (person,)).fetchone()
         if r is None: raise KeyError(f"person {person} не найден")
