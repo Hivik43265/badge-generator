@@ -13,9 +13,10 @@ def _run(root, log):
                        env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
     text = log.read_text(encoding="utf-8") if log.is_file() else p.stdout + p.stderr
     m = RX.search(text)
-    assert p.returncode == 0 and m, f"rc={p.returncode}\n{text[-3000:]}"
+    fails = "\n".join(ln for ln in text.splitlines() if ln.startswith("FAIL |"))
+    assert p.returncode == 0 and m, f"rc={p.returncode}\n{fails or text[-3000:]}"
     passed, total, exc = map(int, m.groups())
-    assert passed == total and exc == 0, text[-3000:]
+    assert passed == total and exc == 0, fails or text[-3000:]
     return passed, total
 
 

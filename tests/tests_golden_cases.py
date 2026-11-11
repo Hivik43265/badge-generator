@@ -1,8 +1,8 @@
 """Кейсы golden PNG этапа 10 (используются tests/test_stage10.py и tests/make_golden.py).
 
-Координаты x/y/w/h заданы в пикселях @ 300 DPI и переводятся в единицы 0,1 мм
-через px_to_units — тот же пересчёт, что в миграции v8. stroke_width в стиле
-по-прежнему в пикселях (_px); QR border — в модулях тихой зоны, не в единицах.
+Координаты x/y/w/h и stroke_width/border_width заданы в пикселях @ 300 DPI
+и переводятся в единицы 0,1 мм через px_to_units — тот же пересчёт, что в
+миграции v8. QR border — в модулях тихой зоны, не в единицах.
 """
 import json
 from badge_backend import px_to_units
@@ -10,7 +10,13 @@ from badge_backend import px_to_units
 _b = lambda **k: json.dumps(k)
 
 def _el(typ, x, y, w, h, **kw):
-    """Элемент с геометрией, переведённой из px @ 300 DPI в единицы 0,1 мм."""
+    """Элемент с геометрией и толщиной обводки, переведёнными из px @ 300 DPI."""
+    if "style_json" in kw:
+        st = json.loads(kw["style_json"])
+        for key in ("stroke_width", "border_width"):
+            if st.get(key) is not None:
+                st[key] = px_to_units(st[key])
+        kw["style_json"] = json.dumps(st)
     return dict(type=typ, x=px_to_units(x), y=px_to_units(y),
                 w=px_to_units(w), h=px_to_units(h), **kw)
 

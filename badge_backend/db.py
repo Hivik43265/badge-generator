@@ -3,7 +3,7 @@
 Версия 1 = schema.sql. Новые версии добавляются в MIGRATIONS как ALTER-скрипты
 и применяются по порядку и к новым, и к существующим БД.
 """
-import json, logging, sqlite3
+import json, logging, sqlite3, sys
 from pathlib import Path
 DEFAULT_DB_PATH = "project.db"   # имя файла БД проекта; относительный путь — от каталога проекта (по умолчанию cwd)
 log = logging.getLogger(__name__)
@@ -390,7 +390,12 @@ def migrate(con) -> int:
         else:
             con.execute("BEGIN")
             try:
-                step(con); con.execute(f"PRAGMA user_version={i+1}"); con.execute("COMMIT")
+                # резолв по имени: monkeypatch db._v8_units подменяет шаг (MIGRATIONS хранит исходную ссылку)
+                fn = step
+                mod = sys.modules.get(getattr(step, "__module__", None))
+                if mod is not None and getattr(step, "__name__", None):
+                    fn = getattr(mod, step.__name__, step)
+                fn(con); con.execute(f"PRAGMA user_version={i+1}"); con.execute("COMMIT")
             except Exception as e:
                 con.execute("ROLLBACK")
                 raise MigrationError(f"не удалось обновить схему проекта до версии {i+1}: {e}") from e

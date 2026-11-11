@@ -15,7 +15,8 @@ def px_to_mm(px, dpi: int = DPI) -> float:
 
 
 def units_to_mm(u) -> float:
-    return u * UNIT_MM
+    """Единицы 0,1 мм → мм. Округление до 0,01 мм: 856 * 0.1 иначе даёт 85.60000000000001."""
+    return round(float(u) * UNIT_MM, 2)
 
 
 def mm_to_units(mm) -> int:

@@ -2,7 +2,7 @@
 import json, os, shutil, sqlite3, time, glob
 import pytest
 from PIL import Image
-from badge_backend import api, db
+from badge_backend import api, db, units_to_px
 from badge_backend.services import templates as T, search as S, photo_edit as PE
 from badge_backend.render import render_card_db
 from tests.image_assert import assert_same_pixels
@@ -209,11 +209,12 @@ def test_render_photo_matches_card_zone_after_migrated_placement(tmp_path):
     assert PE.get_photo_view(con, 1)["placement"] == "12;-7;1.3;5;9;15"
     el = next(e for e in api.list_elements(con) if e["type"] == "photo")
     x, y, w, h = el["x"], el["y"], el["w"], el["h"]
+    xp, yp, wp, hp = units_to_px(x), units_to_px(y), units_to_px(w), units_to_px(h)
     card = render_card_db(con, 1, "front", str(tmp_path))
-    zone = card.crop((x, y, x + w, y + h)).convert("RGB")
-    preview = PE.render_photo(con, 1, size=(w, h), base_dir=tmp_path).convert("RGBA")
+    zone = card.crop((xp, yp, xp + wp, yp + hp)).convert("RGB")
+    preview = PE.render_photo(con, 1, size=(wp, hp), base_dir=tmp_path).convert("RGBA")
     # зона карточки = плитка поверх фона (#EEEEEE из v6); прозрачные углы после placement
-    expected = Image.new("RGB", (w, h), (0xEE, 0xEE, 0xEE))
+    expected = Image.new("RGB", (wp, hp), (0xEE, 0xEE, 0xEE))
     expected.paste(preview.convert("RGB"), (0, 0), preview.getchannel("A"))
     assert_same_pixels(expected, zone)
 

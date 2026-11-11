@@ -1,7 +1,7 @@
 """Текст рисуется заданным кеглем и обрезается по рамке w×h (реальный bbox глифов)."""
 import json, warnings, pytest
 from PIL import Image, ImageDraw
-from badge_backend import api, demo, DPI, units_to_px
+from badge_backend import api, demo, DPI, units_to_px, CARD_W_UNITS, CARD_H_UNITS, CARD_W_PX, CARD_H_PX
 from badge_backend.render import render_card, _fit_text
 
 def _text_bbox(text, w, h, x=100, y=100, **style):
@@ -70,8 +70,10 @@ def test_min_size_ignored_keeps_font_size():
     assert _inside(box, *_frame_px(100, 100, 200, 60))
 
 def test_frame_at_canvas_edge():
-    bb = _text_bbox("Йурд", 200, 80, x=900, y=600, font_size=30)
-    assert bb is not None and bb[2] <= 1011 and bb[3] <= 638
+    """Рамка у края холста (единицы 0,1 мм): чернила есть и не вылезают за 1011×638."""
+    x, y = CARD_W_UNITS - 200, CARD_H_UNITS - 80
+    bb = _text_bbox("Йурд", 200, 80, x=x, y=y, font_size=30)
+    assert bb is not None and bb[2] <= CARD_W_PX and bb[3] <= CARD_H_PX
 
 def _overlap(a, b):
     return a["x"] < b["x"] + b["w"] and b["x"] < a["x"] + a["w"] and a["y"] < b["y"] + b["h"] and b["y"] < a["y"] + a["h"]

@@ -17,7 +17,11 @@ import warnings
 from badge_backend.render import render_card
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tests_golden_cases import CASES
+# python tests/make_golden.py [name ...]  — без аргументов все кейсы
+wanted = set(sys.argv[1:])
 for name, args in CASES.items():
+    if wanted and name not in wanted:
+        continue
     with warnings.catch_warnings():
         warnings.simplefilter("ignore"); render_card(*args).save(out / f"{name}.png", dpi=(300, 300))
     print(out / f"{name}.png")
