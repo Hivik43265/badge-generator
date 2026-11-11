@@ -152,11 +152,11 @@ dst = next(e for e in els0 if e["type"] == "photo")         # цель пере�
 eid, ORIG = src["id"], (src["x"], src["y"], src["w"], src["h"])
 api.update_element(eid, x=dst["x"], y=dst["y"], w=src["w"], h=src["h"])
 le.load("front", eid)
-assert any(eid in pair for pair in le.overlaps)
-assert "пересекаются" in w.statusBar().currentMessage()
-red = next(i for i in le.items() if i.el["id"] == eid).pen().color().name()
-assert red == "#d00000", red
-ok(f"пересечение: элемент фикстуры #{eid} сдвинут на фото #{dst['id']} → предупреждение {le.overlaps}, подсветка {red}")
+pen = next(i for i in le.items() if i.el["id"] == eid).pen().color().name()
+assert le.overlaps == [], le.overlaps
+assert "пересекаются" not in (w.statusBar().currentMessage() or "")
+assert pen != "#d00000", pen
+ok(f"пересечение разрешено: элемент фикстуры #{eid} на фото #{dst['id']} — без предупреждения и красной рамки ({pen})")
 it = next(i for i in le.items() if i.el["id"] == eid)
 it.setPos(ORIG[0], ORIG[1]); it.set_size(ORIG[2], ORIG[3]); le._commit_geometry(it); spin()
 els = api.list_elements("front"); g = next(e for e in els if e["id"] == eid)
@@ -600,7 +600,7 @@ w.show_main(); app.processEvents()
 assert w.stack.currentWidget() is w.db_page and w.splitter.widget(0) is w.records and w.splitter.widget(1) is w.preview_panel
 m = w.records.model; hdr = [m.headerData(c, Qt.Orientation.Horizontal) for c in range(m.columnCount())]
 lab = {f["name"]: f["label"] for f in api.list_fields()}
-assert hdr[:3] == ["Печать", "Логотип", "Фото"] and hdr[3:-1] == [f["label"] or f["name"] for f in api.list_fields() if f["name"] != "logo"] and hdr[-1] == "Напечатано", hdr
+assert hdr[0] == "Печать" and hdr[1:-1] == [f["label"] or f["name"] for f in api.list_fields()] and hdr[-1] == "Напечатано", hdr
 ok(f"таблица: колонки {hdr}")
 pp = w.preview_panel
 people = api.list_persons(); a_id, b_id = people[0]["id"], people[1]["id"]

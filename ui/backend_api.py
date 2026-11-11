@@ -297,7 +297,29 @@ class BackendAPI:
 
     # --- записи ---
     def list_fields(self): return _api.list_fields(self.con)
-    def list_image_fields(self): return _api.list_image_fields(self.con)   # замечание №4: image-поля для привязки фото
+
+    def list_image_fields(self):
+        """api.list_image_fields(con). Нет функции → LookupError."""
+        fn = _backend_fn("list_image_fields")
+        if fn is None:
+            raise LookupError(missing_backend("list_image_fields"))
+        return list(fn(self.con))
+
+    def image_field_names(self):
+        """Имена image-полей: list_image_fields(), иначе data_type=image из list_fields()."""
+        try:
+            fields = self.list_image_fields()
+        except LookupError:
+            fields = [f for f in self.list_fields() if field_type(f) == "image"]
+        names = []
+        for f in fields or []:
+            if isinstance(f, dict):
+                n = f.get("name") or f.get("field_name")
+            else:
+                n = f
+            if n:
+                names.append(str(n))
+        return names
     def save_photo(self, image_bytes, *, person_id=None, ext="jpg"):
         """Backend fa29d7d: файл в папку фото проекта → "photos/<name>"; с person_id сам пишет photo_path. ValueError — пусто/битые."""
         return _api.save_photo(self.con, image_bytes, person_id=person_id, ext=ext, base_dir=self.base_dir)
@@ -410,10 +432,28 @@ class BackendAPI:
             self._record(("update", eid, {"style": old.get("style")}, {"style": r}))
         return r
 
+    def set_z_order(self, element_id, order):
+        """api.set_z_order(element_id, 'front'|'back'|'up'|'down'|int). Нет функции → LookupError."""
+        fn = _backend_fn("set_z_order")
+        if fn is None:
+            raise LookupError(missing_backend("set_z_order"))
+        return fn(self.con, self._id(element_id), order)
+
     # --- рендер (Backend) ---
-    def render_card(self, person, side="front"):
-        """person: id | dict | None. Возвращает QImage 1011x638 из badge_backend.render."""
-        return pil_to_qimage(_api.render_card_db(self.con, person, side, self.base_dir))
+    def render_card(self, person, side="front", *, field_names=False):
+        """person: id | dict | None. field_names=True — имена полей вместо данных (контракт render_card_db).
+        Нет поддержки field_names → LookupError."""
+        fn = getattr(_api, "render_card_db", None)
+        if not callable(fn):
+            raise LookupError(missing_backend("render_card_db"))
+        kw = {"field_names": True} if field_names else {}
+        try:
+            im = fn(self.con, person, side, self.base_dir, **kw)
+        except TypeError:
+            if field_names:
+                raise LookupError(missing_backend("render_card_db"))
+            im = fn(self.con, person, side, self.base_dir)
+        return pil_to_qimage(im)
 
     def render_preview(self, person, side="front", scale=0.5):
         return pil_to_qimage(_api.render_preview(self.con, person, side, scale, self.base_dir))
@@ -550,6 +590,17 @@ def open_image(path, base_dir=None):
     return fn(path, base_dir=base_dir)
 
 
+def load_preview_image(path, base_dir=None, max_side=72):
+    """Миниатюра через существующую функцию Backend (load_photo_for_preview, иначе load_photo_for_edit). Без Pillow в UI."""
+    fn = _backend_fn("load_photo_for_preview")
+    if fn is not None:
+        try:
+            return fn(path, max_side=max_side, base_dir=base_dir)
+        except TypeError:
+            return fn(path, base_dir=base_dir)
+    return open_image(path, base_dir=base_dir)
+
+
 def apply_photo_edit(img, params):
     """Backend apply_photo_edit; нет функции → исходное изображение без изменений (UI сам не обрабатывает)."""
     fn = getattr(_api, "apply_photo_edit", None)
@@ -621,16 +672,43 @@ def _bapi_apply_and_save_photo(self, source_path, params, *, person_id=None, fie
     return fn(self.con, source_path, dict(params), person_id=person_id, field_name=field_name, base_dir=self.base_dir, **kw)
 
 
+def missing_backend(name):
+    """Сообщение, если контрактная функция Backend ещё не влита."""
+    return f"функция Backend {name} ещё не доступна"
+
+
 def _backend_fn(name):
-    """Функция Backend этапа 14: сначала badge_backend.api, затем badge_backend.services.photo_edit; нет → None."""
+    """Функция Backend: badge_backend.api, затем photo_edit, затем app_paths. Нет или не callable → None."""
     fn = getattr(_api, name, None)
-    if fn is None:
-        try:
-            from badge_backend.services import photo_edit as _pe
-            fn = getattr(_pe, name, None)
-        except ImportError:
-            fn = None
+    if not callable(fn):
+        fn = None
+        import importlib
+        for mod_name in ("badge_backend.services.photo_edit", "badge_backend.app_paths"):
+            try:
+                mod = importlib.import_module(mod_name)
+            except ImportError:
+                continue
+            cand = getattr(mod, name, None)
+            if callable(cand):
+                fn = cand
+                break
     return fn if callable(fn) else None
+
+
+def logs_dir():
+    """Каталог журналов: app_paths.logs_dir(). Нет функции → LookupError."""
+    fn = _backend_fn("logs_dir")
+    if fn is None:
+        raise LookupError(missing_backend("logs_dir"))
+    return fn()
+
+
+def projects_dir():
+    """Каталог проектов по умолчанию: app_paths.projects_dir(). Нет функции → LookupError."""
+    fn = _backend_fn("projects_dir")
+    if fn is None:
+        raise LookupError(missing_backend("projects_dir"))
+    return fn()
 
 
 NO_TARGET_FN = "Нет функции Backend для пропорций"

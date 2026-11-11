@@ -10,14 +10,16 @@ import os
 from PyQt6.QtCore import Qt, QRectF, pyqtSignal, QObject, QTimer, QEvent
 from PyQt6.QtGui import QBrush, QColor, QPen, QPainter, QPixmap, QAction, QFont
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QGraphicsView, QGraphicsScene,
-                             QGraphicsRectItem, QGraphicsSimpleTextItem, QGraphicsItem, QGroupBox,
+                             QGraphicsRectItem, QGraphicsSimpleTextItem, QGraphicsTextItem,
+                             QGraphicsPixmapItem, QGraphicsItem, QGroupBox,
                              QFormLayout, QLabel, QComboBox, QPushButton, QSpinBox, QLineEdit,
                              QPlainTextEdit, QMessageBox, QCheckBox, QToolButton, QGridLayout,
                              QInputDialog, QFileDialog, QColorDialog, QSizePolicy)
 from .stage15 import UNLINKED_COLOR, PHOTO_FIELD_LABEL, PHOTO_FIELD_TYPE
 from .backend_api import (
-    BackendAPI, CARD_W_PX, CARD_H_PX, TYPE_NAMES, SIDE_NAMES,
-    scene_width, scene_height, uses_grid_units, px_to_units, units_to_mm, snap_scene,
+    BackendAPI, CARD_W_PX, CARD_H_PX, TYPE_NAMES, SIDE_NAMES, field_type,
+    missing_backend, scene_width, scene_height, uses_grid_units, px_to_units,
+    units_to_mm, snap_scene,
 )
 from .preview_jobs import RenderCardJob, RenderSignals, render_pool
 
@@ -76,6 +78,38 @@ def _warn(parent, title, text):
 HANDLE = 14
 
 
+def style_font(st, default_size=14):
+    """QFont из style элемента (font_family / font_size / bold / italic)."""
+    f = QFont()
+    fam = (st or {}).get("font_family")
+    if fam:
+        f.setFamily(str(fam))
+    try:
+        size = int((st or {}).get("font_size") or default_size)
+    except (TypeError, ValueError):
+        size = default_size
+    f.setPointSize(max(4, size))
+    f.setBold(bool((st or {}).get("bold")))
+    f.setItalic(bool((st or {}).get("italic")))
+    return f
+
+
+
+class FieldNameTag(QGraphicsSimpleTextItem):
+    """Красная подпись «#имя_поля» (8 pt) над связанным объектом. Только редактор, не в печати."""
+
+    def __init__(self, name, parent=None):
+        super().__init__(f"#{name}", parent)
+        f = QFont()
+        f.setPointSize(8)
+        self.setFont(f)
+        self.setBrush(QBrush(QColor("#CC0000")))
+        r = self.boundingRect()
+        self.setPos(0, -r.height() - 1)
+        self.setZValue(30)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+
+
 def _intersects(a, b):
     """Пересечение с ненулевой площадью (касание краями — не пересечение)."""
     return a["x"] < b["x"] + b["w"] and b["x"] < a["x"] + a["w"] and a["y"] < b["y"] + b["h"] and b["y"] < a["y"] + a["h"]
@@ -118,6 +152,8 @@ class ElementItem(QGraphicsRectItem):
         self.setAcceptHoverEvents(True)
         self.handle = QGraphicsRectItem(0, 0, HANDLE, HANDLE, self)
         self.handle.setBrush(QBrush(QColor("#3070d0")))
+        self._preview = None
+        self._tag = None
         self._apply_geom(el["w"], el["h"])
 
     def _apply_geom(self, w, h):
@@ -159,6 +195,87 @@ class ElementItem(QGraphicsRectItem):
         super().mouseDoubleClickEvent(ev)
         if self.el.get("type") == "text":
             self.bus.text_edit_requested.emit(self)
+
+    def refresh_field_tag(self):
+        """Красная «#имя_поля» над связанным текстом / полем / фото (и при рендере, и без)."""
+        if self._tag is not None:
+            sc = self._tag.scene()
+            if sc is not None:
+                sc.removeItem(self._tag)
+            self._tag = None
+        fn = self.el.get("field_name")
+        if fn and self.el.get("type") in ("text", "field", "photo"):
+            self._tag = FieldNameTag(fn, self)
+
+    def refresh_preview(self, *, show_render=True, labels=None, field_names_bg=False):
+        """Содержимое объекта при выключенном рендере (если нет render_card_db(..., field_names=True))."""
+        if self._preview is not None:
+            sc = self._preview.scene()
+            if sc is not None:
+                sc.removeItem(self._preview)
+            self._preview = None
+        # при включённом рендере или готовом фоне field_names содержимое даёт Backend
+        if show_render or field_names_bg:
+            return
+        t = self.el.get("type")
+        st = self.el.get("style") or {}
+        fn = self.el.get("field_name") or ""
+        if t == "text":
+            text = fn if fn else (self.el.get("static_value") or "")
+            self._preview = self._make_text_preview(text, st)
+        elif t == "field":
+            text = fn or (labels or {}).get(fn) or ""
+            self._preview = self._make_text_preview(text, st)
+        elif t == "photo":
+            self._preview = self._make_photo_placeholder(fn or "фото")
+        elif t == "image":
+            self._preview = self._make_image_preview(self.el.get("static_value"), base_dir=getattr(self, "_base_dir", None))
+
+    def _make_text_preview(self, text, st):
+        item = QGraphicsTextItem(text or "", self)
+        item.setFont(style_font(st, 14))
+        item.setDefaultTextColor(QColor(st.get("color") or "#000000"))
+        item.setPos(2, 2)
+        item.setZValue(1)
+        w = self.rect().width()
+        if w > 8:
+            item.setTextWidth(w - 4)
+        item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        return item
+
+    def _make_photo_placeholder(self, name):
+        r = self.rect()
+        box = QGraphicsRectItem(2, 2, max(0, r.width() - 4), max(0, r.height() - 4), self)
+        box.setPen(QPen(QColor("#888888"), 1, Qt.PenStyle.DashLine))
+        box.setBrush(QBrush(QColor(200, 200, 200, 80)))
+        box.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        lab = QGraphicsTextItem(name or "", box)
+        lab.setFont(style_font({"font_size": 10}, 10))
+        lab.setDefaultTextColor(QColor("#555555"))
+        lab.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        br = lab.boundingRect()
+        lab.setPos(max(0, (box.rect().width() - br.width()) / 2),
+                   max(0, (box.rect().height() - br.height()) / 2))
+        return box
+
+    def _make_image_preview(self, path, base_dir=None):
+        if not path:
+            return None
+        try:
+            from .backend_api import load_preview_image, pil_to_qimage
+            img = load_preview_image(path, base_dir=base_dir, max_side=400)
+            pm = QPixmap.fromImage(pil_to_qimage(img))
+            if pm.isNull():
+                return None
+            item = QGraphicsPixmapItem(pm, self)
+            item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            r = self.rect()
+            if pm.width() and r.width() > 0:
+                item.setScale(min(r.width() / pm.width(), r.height() / max(1, pm.height())))
+            item.setZValue(1)
+            return item
+        except Exception:  # noqa: BLE001
+            return None
 
     def geometry(self):
         if self.is_line:
@@ -281,6 +398,7 @@ class LayoutEditor(QWidget):
         self.scene.clear(); self.hint = None
         sw, sh = scene_width(), scene_height()
         self.scene.setSceneRect(0, 0, sw, sh)
+        self._field_names_bg = False
         if self.show_render:
             pid = self.person_id if self.person_id is not None and self.api.get_person(self.person_id) else None
             self.person_id = pid
@@ -291,8 +409,10 @@ class LayoutEditor(QWidget):
                 bg.setScale(sw / ph.width())
             self._start_canvas_render(pid, side)
         else:
-            b = self.api.get_background(side) or {"color": "#FFFFFF"}
-            bg = self.scene.addRect(QRectF(0, 0, sw, sh), QPen(Qt.PenStyle.NoPen), QBrush(QColor(b["color"])))
+            bg = self._try_field_names_background(side, sw, sh)
+            if bg is None:
+                b = self.api.get_background(side) or {"color": "#FFFFFF"}
+                bg = self.scene.addRect(QRectF(0, 0, sw, sh), QPen(Qt.PenStyle.NoPen), QBrush(QColor(b["color"])))
         bg.setZValue(-1)
         self._bg_item = bg
         self.scene.addRect(QRectF(0, 0, sw, sh), QPen(QColor("#888888"))).setZValue(0)
@@ -304,6 +424,10 @@ class LayoutEditor(QWidget):
         for el in els:
             it = ElementItem(el, self.bus, self.labels); self.scene.addItem(it)
             self._apply_item_flags(it)
+            it._base_dir = self.api.base_dir
+            it.refresh_preview(show_render=self.show_render, labels=self.labels,
+                               field_names_bg=self._field_names_bg)
+            it.refresh_field_tag()
             if el["id"] == select_id: it.setSelected(True)
         if not els:   # подсказка — только оформление редактора, в рендер не попадает
             self.hint = QGraphicsSimpleTextItem(EMPTY_HINT)
@@ -311,20 +435,14 @@ class LayoutEditor(QWidget):
             r = self.hint.boundingRect(); self.hint.setPos((sw - r.width()) / 2, (sh - r.height()) / 2)
             self.hint.setZValue(500); self.scene.addItem(self.hint)
         self.view.fitInView(self.scene.sceneRect().adjusted(-20, -30, 20, 20), Qt.AspectRatioMode.KeepAspectRatio)
-        self._check_overlaps()
+        self.overlaps = []
+        self.status.emit(f"Макет ({SIDE_LABELS[self.side]})")
         self._on_select()
 
     def _check_overlaps(self):
-        items = {i.el["id"]: i for i in self.items()}
-        self.overlaps = find_overlaps([{**i.el, **i.geometry()} for i in items.values()])
-        bad = {x for pair in self.overlaps for x in pair}
-        for eid, it in items.items():
-            if eid in bad:
-                it.setPen(QPen(QColor("#d00000"), 3, Qt.PenStyle.SolidLine)); it.setBrush(QBrush(QColor(208, 0, 0, 45)))
-            elif (it.el.get("style") or {}).get("locked"):
-                it.setPen(QPen(QColor("#B8860B"), 2, Qt.PenStyle.DashLine))
-        msg = ("Внимание: элементы пересекаются (" + ", ".join(f"#{a}×#{b}" for a, b in self.overlaps) + ")") if self.overlaps else ""
-        self.status.emit(msg or f"Макет ({SIDE_LABELS[self.side]}): пересечений нет")
+        """Пересечения разрешены: подсветки и предупреждения нет, рамки обычные."""
+        self.overlaps = []
+        self.status.emit(f"Макет ({SIDE_LABELS[self.side]})")
 
     def refresh_render(self):
         """Обновить рисунок карточки под рамками, не сбрасывая выделение (ввод текста)."""
@@ -384,11 +502,42 @@ class LayoutEditor(QWidget):
     def items(self):
         return [i for i in self.scene.items() if isinstance(i, ElementItem)]
 
+    def refresh_content_previews(self):
+        """Обновить показ текста/начертания и красные #поле на холсте (без полной пересборки)."""
+        labels = getattr(self, "labels", None) or {}
+        fn_bg = bool(getattr(self, "_field_names_bg", False))
+        for it in self.items():
+            it._base_dir = self.api.base_dir
+            it.refresh_preview(show_render=self.show_render, labels=labels, field_names_bg=fn_bg)
+            it.refresh_field_tag()
+
+    def _try_field_names_background(self, side, sw, sh):
+        """Рендер шаблона с именами полей (person=None, field_names=True). Нет функции → None."""
+        try:
+            img = self.api.render_card(None, side, field_names=True)
+        except Exception:  # noqa: BLE001 — LookupError / TypeError / ошибка Backend
+            return None
+        if img is None or img.isNull():
+            return None
+        pm = QPixmap.fromImage(img)
+        if pm.isNull():
+            return None
+        bg = self.scene.addPixmap(pm)
+        if uses_grid_units() and pm.width():
+            bg.setScale(sw / pm.width())
+        self._field_names_bg = True
+        return bg
+
     def _apply_item_flags(self, it):
         locked = bool((it.el.get("style") or {}).get("locked"))
         movable = bool(self.template_mode) and not locked
         it.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, movable)
         it.handle.setVisible(movable)
+        if locked:
+            it.setPen(QPen(QColor("#B8860B"), 2, Qt.PenStyle.DashLine))
+        else:
+            it.setPen(QPen(QColor(UNLINKED_COLOR if it.unlinked else "#3070d0"), 2, Qt.PenStyle.DashLine))
+            it.setBrush(QBrush(QColor(48, 112, 208, 25)))
 
     def _commit_geometry(self, item):
         if (item.el.get("style") or {}).get("locked"):
@@ -467,6 +616,25 @@ class LayoutEditor(QWidget):
             if not name: raise _Cancelled
         return name
 
+    def _image_field_names(self):
+        """Список image-полей: api.list_image_fields(), иначе data_type=image из list_fields()."""
+        fn = getattr(self.api, "image_field_names", None)
+        if callable(fn):
+            return list(fn())
+        return [f["name"] for f in self.api.list_fields() if field_type(f) == "image"]
+
+    def _pick_photo_field(self):
+        """При добавлении фото: одно поле — сразу, несколько — выбор, нет — объект без связи."""
+        names = self._image_field_names()
+        if not names:
+            return None
+        if len(names) == 1:
+            return names[0]
+        name, ok = QInputDialog.getItem(self, "Поле фото", "Выберите поле изображения:", names, 0, False)
+        if not ok or not name:
+            raise _Cancelled
+        return name
+
     def _new_field(self):
         """«Новое поле…» → Менеджер полей; возвращает имя только что созданного поля (или None)."""
         from .main_view import FieldManager
@@ -493,6 +661,7 @@ class LayoutEditor(QWidget):
         if self._locked("Добавить элемент"): return None
         t = dict((k, tt) for k, _l, tt in TOOLS)[kind]
         if t == "field" and field_name is None: field_name = self._ask_field()
+        if t == "photo" and field_name is None: field_name = self._pick_photo_field()
         if t == "image" and image_path is None: image_path = self._ask_file("Изображение (логотип)")
         w, h = DEFAULT_SIZE[t]
         if uses_grid_units():
@@ -537,10 +706,44 @@ class LayoutEditor(QWidget):
         return self.api.get_background(self.side)
 
     def move_z(self, delta):
-        if not self.current: return
+        """Лента «Выше»/«Ниже» → set_z_order('up'|'down')."""
+        self.apply_z_order("up" if delta > 0 else "down")
+
+    def apply_z_order(self, order):
+        """Вызвать api.set_z_order и обновить setZValue на холсте."""
+        if not self.current:
+            return False
         eid = self.current.el["id"]
-        self.api.update_element(eid, z_order=(self.current.el.get("z_order") or 0) + delta)
-        self.load(self.side, eid)
+        fn = getattr(self.api, "set_z_order", None)
+        if not callable(fn):
+            _warn(self, "Слой", missing_backend("set_z_order"))
+            return False
+        try:
+            fn(eid, order)
+        except LookupError as e:
+            _warn(self, "Слой", str(e))
+            return False
+        except Exception as e:  # noqa: BLE001
+            _warn(self, "Слой", f"Backend отклонил порядок слоя: {e}")
+            return False
+        self._sync_z_values()
+        if self.show_render:
+            self.refresh_render()
+        return True
+
+    def _sync_z_values(self):
+        els = {e["id"]: e for e in self.api.list_elements(self.side)}
+        for it in self.items():
+            el = els.get(it.el["id"])
+            if el is None:
+                continue
+            it.el["z_order"] = el.get("z_order") or 0
+            it.setZValue(1000 + (it.el["z_order"] or 0))
+        if self.current and self.current.el["id"] in els:
+            self.current.el["z_order"] = els[self.current.el["id"]].get("z_order") or 0
+        op = getattr(self, "object_props", None)
+        if op is not None:
+            op.sync()
 
     def delete_element(self):
         if not self.current: return

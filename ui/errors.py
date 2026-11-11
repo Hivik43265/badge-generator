@@ -1,7 +1,7 @@
 """Глобальный перехват исключений (D20): диалог + запись в error.log, приложение не падает.
 
-Лог: QStandardPaths.AppDataLocation/error.log — Windows: %APPDATA%\\BadgeGenerator\\error.log,
-Linux: ~/.local/share/BadgeGenerator/error.log, macOS: ~/Library/Application Support/BadgeGenerator/error.log.
+Лог: badge_backend.app_paths.logs_dir()/error.log. Если функция Backend ещё не доступна,
+сохраняется прежний путь QStandardPaths.AppDataLocation/error.log.
 """
 import sys, os, datetime, traceback
 from PyQt6.QtCore import QStandardPaths, QCoreApplication
@@ -11,10 +11,24 @@ error_hook = None        # тесты/самотест: error_hook(text) вме�
 errors = []              # все перехваченные (для самотеста)
 
 
-def log_dir():
+def _fallback_log_dir():
     if not QCoreApplication.applicationName(): QCoreApplication.setApplicationName(APP_NAME)
     d = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation) or os.path.expanduser(f"~/.{APP_NAME}")
     os.makedirs(d, exist_ok=True); return d
+
+
+def log_dir():
+    """Каталог журнала: app_paths.logs_dir(), иначе QStandardPaths."""
+    try:
+        from .backend_api import logs_dir as _be_logs
+        d = _be_logs()
+        if d:
+            d = os.fspath(d)
+            os.makedirs(d, exist_ok=True)
+            return d
+    except Exception:  # noqa: BLE001 — нет функции / ошибка Backend: пишем в прежний каталог
+        pass
+    return _fallback_log_dir()
 
 
 def log_path():

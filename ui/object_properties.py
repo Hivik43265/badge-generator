@@ -1,7 +1,7 @@
 """Панель «Свойства объекта» в стиле Smart IDesigner (QDockWidget + дерево свойств).
 
-Заголовок на русском. Группы: База, Position, Border, Background, Шрифт, Фото, Поле,
-Штрихкод / QR-код, Дополнительно. Laser нет.
+Заголовок на русском. Группы: База, Position, Border, Background, Шрифт (Ж/К),
+Фото, Поле, Штрихкод / QR-код, Слой, Дополнительно. Laser нет.
 Единственный путь записи свойств элемента (лента зовёт set_props → apply_values).
 """
 from __future__ import annotations
@@ -12,7 +12,7 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
     QCheckBox, QColorDialog, QComboBox, QDockWidget, QDoubleSpinBox, QHBoxLayout,
-    QLabel, QLineEdit, QPlainTextEdit, QSpinBox, QTreeWidget, QTreeWidgetItem,
+    QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSpinBox, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
 
@@ -261,6 +261,26 @@ class ObjectPropertiesPanel(QWidget):
         self._row(self.g_font, "Семейство", self.w_ffamily)
         self._row(self.g_font, "Размер", self.w_fsize)
         self._row(self.g_font, "Цвет", self.w_fcolor)
+        style_row = QWidget()
+        hl = QHBoxLayout(style_row)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(4)
+        self.w_bold = QPushButton("Ж")
+        self.w_bold.setCheckable(True)
+        self.w_bold.setToolTip("Жирный")
+        self.w_bold.setFixedWidth(28)
+        self.w_bold.setMaximumHeight(22)
+        self.w_bold.setStyleSheet("font-weight:700;")
+        self.w_italic = QPushButton("К")
+        self.w_italic.setCheckable(True)
+        self.w_italic.setToolTip("Курсив")
+        self.w_italic.setFixedWidth(28)
+        self.w_italic.setMaximumHeight(22)
+        self.w_italic.setStyleSheet("font-style:italic;")
+        hl.addWidget(self.w_bold)
+        hl.addWidget(self.w_italic)
+        hl.addStretch()
+        self._row(self.g_font, "Начертание", style_row)
 
         self.g_photo = self._group("Фото")
         self.w_photo_link = QLabel("—"); self.w_photo_link.setWordWrap(True)
@@ -294,19 +314,33 @@ class ObjectPropertiesPanel(QWidget):
         self._row(self.g_qr, "Коррекция", self.w_ec)
         self._row(self.g_qr, "Поле QR, мод.", self.w_qborder)
 
-        self.g_extra = self._group("Дополнительно", expanded=False)
+        self.g_layer = self._group("Слой")
         self.w_z = _int_spin(-1000, 1000)
+        self._row(self.g_layer, "Порядок", self.w_z)
+        layer_btns = QWidget()
+        vl = QVBoxLayout(layer_btns)
+        vl.setContentsMargins(0, 0, 0, 0)
+        vl.setSpacing(2)
+        self.btn_z_front = QPushButton("На передний план")
+        self.btn_z_up = QPushButton("Выше")
+        self.btn_z_down = QPushButton("Ниже")
+        self.btn_z_back = QPushButton("На задний план")
+        for b in (self.btn_z_front, self.btn_z_up, self.btn_z_down, self.btn_z_back):
+            b.setMaximumHeight(24)
+            vl.addWidget(b)
+        self._row(self.g_layer, "Команды", layer_btns)
+
+        self.g_extra = self._group("Дополнительно", expanded=False)
         self.w_style = QPlainTextEdit()
         self.w_style.setFixedHeight(80)
         self.w_style.setTabChangesFocus(True)
-        self._row(self.g_extra, "Слой (z)", self.w_z)
         self._row(self.g_extra, "Стиль (JSON)", self.w_style)
 
         self.groups = {
             "base": self.g_base, "pos": self.g_pos, "border": self.g_border,
             "bg": self.g_bg, "font": self.g_font, "photo": self.g_photo,
             "bind": self.g_bind, "barcode": self.g_barcode, "qr": self.g_qr,
-            "extra": self.g_extra,
+            "layer": self.g_layer, "extra": self.g_extra,
         }
 
     def _wire(self):
@@ -326,6 +360,8 @@ class ObjectPropertiesPanel(QWidget):
         self.w_radius.valueChanged.connect(lambda: None if self._loading else self._radius_timer.start())
         self.w_fcolor.changed.connect(lambda *_: self._apply_font())
         self.w_ffamily.activated.connect(self._apply_font)
+        self.w_bold.toggled.connect(lambda *_: self._apply_font())
+        self.w_italic.toggled.connect(lambda *_: self._apply_font())
         self.w_field.activated.connect(self._apply_binding)
         self.w_static.editingFinished.connect(self._apply_binding)
         self.w_format.activated.connect(self._apply_barcode)
@@ -334,6 +370,10 @@ class ObjectPropertiesPanel(QWidget):
         self.w_ec.activated.connect(self._apply_qr)
         self.w_qborder.editingFinished.connect(self._apply_qr)
         self.w_z.editingFinished.connect(self._apply_z)
+        self.btn_z_front.clicked.connect(lambda: self._set_z_cmd("front"))
+        self.btn_z_up.clicked.connect(lambda: self._set_z_cmd("up"))
+        self.btn_z_down.clicked.connect(lambda: self._set_z_cmd("down"))
+        self.btn_z_back.clicked.connect(lambda: self._set_z_cmd("back"))
         self._style_timer = QTimer(self, singleShot=True, interval=700, timeout=self._apply_json)
         self.w_style.textChanged.connect(lambda: None if self._loading else self._style_timer.start())
         self._text_timer = QTimer(self, singleShot=True, interval=300, timeout=self._apply_text)
@@ -455,16 +495,16 @@ class ObjectPropertiesPanel(QWidget):
             if not self._font_timer.isActive():
                 self.w_fsize.setValue(int(st.get("font_size", 8 if t == "barcode" else 14)))
             self.w_fcolor.set_color(st.get("color") or "#000000")
+            self.w_bold.setChecked(bool(st.get("bold")))
+            self.w_italic.setChecked(bool(st.get("italic")))
 
-            from .stage15 import PHOTO_FIELD_LABEL, PHOTO_FIELD_TYPE
+            from .stage15 import PHOTO_FIELD_TYPE
             if t == "photo":
                 fn = e.get("field_name")
                 if fn:
                     self.w_photo_link.setText(f"Связан с полем «{fn}» (тип «{PHOTO_FIELD_TYPE}»)")
                 else:
-                    self.w_photo_link.setText(
-                        f"Не связан — при вставке фото создаётся поле «{PHOTO_FIELD_LABEL}»"
-                    )
+                    self.w_photo_link.setText("Не связан — выберите поле")
             else:
                 self.w_photo_link.setText("—")
 
@@ -493,12 +533,13 @@ class ObjectPropertiesPanel(QWidget):
             self.row_static.setHidden(t not in ("image", "barcode", "qr"))
             self._set_group_visible(self.g_barcode, t == "barcode")
             self._set_group_visible(self.g_qr, t == "qr")
+            self._set_group_visible(self.g_layer, True)
             self._set_group_visible(self.g_extra, True)
             self._set_group_visible(self.g_base, True)
             self._set_group_visible(self.g_pos, True)
 
             for g in (self.g_base, self.g_pos, self.g_border, self.g_bg, self.g_font,
-                      self.g_photo, self.g_bind, self.g_barcode, self.g_qr):
+                      self.g_photo, self.g_bind, self.g_barcode, self.g_qr, self.g_layer):
                 if not g.isHidden():
                     g.setExpanded(True)
         finally:
@@ -621,6 +662,9 @@ class ObjectPropertiesPanel(QWidget):
         ed = self.editor
         if ed.current is not None and keys and "locked" in keys and hasattr(ed, "_apply_item_flags"):
             ed._apply_item_flags(ed.current)
+        preview = getattr(ed, "refresh_content_previews", None)
+        if callable(preview):
+            preview()
         refresh = getattr(ed, "refresh_render", None)
         if callable(refresh):
             refresh()
@@ -712,6 +756,8 @@ class ObjectPropertiesPanel(QWidget):
         keys = {
             "font_size": int(self.w_fsize.value()),
             "color": self.w_fcolor.color_hex() or "#000000",
+            "bold": bool(self.w_bold.isChecked()),
+            "italic": bool(self.w_italic.isChecked()),
         }
         fam = self.w_ffamily.currentText()
         if fam:
@@ -719,6 +765,8 @@ class ObjectPropertiesPanel(QWidget):
         st = _style_of(self.editor.current.el)
         if (int(st.get("font_size") or 0) == keys["font_size"]
                 and _as_hex(st.get("color") or "#000000") == keys["color"]
+                and bool(st.get("bold")) == keys["bold"]
+                and bool(st.get("italic")) == keys["italic"]
                 and (not fam or st.get("font_family") == fam)):
             return
         self._write_style(**keys)
@@ -756,10 +804,19 @@ class ObjectPropertiesPanel(QWidget):
             border=int(self.w_qborder.value()),
         )
 
+    def _set_z_cmd(self, cmd):
+        if self._loading or not self.editor.current:
+            return
+        fn = getattr(self.editor, "apply_z_order", None)
+        if callable(fn):
+            fn(cmd)
+
     def _apply_z(self):
         if self._loading or not self.editor.current:
             return
-        self._write_element(z_order=int(self.w_z.value()))
+        fn = getattr(self.editor, "apply_z_order", None)
+        if callable(fn):
+            fn(int(self.w_z.value()))
 
     def _apply_json(self):
         if self._loading or not self.editor.current:
@@ -900,6 +957,8 @@ class ObjectPropertiesPanel(QWidget):
             **self._style_payload_bg(),
             font_size=int(self.w_fsize.value()),
             color=self.w_fcolor.color_hex() or "#000000",
+            bold=bool(self.w_bold.isChecked()),
+            italic=bool(self.w_italic.isChecked()),
         )
         fam = self.w_ffamily.currentText()
         if fam:
