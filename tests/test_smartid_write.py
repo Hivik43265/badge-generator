@@ -199,3 +199,30 @@ def test_write_csp_relative_and_parse(tmp_path):
         raise AssertionError("expected FileExistsError")
     except FileExistsError:
         pass
+
+
+def test_bold_italic_go_to_dropped_once(tmp_path):
+    tpl = {
+        "elements": [
+            {"type": "text", "x": 10, "y": 10, "w": 100, "h": 20, "side": "front",
+             "text": "A", "style": {"bold": True}},
+            {"type": "text", "x": 10, "y": 40, "w": 100, "h": 20, "side": "front",
+             "text": "B", "style": {"italic": True, "font_style": "italic"}},
+            {"type": "text", "x": 10, "y": 70, "w": 100, "h": 20, "side": "front",
+             "text": "C", "style": {"bold": True, "font_weight": 700,
+                                    "italic": True, "font_style": "oblique"}},
+            {"type": "text", "x": 10, "y": 100, "w": 100, "h": 20, "side": "front",
+             "text": "D", "style": {"bold": False, "italic": False}},
+            {"type": "field", "x": 10, "y": 130, "w": 100, "h": 20, "side": "front",
+             "field_name": "Name", "text": "Иванов", "style": {"italic": True}},
+        ],
+        "fields": [{"name": "Name", "value": "Иванов"}],
+    }
+    r = api.write_csd(tpl, tmp_path / "styles.csd")
+    assert r["dropped"] == [
+        "Текст 1: жирный",
+        "Текст 2: курсив",
+        "Текст 3: жирный",
+        "Текст 3: курсив",
+        "Поле 1: курсив",
+    ]
