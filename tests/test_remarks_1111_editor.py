@@ -27,7 +27,7 @@ def _project(tmp_path):
     return a, eid, pid
 
 
-@pytest.mark.parametrize("render_on, with_person, expect", [(True, True, False), (True, False, True), (False, False, True)])
+@pytest.mark.parametrize("render_on, with_person, expect", [(True, True, False), (True, False, True), (False, False, True), (False, True, True)])
 def test_editor_payload_field_names(qtapp, tmp_path, monkeypatch, render_on, with_person, expect):
     """(а) рендер вкл. + запись → данные; (б) рендер вкл. без записи и (в) рендер выкл. → field_names=True; #поле всегда."""
     import ui.layout_editor as LE
@@ -43,7 +43,8 @@ def test_editor_payload_field_names(qtapp, tmp_path, monkeypatch, render_on, wit
     assert jobs, "холст редактора не отправил задание в preview_jobs"
     p = jobs[-1].payload
     assert p["field_names"] is expect
-    assert (p["person"] is not None) == with_person
+    # данные записи — только в (а); при field_names=True person=None, иначе render_card_mem рисует данные записи
+    assert (p["person"] is not None) == (render_on and with_person)
     it = next(i for i in le.items() if i.el["id"] == eid)
     assert it._tag is not None                                         # красная #поле есть во всех режимах
 
