@@ -152,11 +152,11 @@ dst = next(e for e in els0 if e["type"] == "photo")         # цель пере�
 eid, ORIG = src["id"], (src["x"], src["y"], src["w"], src["h"])
 api.update_element(eid, x=dst["x"], y=dst["y"], w=src["w"], h=src["h"])
 le.load("front", eid)
-assert any(eid in pair for pair in le.overlaps)
-assert "пересекаются" in w.statusBar().currentMessage()
-red = next(i for i in le.items() if i.el["id"] == eid).pen().color().name()
-assert red == "#d00000", red
-ok(f"пересечение: элемент фикстуры #{eid} сдвинут на фото #{dst['id']} → предупреждение {le.overlaps}, подсветка {red}")
+pen = next(i for i in le.items() if i.el["id"] == eid).pen().color().name()
+assert le.overlaps == [], le.overlaps
+assert "пересекаются" not in (w.statusBar().currentMessage() or "")
+assert pen != "#d00000", pen
+ok(f"пересечение разрешено: элемент фикстуры #{eid} на фото #{dst['id']} — без предупреждения и красной рамки ({pen})")
 it = next(i for i in le.items() if i.el["id"] == eid)
 it.setPos(ORIG[0], ORIG[1]); it.set_size(ORIG[2], ORIG[3]); le._commit_geometry(it); spin()
 els = api.list_elements("front"); g = next(e for e in els if e["id"] == eid)

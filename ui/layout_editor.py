@@ -434,20 +434,14 @@ class LayoutEditor(QWidget):
             r = self.hint.boundingRect(); self.hint.setPos((sw - r.width()) / 2, (sh - r.height()) / 2)
             self.hint.setZValue(500); self.scene.addItem(self.hint)
         self.view.fitInView(self.scene.sceneRect().adjusted(-20, -30, 20, 20), Qt.AspectRatioMode.KeepAspectRatio)
-        self._check_overlaps()
+        self.overlaps = []
+        self.status.emit(f"Макет ({SIDE_LABELS[self.side]})")
         self._on_select()
 
     def _check_overlaps(self):
-        items = {i.el["id"]: i for i in self.items()}
-        self.overlaps = find_overlaps([{**i.el, **i.geometry()} for i in items.values()])
-        bad = {x for pair in self.overlaps for x in pair}
-        for eid, it in items.items():
-            if eid in bad:
-                it.setPen(QPen(QColor("#d00000"), 3, Qt.PenStyle.SolidLine)); it.setBrush(QBrush(QColor(208, 0, 0, 45)))
-            elif (it.el.get("style") or {}).get("locked"):
-                it.setPen(QPen(QColor("#B8860B"), 2, Qt.PenStyle.DashLine))
-        msg = ("Внимание: элементы пересекаются (" + ", ".join(f"#{a}×#{b}" for a, b in self.overlaps) + ")") if self.overlaps else ""
-        self.status.emit(msg or f"Макет ({SIDE_LABELS[self.side]}): пересечений нет")
+        """Пересечения разрешены: подсветки и предупреждения нет, рамки обычные."""
+        self.overlaps = []
+        self.status.emit(f"Макет ({SIDE_LABELS[self.side]})")
 
     def refresh_render(self):
         """Обновить рисунок карточки под рамками, не сбрасывая выделение (ввод текста)."""
@@ -538,6 +532,11 @@ class LayoutEditor(QWidget):
         movable = bool(self.template_mode) and not locked
         it.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, movable)
         it.handle.setVisible(movable)
+        if locked:
+            it.setPen(QPen(QColor("#B8860B"), 2, Qt.PenStyle.DashLine))
+        else:
+            it.setPen(QPen(QColor(UNLINKED_COLOR if it.unlinked else "#3070d0"), 2, Qt.PenStyle.DashLine))
+            it.setBrush(QBrush(QColor(48, 112, 208, 25)))
 
     def _commit_geometry(self, item):
         if (item.el.get("style") or {}).get("locked"):
