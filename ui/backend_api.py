@@ -634,13 +634,10 @@ def apply_photo_edit(img, params):
 def render_card_mem(person, elements, side="front", background=None, base_dir=None, *, field_names=False):
     """Чистый Backend render_card: без соединения SQLite (для воркера превью).
     person=None и field_names=True → тот же вид, что render_card_db(..., field_names=True)
-    (через Backend _field_name_view, если он есть)."""
+    (через Backend _field_name_view)."""
     if person is None and field_names:
-        try:
-            from badge_backend.render import _field_name_view
-            elements = _field_name_view(elements)
-        except ImportError:
-            pass
+        from badge_backend.render import _field_name_view
+        elements = _field_name_view(elements)
     return _api.render_card(person, elements, side, background, base_dir)
 
 

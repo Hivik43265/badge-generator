@@ -12,7 +12,15 @@ import tempfile
 import traceback
 from pathlib import Path
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# QA_SCREENS_PLATFORM (например, windows) позволяет CI работать не в offscreen;
+# по умолчанию остаётся offscreen, со шрифтами.
+_plat = (os.environ.get("QA_SCREENS_PLATFORM") or "").strip()
+if _plat:
+    os.environ["QT_QPA_PLATFORM"] = _plat
+else:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+if os.environ.get("QT_QPA_PLATFORM") == "offscreen" and sys.platform == "win32":
+    os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -96,10 +104,11 @@ def _build_demo(tmp: Path):
 
 
 def _spin(app, ms=80):
-    from PyQt6.QtCore import QTimer, QEventLoop
+    from PyQt6.QtCore import QTimer, QEventLoop, QThreadPool
     loop = QEventLoop()
     QTimer.singleShot(ms, loop.quit)
     loop.exec()
+    QThreadPool.globalInstance().waitForDone(max(int(ms), 4000))
     app.processEvents()
 
 
@@ -247,6 +256,38 @@ def shot_07_layer(app, w, path: Path):
     _grab(target, path)
 
 
+def _repo_font_dirs():
+    """Каталоги со шрифтами проекта: badge_backend/assets/fonts и assets/fonts, если есть."""
+    return [d for d in (ROOT / "badge_backend" / "assets" / "fonts", ROOT / "assets" / "fonts") if d.is_dir()]
+
+
+def _load_qa_fonts(app):
+    """Подгрузить ttf проекта (включая DejaVu) и системные Arial/Segoe UI на Windows."""
+    from PyQt6.QtGui import QFont, QFontDatabase
+    families = []
+    paths = []
+    for d in _repo_font_dirs():
+        paths.extend(sorted(d.glob("*.ttf")))
+    if sys.platform == "win32":
+        for name in ("arial.ttf", "segoeui.ttf"):
+            p = Path(r"C:\Windows\Fonts") / name
+            if p.is_file():
+                paths.append(p)
+    for path in paths:
+        fid = QFontDatabase.addApplicationFont(str(path))
+        if fid != -1:
+            families.extend(QFontDatabase.applicationFontFamilies(fid))
+    seen, uniq = set(), []
+    for fam in families:
+        if fam and fam not in seen:
+            seen.add(fam)
+            uniq.append(fam)
+    if uniq:
+        app.setFont(QFont(uniq[0], 9))
+    print("qa_screens fonts:", ", ".join(uniq) if uniq else "(none)", flush=True)
+    return uniq
+
+
 def main():
     _ensure_out()
     from PyQt6.QtCore import QCoreApplication
@@ -258,6 +299,7 @@ def main():
     from ui.backend_api import BackendAPI, missing_backend
     from ui.main_window import MainWindow
     app = QApplication.instance() or QApplication(sys.argv[:1])
+    _load_qa_fonts(app)
 
     shots = {
         "01_logs_projects_dir.png": None,
