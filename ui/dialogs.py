@@ -280,8 +280,8 @@ class ImportDialog(QDialog):
         for j, h in enumerate(self.headers):
             a = QTableWidgetItem(h); a.setBackground(QColor("#E3F0FB"))
             self.values.setItem(j, 0, a); self.values.setItem(j, 1, QTableWidgetItem(row[j] if j < len(row) else ""))
-        # D36: один столбец фото — image-поле; значение через Backend resolve_photo_path
-        # (нет image-поля → Backend сам пишет колонку «Фото» в photo_path; UI фолбэк не делает)
+        # D36: один столбец фото — image-поле из list_image_fields; значение через Backend resolve_photo_path.
+        # Нет image-поля — путь берётся из persons.photo_path; поле «Фото» UI не создаёт.
         import pathlib
         img = next((k for k, _l, t in self.fields if t == FIELD_TYPE_NAMES["image"]), None)
         h = self.field_column(img) if img else None

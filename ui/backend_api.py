@@ -398,7 +398,12 @@ class BackendAPI:
     def _apply(self, op, inverse):
         kind, eid = op[0], op[1]; self._replaying = True
         try:
-            if (kind == "create") == inverse:          # отмена создания / повтор удаления
+            if kind == "z_order":
+                # front/back/up/down перенумеровывают всю сторону — восстанавливаем все z
+                zs = op[2] if inverse else op[3]
+                for zid, z in zs.items():
+                    _api.update_element(self.con, self._id(zid), z_order=int(z))
+            elif (kind == "create") == inverse:          # отмена создания / повтор удаления
                 _api.delete_element(self.con, self._id(eid))
             elif kind in ("create", "delete"):         # повтор создания / отмена удаления
                 data = op[2]; self._ids[eid] = _api.create_element(self.con, **data)
@@ -432,23 +437,32 @@ class BackendAPI:
             self._record(("update", eid, {"style": old.get("style")}, {"style": r}))
         return r
 
-    def set_z_order(self, element_id, order):
-        """api.set_z_order(element_id, 'front'|'back'|'up'|'down'|int). Нет функции → LookupError."""
+    def set_z_order(self, element_id, op):
+        """api.set_z_order(con, element_id, op) → новый z_order | None.
+        op: 'front'|'back'|'up'|'down'|int. Нет функции → LookupError.
+        В историю пишется z_order всех элементов стороны (операция перенумеровывает их без дыр)."""
         fn = _backend_fn("set_z_order")
         if fn is None:
             raise LookupError(missing_backend("set_z_order"))
-        return fn(self.con, self._id(element_id), order)
+        cur = self._el(element_id)
+        side = (cur or {}).get("side")
+        before = {e["id"]: int(e.get("z_order") or 0) for e in _api.list_elements(self.con, side)}
+        r = fn(self.con, self._id(element_id), op)
+        after = {e["id"]: int(e.get("z_order") or 0) for e in _api.list_elements(self.con, side)}
+        if before != after:
+            self._record(("z_order", element_id, before, after))
+        return r
 
     # --- рендер (Backend) ---
-    def render_card(self, person, side="front", *, field_names=False):
-        """person: id | dict | None. field_names=True — имена полей вместо данных (контракт render_card_db).
-        Нет поддержки field_names → LookupError."""
-        fn = getattr(_api, "render_card_db", None)
+    def render_card(self, person=None, side="front", *, field_names=False):
+        """Тонкая обёртка: render_card_db(con, person, side, base_dir, field_names=...).
+        Точный вызов при выключенном рендере: (con, None, side, base_dir, field_names=True).
+        Нет функции или нет параметра field_names при запросе имён → LookupError."""
+        fn = _backend_fn("render_card_db") or getattr(_api, "render_card_db", None)
         if not callable(fn):
             raise LookupError(missing_backend("render_card_db"))
-        kw = {"field_names": True} if field_names else {}
         try:
-            im = fn(self.con, person, side, self.base_dir, **kw)
+            im = fn(self.con, person, side, self.base_dir, field_names=field_names)
         except TypeError:
             if field_names:
                 raise LookupError(missing_backend("render_card_db"))
