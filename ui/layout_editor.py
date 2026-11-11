@@ -10,7 +10,8 @@ import os
 from PyQt6.QtCore import Qt, QRectF, pyqtSignal, QObject, QTimer, QEvent
 from PyQt6.QtGui import QBrush, QColor, QPen, QPainter, QPixmap, QAction, QFont
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QGraphicsView, QGraphicsScene,
-                             QGraphicsRectItem, QGraphicsSimpleTextItem, QGraphicsItem, QGroupBox,
+                             QGraphicsRectItem, QGraphicsSimpleTextItem, QGraphicsTextItem,
+                             QGraphicsItem, QGroupBox,
                              QFormLayout, QLabel, QComboBox, QPushButton, QSpinBox, QLineEdit,
                              QPlainTextEdit, QMessageBox, QCheckBox, QToolButton, QGridLayout,
                              QInputDialog, QFileDialog, QColorDialog, QSizePolicy)
@@ -76,6 +77,23 @@ def _warn(parent, title, text):
 HANDLE = 14
 
 
+def style_font(st, default_size=14):
+    """QFont из style элемента (font_family / font_size / bold / italic)."""
+    f = QFont()
+    fam = (st or {}).get("font_family")
+    if fam:
+        f.setFamily(str(fam))
+    try:
+        size = int((st or {}).get("font_size") or default_size)
+    except (TypeError, ValueError):
+        size = default_size
+    f.setPointSize(max(4, size))
+    f.setBold(bool((st or {}).get("bold")))
+    f.setItalic(bool((st or {}).get("italic")))
+    return f
+
+
+
 def _intersects(a, b):
     """Пересечение с ненулевой площадью (касание краями — не пересечение)."""
     return a["x"] < b["x"] + b["w"] and b["x"] < a["x"] + a["w"] and a["y"] < b["y"] + b["h"] and b["y"] < a["y"] + a["h"]
@@ -118,6 +136,7 @@ class ElementItem(QGraphicsRectItem):
         self.setAcceptHoverEvents(True)
         self.handle = QGraphicsRectItem(0, 0, HANDLE, HANDLE, self)
         self.handle.setBrush(QBrush(QColor("#3070d0")))
+        self._preview = None
         self._apply_geom(el["w"], el["h"])
 
     def _apply_geom(self, w, h):
@@ -159,6 +178,35 @@ class ElementItem(QGraphicsRectItem):
         super().mouseDoubleClickEvent(ev)
         if self.el.get("type") == "text":
             self.bus.text_edit_requested.emit(self)
+
+    def refresh_preview(self, *, show_render=True, labels=None):
+        """Показать текст со стилем (в т.ч. bold/italic) при выключенном рендере."""
+        if self._preview is not None:
+            sc = self._preview.scene()
+            if sc is not None:
+                sc.removeItem(self._preview)
+            self._preview = None
+        if show_render:
+            return
+        t = self.el.get("type")
+        st = self.el.get("style") or {}
+        if t == "text":
+            text = self.el.get("static_value") or ""
+        elif t == "field":
+            fn = self.el.get("field_name") or ""
+            text = fn or (labels or {}).get(fn) or ""
+        else:
+            return
+        item = QGraphicsTextItem(text, self)
+        item.setFont(style_font(st, 8 if t == "barcode" else 14))
+        item.setDefaultTextColor(QColor(st.get("color") or "#000000"))
+        item.setPos(2, 2)
+        item.setZValue(1)
+        w = self.rect().width()
+        if w > 8:
+            item.setTextWidth(w - 4)
+        item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self._preview = item
 
     def geometry(self):
         if self.is_line:
@@ -304,6 +352,7 @@ class LayoutEditor(QWidget):
         for el in els:
             it = ElementItem(el, self.bus, self.labels); self.scene.addItem(it)
             self._apply_item_flags(it)
+            it.refresh_preview(show_render=self.show_render, labels=self.labels)
             if el["id"] == select_id: it.setSelected(True)
         if not els:   # подсказка — только оформление редактора, в рендер не попадает
             self.hint = QGraphicsSimpleTextItem(EMPTY_HINT)
@@ -383,6 +432,12 @@ class LayoutEditor(QWidget):
 
     def items(self):
         return [i for i in self.scene.items() if isinstance(i, ElementItem)]
+
+    def refresh_content_previews(self):
+        """Обновить показ текста/начертания на холсте (без полной пересборки)."""
+        labels = getattr(self, "labels", None) or {}
+        for it in self.items():
+            it.refresh_preview(show_render=self.show_render, labels=labels)
 
     def _apply_item_flags(self, it):
         locked = bool((it.el.get("style") or {}).get("locked"))
