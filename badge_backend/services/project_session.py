@@ -1,7 +1,7 @@
 """Этап 15 B3: сессия проекта — исходник не трогается, пока пользователь не нажмёт «Сохранить».
 
 Рабочая копия: <имя>.db.work рядом с проектом (на Windows — скрытый) или
-%TEMP%/BadgeGenerator-work/… (нет прав / сетевой диск). Пути photos/ и фонов —
+<папка программы>/work/… (app_paths.work_dir(); нет прав / сетевой диск). Пути photos/ и фонов —
 от каталога исходника (con.bg_base_dir).
 
 Новый проект — тройка <имя>.csp + <имя>.csd + <имя>.db рядом, плюс photos/ и
@@ -20,7 +20,25 @@ from .photos import set_project_base_dir
 
 log = logging.getLogger(__name__)
 SESSION_FMT = 1
-WORK_TEMP_DIR = "BadgeGenerator-work"
+WORK_TEMP_DIR = "BadgeGenerator-work"   # прежний каталог в %TEMP% (до замечания №1): только поиск сессий и очистка
+
+
+def _work_root() -> Path:
+    """Замечание №1 (11.11): рабочие копии и несохранённые проекты — <папка программы>/work (app_paths.work_dir())."""
+    from ..app_paths import work_dir
+    return work_dir()
+
+
+def _legacy_work_root() -> Path:
+    """Прежний %TEMP%/BadgeGenerator-work: сессии оттуда ещё восстанавливаются, старые файлы чистятся."""
+    return Path(tempfile.gettempdir()) / WORK_TEMP_DIR
+
+
+def _work_roots() -> list[Path]:
+    out = [_work_root()]
+    leg = _legacy_work_root()
+    if leg not in out: out.append(leg)
+    return out
 STALE_AGE_S = 6 * 3600
 SAVE_RETRIES = 8
 
@@ -103,17 +121,17 @@ def _work_session_path(work: Path) -> Path:
 
 
 def _find_session_file(source: Path) -> Path | None:
-    """Рядом с исходником или в %TEMP%/BadgeGenerator-work/ (source_path в JSON)."""
+    """Рядом с исходником, в <папка программы>/work/ или в прежнем %TEMP%/BadgeGenerator-work/ (source_path в JSON)."""
     sp = session_path(source)
     if sp.is_file():
         return sp
-    root = Path(tempfile.gettempdir()) / WORK_TEMP_DIR
-    if not root.is_dir():
-        return None
-    try:
-        files = list(root.glob("*.bg-session"))
-    except OSError:
-        return None
+    files = []
+    for root in _work_roots():
+        if not root.is_dir(): continue
+        try:
+            files += list(root.glob("*.bg-session"))
+        except OSError:
+            continue
     for cand in files:
         data = _read_session(cand)
         if not data:
@@ -164,8 +182,7 @@ def should_use_temp_work(directory: Path) -> bool:
 
 
 def _temp_work_path(source: Path) -> Path:
-    d = Path(tempfile.gettempdir()) / WORK_TEMP_DIR
-    d.mkdir(parents=True, exist_ok=True)
+    d = _work_root()
     return d / f"{os.urandom(4).hex()}_{source.stem}.db"
 
 
@@ -244,8 +261,15 @@ def _replace_once(tmp: Path, dest: Path, bak: Path | None):
 
 
 def cleanup_stale_temp_work(min_age_s: float = STALE_AGE_S) -> list[str]:
-    """Удалить старые копии в %TEMP%/BadgeGenerator-work/ без живого pid (метаданные в имени не обязательны)."""
-    out, root = [], Path(tempfile.gettempdir()) / WORK_TEMP_DIR
+    """Удалить старые копии (старше min_age_s) в <папка программы>/work/ и в прежнем %TEMP%/BadgeGenerator-work/."""
+    out = []
+    for root in _work_roots():
+        out += _cleanup_dir(root, min_age_s)
+    return out
+
+
+def _cleanup_dir(root: Path, min_age_s: float) -> list[str]:
+    out = []
     try:
         if not root.is_dir(): return out
         now = time.time()
@@ -268,15 +292,15 @@ def cleanup_stale_temp_work(min_age_s: float = STALE_AGE_S) -> list[str]:
 
 def list_recoverable_sessions(search_dirs: list | None = None) -> list[dict]:
     """Сессии с мёртвым pid и существующей рабочей копией.
-    Всегда просматривает и %TEMP%/BadgeGenerator-work/ (.bg-session рядом с рабочей копией,
-    если каталог исходника недоступен на запись)."""
+    Всегда просматривает и <папка программы>/work/ и прежний %TEMP%/BadgeGenerator-work/
+    (.bg-session рядом с рабочей копией, если каталог исходника недоступен на запись)."""
     dirs, seen, out = [], set(), []
     for d in (search_dirs or []):
         p = Path(d)
         dirs.append(p if p.is_dir() else p.parent)
-    temp_root = Path(tempfile.gettempdir()) / WORK_TEMP_DIR
-    if temp_root not in dirs:
-        dirs.append(temp_root)
+    for temp_root in _work_roots():
+        if temp_root not in dirs:
+            dirs.append(temp_root)
     for d in dirs:
         try: files = list(Path(d).glob("*.bg-session"))
         except OSError: continue
@@ -479,8 +503,7 @@ class ProjectSession:
         s.con = _db.connect(":memory:")
         stem = Path(str(name)).stem if name else "проект"
         s.suggested_name = f"{stem}.db"
-        root = Path(tempfile.gettempdir()) / WORK_TEMP_DIR
-        root.mkdir(parents=True, exist_ok=True)
+        root = _work_root()
         s.base_dir = Path(tempfile.mkdtemp(prefix=f"unsaved_{stem}_", dir=str(root)))
         s._owned_base_dir = True
         set_project_base_dir(s.con, s.base_dir)

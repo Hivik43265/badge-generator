@@ -32,14 +32,18 @@ def _font_dirs() -> list[str]:
         "/System/Library/Fonts",
         os.path.expanduser("~/Library/Fonts"),
     ]
+    # Замечание №1 (11.11): вшитые DejaVu — <app_root>/assets/fonts (exe onedir: рядом с exe),
+    # из исходников — badge_backend/assets/fonts (app_paths.asset_candidates).
+    from ..app_paths import asset_candidates
+    dirs.extend(str(p) for p in asset_candidates("fonts"))
     mei = getattr(sys, "_MEIPASS", None)
-    if mei:
-        dirs.extend((mei, os.path.join(mei, "fonts"), os.path.join(mei, "badge_backend", "fonts")))
-    else:
-        # Запуск из исходников: вшитые DejaVu в badge_backend/assets/fonts
-        bundled = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "assets", "fonts"))
-        dirs.append(bundled)
-    return [d for d in dirs if d and os.path.isdir(d)]
+    if mei:   # старые onefile-сборки
+        dirs.extend((os.path.join(mei, "fonts"), os.path.join(mei, "badge_backend", "fonts")))
+    seen, out = set(), []
+    for d in dirs:
+        if d and d not in seen and os.path.isdir(d):
+            seen.add(d); out.append(d)
+    return out
 
 
 def _style_slot(style: str) -> str:

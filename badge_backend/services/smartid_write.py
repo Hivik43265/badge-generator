@@ -351,22 +351,14 @@ def _note_dropped_style(obj: dict, st: dict, dropped: list, title: str) -> None:
 
 
 def bundled_reference_csd() -> Path | None:
-    """Встроенный эталон .csd: badge_backend/assets/smartid/reference.csd.
+    """Встроенный эталон .csd (замечание №1, 11.11): app_paths.find_asset("smartid", "reference.csd").
 
-    В exe (PyInstaller) ищется в <sys._MEIPASS>/badge_backend/assets/smartid/,
-    как шрифты в render/fonts.py — через _MEIPASS, иначе рядом с пакетом.
+    Порядок: <app_root>/assets/smartid/reference.csd (exe onedir — папка assets рядом с exe),
+    badge_backend/assets/smartid/reference.csd (исходники), <_MEIPASS>/badge_backend/assets/smartid/
+    (старые onefile-сборки). Нет нигде → None.
     """
-    import sys
-    name = Path("badge_backend") / "assets" / "smartid" / "reference.csd"
-    cands: list[Path] = []
-    mei = getattr(sys, "_MEIPASS", None)
-    if mei:
-        root = Path(mei)
-        cands.append(root / name)
-        cands.append(root / "assets" / "smartid" / "reference.csd")
-    pkg = Path(__file__).resolve().parent.parent  # badge_backend
-    cands.append(pkg / "assets" / "smartid" / "reference.csd")
-    return _first_existing(cands)
+    from ..app_paths import find_asset
+    return find_asset("smartid", "reference.csd")
 
 
 def default_reference_csd() -> Path | None:
