@@ -613,31 +613,42 @@ class MainWindow(QMainWindow):
             return p.with_suffix(".csp").name
         return p.name
 
+    def _projects_folder(self):
+        """Папка по умолчанию для «Создать» / «Сохранить как»: app_paths.projects_dir()."""
+        try:
+            from .backend_api import projects_dir
+            d = Path(projects_dir())
+            if str(d) and str(d) not in (".", ""):
+                return d
+        except Exception:  # noqa: BLE001 — функция ещё не доступна
+            pass
+        return None
+
+    def _default_dialog_path(self, name):
+        """Имя файла в каталоге проектов Backend; иначе только имя (или последняя папка)."""
+        folder = self._projects_folder()
+        if folder is not None:
+            return str(folder / Path(name).name)
+        last = str(self.settings.value("db_path", "") or "")
+        if last and last not in (":memory:", "", "."):
+            parent = Path(last).parent
+            if parent.is_dir() and str(parent) not in (".", ""):
+                return str(parent / Path(name).name)
+        return name
+
     def _save_as_start(self):
         """Имя по умолчанию для «Сохранить как…»: .csp от suggested_name или текущего имени
-        в последней папке проекта (settings db_path), иначе только имя."""
+        в app_paths.projects_dir(), иначе в последней папке проекта."""
         sess = getattr(self.api, "session", None)
         if sess is not None and sess.source_path is None and getattr(sess, "suggested_name", None):
-            name = self._as_csp_name(sess.suggested_name)
-            last = str(self.settings.value("db_path", "") or "")
-            if last and last not in (":memory:", "", "."):
-                folder = Path(last).parent
-                if folder.is_dir() and str(folder) not in (".", ""):
-                    return str(folder / Path(name).name)
-            return name
+            return self._default_dialog_path(self._as_csp_name(sess.suggested_name))
         if sess is not None and getattr(sess, "csp_path", None):
             p = Path(sess.csp_path)
-            return str(p.with_name(f"{p.stem}_копия.csp"))
-        return self._copy_project_name()
+            return self._default_dialog_path(f"{p.stem}_копия.csp")
+        return self._default_dialog_path(self._copy_project_name())
 
     def _new_project_start(self):
-        last = str(self.settings.value("db_path", "") or "")
-        name = "проект.csp"
-        if last and last not in (":memory:", "", "."):
-            folder = Path(last).parent
-            if folder.is_dir() and str(folder) not in (".", ""):
-                return str(folder / name)
-        return name
+        return self._default_dialog_path("проект.csp")
 
     def _ask_path(self, kind, title, save=True, filt="SQLite (*.db *.sqlite)", start=None):
         if ask_hook is not None: return ask_hook(kind, self)

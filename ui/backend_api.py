@@ -620,16 +620,43 @@ def _bapi_apply_and_save_photo(self, source_path, params, *, person_id=None, fie
     return fn(self.con, source_path, dict(params), person_id=person_id, field_name=field_name, base_dir=self.base_dir, **kw)
 
 
+def missing_backend(name):
+    """Сообщение, если контрактная функция Backend ещё не влита."""
+    return f"функция Backend {name} ещё не доступна"
+
+
 def _backend_fn(name):
-    """Функция Backend этапа 14: сначала badge_backend.api, затем badge_backend.services.photo_edit; нет → None."""
+    """Функция Backend: badge_backend.api, затем photo_edit, затем app_paths. Нет или не callable → None."""
     fn = getattr(_api, name, None)
-    if fn is None:
-        try:
-            from badge_backend.services import photo_edit as _pe
-            fn = getattr(_pe, name, None)
-        except ImportError:
-            fn = None
+    if not callable(fn):
+        fn = None
+        import importlib
+        for mod_name in ("badge_backend.services.photo_edit", "badge_backend.app_paths"):
+            try:
+                mod = importlib.import_module(mod_name)
+            except ImportError:
+                continue
+            cand = getattr(mod, name, None)
+            if callable(cand):
+                fn = cand
+                break
     return fn if callable(fn) else None
+
+
+def logs_dir():
+    """Каталог журналов: app_paths.logs_dir(). Нет функции → LookupError."""
+    fn = _backend_fn("logs_dir")
+    if fn is None:
+        raise LookupError(missing_backend("logs_dir"))
+    return fn()
+
+
+def projects_dir():
+    """Каталог проектов по умолчанию: app_paths.projects_dir(). Нет функции → LookupError."""
+    fn = _backend_fn("projects_dir")
+    if fn is None:
+        raise LookupError(missing_backend("projects_dir"))
+    return fn()
 
 
 NO_TARGET_FN = "Нет функции Backend для пропорций"
