@@ -223,6 +223,7 @@ def _fit_text(d, text, w, h, size_px, min_px, fam, bold, fpath, wrap, spacing, i
     """
     size = max(1, int(round(size_px)))
     f = get_font(size, fam, bold, fpath, italic=bool(italic))
+    w = max(1, w - 2 * _synthetic(f, bold, italic)[0])   # синтетический жирный: обводка шире глифа на stroke с каждой стороны
     notes = []
     if wrap:
         # сначала обычный перенос (пробелы, дефисы); force — только если строка всё ещё шире рамки
@@ -611,11 +612,13 @@ def _field_name_view(elements) -> list[dict]:
         out.append(e)
     return out
 
-def render_card_db(con, person=None, side="front", base_dir=None, *, field_names: bool = True) -> Image.Image:
+def render_card_db(con, person=None, side="front", base_dir=None, *, field_names: bool = False) -> Image.Image:
     """render_card по данным из БД. person — id или row; None — пустой шаблон.
-    field_names (замечание №5а, только при person=None): True — привязанные текстовые объекты рисуются названием
-    поля (label) своим шрифтом/стилем, фото-объект — заглушкой с названием поля; постоянный текст и картинки — как есть.
-    False — прежний пустой шаблон (значения по умолчанию полей, заглушка «нет фото»). С записью field_names не влияет."""
+    field_names (замечание №5а, только при person=None), по умолчанию False — прежний пустой шаблон
+    (значения по умолчанию полей, заглушка «нет фото»). True — ТОЛЬКО по явному запросу редактора: привязанные
+    текстовые объекты рисуются названием поля (label) своим шрифтом/стилем, фото-объект — заглушкой с названием поля;
+    постоянный текст и картинки — как есть. С записью field_names не влияет. Печать/PNG/PDF рендерят записи
+    через render_card и названий полей не получают независимо от флага."""
     if isinstance(person, int):
         r = con.execute("SELECT * FROM persons WHERE id=?", (person,)).fetchone()
         if r is None: raise KeyError(f"person {person} не найден")

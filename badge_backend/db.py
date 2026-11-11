@@ -12,23 +12,86 @@ log = logging.getLogger(__name__)
 class MigrationError(RuntimeError):
     """Миграция схемы не применилась; транзакция шага откачена, файл не изменён."""
 
-def _frozen_data_dir() -> Path:
-    """Каталог данных для собранного exe (PyInstaller): %APPDATA%\\BadgeGenerator (иначе ~/.BadgeGenerator)."""
-    import os
-    base = os.environ.get("APPDATA")
-    d = Path(base) / "BadgeGenerator" if base else Path.home() / ".BadgeGenerator"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+def _legacy_frozen_db_path() -> Path | None:
+    """Где exe держал БД до замечания №1: %APPDATA%\\BadgeGenerator\\project.db (нет APPDATA — ~/.BadgeGenerator).
+    Ничего не создаёт."""
+    from .app_paths import legacy_appdata_dir
+    d = legacy_appdata_dir()
+    return d / DEFAULT_DB_PATH if d else None
+
+
+def _copy_legacy_db(old: Path, new: Path) -> bool:
+    """Скопировать старую БД в новое место (backup API: согласованная копия, включая WAL). Старый файл не меняется
+    и не удаляется. Новое место уже занято или ошибка → False (ошибка — в лог, без исключения)."""
+    if new.exists() or not old.is_file(): return False
+    tmp = new.with_name(new.name + ".copying")
+    try:
+        new.parent.mkdir(parents=True, exist_ok=True)
+        tmp.unlink(missing_ok=True)
+        src = sqlite3.connect(f"file:{old.resolve().as_posix()}?mode=ro", uri=True)
+        try:
+            dst = sqlite3.connect(str(tmp))
+            try: src.backup(dst)
+            finally: dst.close()
+        finally:
+            src.close()
+        if new.exists():          # другой экземпляр успел раньше — его копию не трогаем
+            tmp.unlink(missing_ok=True); return False
+        tmp.replace(new)
+        log.info("БД перенесена копированием: %s → %s (старый файл оставлен)", old, new)
+        return True
+    except Exception as e:  # noqa: BLE001 — старт программы не должен падать
+        log.error("не удалось скопировать БД %s → %s: %s", old, new, e)
+        try: tmp.unlink(missing_ok=True)
+        except OSError: pass
+        return False
+
+
+def _frozen_default_db_path() -> Path:
+    """Замечание №1 (доп., 11.11): БД собранного exe по умолчанию — app_paths.projects_dir()/project.db
+    (<папка exe>/projects/project.db; нет прав — %LOCALAPPDATA%\\BadgeGenerator\\projects\\project.db).
+    Миграция: в новом месте БД нет, а в старом %APPDATA%\\BadgeGenerator\\project.db есть → КОПИЯ (не перенос);
+    старый файл никогда не удаляется и не меняется. Вместе с БД копируются photos/, template_bg/, .csd/.csp."""
+    from .app_paths import projects_dir
+    new = projects_dir() / DEFAULT_DB_PATH
+    old = _legacy_frozen_db_path()
+    if old is not None and not new.exists() and old.is_file():
+        if _copy_legacy_db(old, new):
+            _copy_legacy_companions(old, new)
+    return new
+
+
+_COMPANION_DIRS = ("photos", "template_bg")   # относительные пути фото и фонов в БД — от папки БД
+
+
+def _copy_legacy_companions(old: Path, new: Path) -> None:
+    """Вместе с БД копируются её спутники, иначе относительные пути сломаются: папки photos/ и template_bg/
+    (только если в новом месте такой папки ещё нет) и <имя>.csd / <имя>.csp (если нет). Оригиналы не трогаются."""
+    import shutil
+    for d in _COMPANION_DIRS:
+        src, dst = old.parent / d, new.parent / d
+        try:
+            if src.is_dir() and not dst.exists(): shutil.copytree(src, dst)
+        except OSError as e:
+            log.error("не удалось скопировать %s → %s: %s", src, dst, e)
+    for ext in (".csd", ".csp"):
+        src, dst = old.with_suffix(ext), new.with_suffix(ext)
+        try:
+            if src.is_file() and not dst.exists(): shutil.copy2(src, dst)
+        except OSError as e:
+            log.error("не удалось скопировать %s → %s: %s", src, dst, e)
+
 
 def default_db_path(project_dir=None) -> Path:
     """Путь к БД по умолчанию: <project_dir или cwd>/project.db.
-    В frozen-режиме (PyInstaller) каталог внутри _MEIPASS (или не задан) заменяется на %APPDATA%\\BadgeGenerator."""
+    В frozen-режиме (PyInstaller) каталог внутри _MEIPASS (или не задан) заменяется на
+    _frozen_default_db_path() — <папка exe>/projects/project.db (замечание №1; раньше %APPDATA%\\BadgeGenerator)."""
     import sys
     if getattr(sys, "frozen", False):
         mei = getattr(sys, "_MEIPASS", None)
         pd = Path(project_dir).resolve() if project_dir else None
         if pd is None or (mei and (pd == Path(mei).resolve() or Path(mei).resolve() in pd.parents)):
-            return _frozen_data_dir() / DEFAULT_DB_PATH
+            return _frozen_default_db_path()
     return Path(project_dir or Path.cwd()) / DEFAULT_DB_PATH
 
 def _schema_path() -> Path:
@@ -362,15 +425,45 @@ _AUTO_PHOTO_RE = re.compile(r"^Фото(?: [0-9]+)?$")
 
 
 def _is_auto_image_field(name) -> bool:
-    """Поле, которое создавала сама программа: «Фото», «Фото 2», «Фото 3», … (ensure_photo_field / v7) или «logo»."""
-    n = str(name or "")
-    return bool(_AUTO_PHOTO_RE.match(n)) or n.casefold() == "logo"
+    """Авто-поле фото, которое создавала сама программа: «Фото», «Фото 2», «Фото 3», … (ensure_photo_field / v7)."""
+    return bool(_AUTO_PHOTO_RE.match(str(name or "")))
+
+
+def _snapshot_elements(con, tables) -> tuple[dict | None, list]:
+    """Снимок правки шаблона (project_settings.template_edit_snapshot) → (snap, elements) или (None, [])."""
+    if "project_settings" not in tables: return None, []
+    row = con.execute("SELECT value FROM project_settings WHERE key='template_edit_snapshot'").fetchone()
+    if not row: return None, []
+    try: snap = json.loads(row[0])
+    except (TypeError, ValueError): return None, []
+    els = snap.get("elements") if isinstance(snap, dict) else None
+    return (snap, els) if isinstance(els, list) else (None, [])
+
+
+def _v9_unused_logo(con, tables):
+    """v9, «logo» (решение Архитектора 11.11): image-поле logo (имя без учёта регистра) удаляется, ТОЛЬКО если оно
+    пустое во ВСЕХ записях (нет ключа / None / '') И к нему не привязан ни один объект ни в одном шаблоне,
+    включая снимок правки шаблона. Иначе не трогается. В фото-поле logo не переносится никогда."""
+    _snap, snap_els = _snapshot_elements(con, tables)
+    for (name,) in con.execute("SELECT name FROM person_fields WHERE data_type='image'").fetchall():
+        if str(name).casefold() != "logo": continue
+        if con.execute("SELECT 1 FROM template_elements WHERE field_name=? LIMIT 1", (name,)).fetchone(): continue
+        if any(isinstance(e, dict) and e.get("field_name") == name for e in snap_els): continue
+        if con.execute("SELECT 1 FROM persons WHERE json_valid(fields_json) AND "
+                       "COALESCE(CAST(json_extract(fields_json, ?) AS TEXT), '') <> '' LIMIT 1",
+                       ('$."' + str(name).replace('"', '\\"') + '"',)).fetchone(): continue
+        if "person_photo_views" in tables:
+            con.execute("DELETE FROM person_photo_views WHERE field_name=?", (name,))
+        con.execute("DELETE FROM person_fields WHERE name=?", (name,))
+        log.info("схема v8→v9: пустое неиспользуемое поле %r удалено", name)
 
 
 def _v9_auto_fields(con):
-    """v9: убрать авто-поля «Фото N»/«logo» (только data_type='image'), если у пользователя есть СВОЁ image-поле.
-    Своё поле — первое image-поле не из авто-набора (sort_order, name). Своего нет → ничего не меняется.
-    Для каждого авто-поля:
+    """v9 (замечание №4): чистка автоматических полей.
+    A) «logo» — см. _v9_unused_logo: удаляется только пустое во всех записях и ни к чему не привязанное.
+    B) «Фото N» (только data_type='image') сводятся в СВОЁ image-поле пользователя.
+    Своё поле — первое image-поле не «Фото N» и не logo (sort_order, name). Своего нет → B ничего не меняет.
+    Для каждого авто-поля «Фото N»:
       1) persons.fields_json: значение переносится в своё поле, только если там пусто (None/''); после переноса,
          а также если авто-значение пустое или совпадает со своим, ключ авто-поля удаляется. Оба значения
          непустые и разные → ключ авто-поля остаётся в fields_json (данные не теряются);
@@ -379,9 +472,11 @@ def _v9_auto_fields(con):
       4) строка person_fields авто-поля удаляется.
     updated_at записей не меняется (триггер persons_touch снимается на время шага и ставится обратно).
     Шаг в общей транзакции migrate(): ошибка → ROLLBACK и MigrationError, файл не меняется."""
+    tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    _v9_unused_logo(con, tables)
     names = [r[0] for r in con.execute("SELECT name FROM person_fields WHERE data_type='image' ORDER BY sort_order, name")]
     auto = [n for n in names if _is_auto_image_field(n)]
-    own = [n for n in names if n not in auto]
+    own = [n for n in names if n not in auto and str(n).casefold() != "logo"]
     if not auto or not own:
         return
     target = own[0]
@@ -406,21 +501,15 @@ def _v9_auto_fields(con):
             con.execute("UPDATE persons SET fields_json=? WHERE id=?", (json.dumps(f, ensure_ascii=False), pid))
     qm = ",".join("?" * len(auto))
     con.execute(f"UPDATE template_elements SET field_name=? WHERE field_name IN ({qm})", (target, *auto))
-    tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if "person_photo_views" in tables:
         con.execute(f"UPDATE OR IGNORE person_photo_views SET field_name=? WHERE field_name IN ({qm})", (target, *auto))
         con.execute(f"DELETE FROM person_photo_views WHERE field_name IN ({qm})", tuple(auto))
-    row = con.execute("SELECT value FROM project_settings WHERE key='template_edit_snapshot'").fetchone() \
-        if "project_settings" in tables else None
-    if row:
-        try: snap = json.loads(row[0])
-        except (TypeError, ValueError): snap = None
-        els = snap.get("elements") if isinstance(snap, dict) else None
-        if isinstance(els, list):
-            for e in els:
-                if isinstance(e, dict) and e.get("field_name") in auto: e["field_name"] = target
-            con.execute("UPDATE project_settings SET value=? WHERE key='template_edit_snapshot'",
-                        (json.dumps(snap, ensure_ascii=False),))
+    snap, els = _snapshot_elements(con, tables)
+    if snap is not None:
+        for e in els:
+            if isinstance(e, dict) and e.get("field_name") in auto: e["field_name"] = target
+        con.execute("UPDATE project_settings SET value=? WHERE key='template_edit_snapshot'",
+                    (json.dumps(snap, ensure_ascii=False),))
     con.execute(f"DELETE FROM person_fields WHERE name IN ({qm})", tuple(auto))
     if trg: con.execute(trg[0])
     log.info("схема v8→v9: авто-поля %s сведены в «%s» (перенесено значений: %d)", auto, target, moved)
