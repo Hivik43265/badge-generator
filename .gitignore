@@ -12,3 +12,8 @@ dist/
 *.pem
 # эталоны чужого ПО (Архитектор, этап 13) — не в git
 reports/mockup/*.png
+# замечание №1: папки программы (app_paths) при запуске из исходников
+/work/
+/import/
+/logs/
+/projects/

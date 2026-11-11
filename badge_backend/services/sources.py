@@ -43,26 +43,31 @@ class Sheet:
         return {"path": str(self.path), "name": self.name, "kind": self.kind, "index": self.index,
                 "schema_version": self.schema_version}
 
-# D48: рабочие копии .db-импорта — только в своём каталоге и со своим префиксом
+# D48: рабочие копии .db-импорта — только в своём каталоге и со своим префиксом.
+# Замечание №1 (11.11): каталог — app_paths.import_dir() (<папка программы>/import);
+# _WORK_DIR_NAME — имя прежнего каталога в %TEMP%, он только чистится (_cleanup_stale_work_copies).
 _WORK_DIR_NAME = "BadgeGenerator-import"
 _WORK_PREFIX = "bg_import_"
 _STALE_AGE_S = 6 * 3600       # моложе — не трогаем (может принадлежать другому запущенному экземпляру)
 
 def _work_dir() -> Path:
-    d = Path(tempfile.gettempdir()) / _WORK_DIR_NAME; d.mkdir(parents=True, exist_ok=True); return d
+    from ..app_paths import import_dir
+    return import_dir()
 
 _LEGACY_RE = __import__("re").compile(r"^bg_import_.+\.db(-journal|-wal|-shm)?$")
 
 def _cleanup_stale_work_copies(min_age_s: float = _STALE_AGE_S) -> list[str]:
     """Удалить оставшиеся рабочие копии (Sheet.close не смог удалить), старше min_age_s:
-    - <tmp>/BadgeGenerator-import/: файлы bg_import_* (копии и их -journal/-wal/-shm);
+    - app_paths.import_dir() (<папка программы>/import): файлы bg_import_* (копии и их -journal/-wal/-shm);
+    - <tmp>/BadgeGenerator-import/ (до замечания №1): файлы bg_import_*;
     - корень <tmp> (копии до D48): только файлы bg_import_*.db и bg_import_*.db-journal|-wal|-shm.
     Не рекурсивно. Занятые/ошибки — в лог, пропуск; никогда не бросает исключений. → список удалённых имён."""
     import time
     log = logging.getLogger(__name__); out = []
     try:
         root = Path(tempfile.gettempdir()); now = time.time()
-        for d, match in ((root / _WORK_DIR_NAME, lambda n: n.startswith(_WORK_PREFIX)),
+        own = lambda n: n.startswith(_WORK_PREFIX)   # noqa: E731
+        for d, match in ((_work_dir(), own), (root / _WORK_DIR_NAME, own),
                          (root, lambda n: bool(_LEGACY_RE.match(n)))):
             try:
                 if not d.is_dir(): continue

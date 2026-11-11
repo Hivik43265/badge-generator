@@ -1,8 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 # PyInstaller spec, этап 11. Запуск из корня репозитория:
 #   pyinstaller --noconfirm --clean packaging/badge_generator.spec
-# Результат: dist/BadgeGenerator(.exe) — GUI (onefile, windowed, иконка),
-#            dist/BadgeSmoke(.exe)     — консольный смоук backend (packaging/smoke_entry.py).
+# Замечание №1 (11.11): сборка onedir (COLLECT), папки программы рядом с exe.
+# Результат: dist/BadgeGenerator/BadgeGenerator(.exe) — GUI (windowed, иконка) + _internal/ (Python, Qt, cv2…)
+#            dist/BadgeGenerator/assets/fonts/, dist/BadgeGenerator/assets/smartid/reference.csd —
+#              ресурсы рядом с exe (badge_backend/app_paths.assets_dir()), не в _internal/_MEIPASS;
+#            dist/BadgeSmoke/BadgeSmoke(.exe) + assets/ — консольный смоук backend (packaging/smoke_entry.py).
+# Папки work/, import/, logs/, projects/ программа создаёт сама рядом с exe при первом обращении
+# (нет прав на запись — %LOCALAPPDATA%\BadgeGenerator).
 import os
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
@@ -23,11 +28,12 @@ if not os.path.isfile(_casc):
 datas.append((_casc, os.path.join("cv2", "data")))
 # D47: встроенное фото для --self-test → <_MEIPASS>/badge_backend/assets/selftest_face.jpg
 datas.append((os.path.join(ROOT, "badge_backend", "assets", "selftest_face.jpg"), os.path.join("badge_backend", "assets")))
-# Запасные шрифты DejaVu (кириллица) → <_MEIPASS>/fonts (render/fonts.py сканирует этот каталог)
-datas.append((os.path.join(ROOT, "badge_backend", "assets", "fonts"), "fonts"))
-# Эталон .csd для записи макетов → <_MEIPASS>/badge_backend/assets/smartid/reference.csd
-datas.append((os.path.join(ROOT, "badge_backend", "assets", "smartid", "reference.csd"),
-              os.path.join("badge_backend", "assets", "smartid")))
+# Замечание №1: шрифты DejaVu и эталон .csd НЕ кладутся в datas (_internal): после COLLECT они
+# копируются папкой assets/ рядом с exe (см. _copy_assets ниже; поиск — app_paths.asset_candidates).
+ASSETS = [  # (источник, путь внутри <папка exe>/assets)
+    (os.path.join(ROOT, "badge_backend", "assets", "fonts"), "fonts"),
+    (os.path.join(ROOT, "badge_backend", "assets", "smartid", "reference.csd"), os.path.join("smartid", "reference.csd")),
+]
 hidden = collect_submodules("badge_backend") + collect_submodules("barcode") + ["qrcode.image.pil"]
 # Этап 13 / D22: аудит hiddenimports. Модули ui/ импортируются статически из main_window (PyInstaller
 # находит их сам), но ленивые импорты внутри функций (QtMultimedia в main_view.camera_available /
@@ -112,20 +118,37 @@ def _analysis(script, extra_excludes=(), binaries=()):
 
 
 
-def _exe(a, name, console):
+def _onedir(a, name, console):
+    """onedir: EXE без бинарников/данных + COLLECT в dist/<name>/ (exe, _internal/), затем assets/ рядом с exe."""
     pyz = PYZ(a.pure)
-    return EXE(pyz, a.scripts, a.binaries, a.datas, [], name=name, icon=ICON,
-               debug=False, strip=False, upx=False, runtime_tmpdir=None,
-               console=console, disable_windowed_traceback=False)
+    exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name=name, icon=ICON,
+              debug=False, strip=False, upx=False, console=console, disable_windowed_traceback=False)
+    coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name=name)
+    _copy_assets(os.path.join(DISTPATH, name))
+    return coll
+
+
+def _copy_assets(dest_dir):
+    import shutil
+    root = os.path.join(dest_dir, "assets")
+    for src, rel in ASSETS:
+        dst = os.path.join(root, rel)
+        if os.path.isdir(src):
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+        elif os.path.isfile(src):
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(src, dst)
+        else:
+            raise SystemExit(f"ERROR: asset not found: {src}")
 
 
 a_app = _analysis("main.py", binaries=list(qt_binaries))
 # OpenCV videoio-FFmpeg (~20–30 МБ) не нужен: камера идёт через QtMultimedia, cv2 — только Haar по картинке
 a_app.binaries = [b for b in a_app.binaries if "opencv_videoio_ffmpeg" not in os.path.basename(str(b[0])).lower()]
-app = _exe(a_app, "BadgeGenerator", console=False)
+app = _onedir(a_app, "BadgeGenerator", console=False)
 
 a_smoke = _analysis(os.path.join("packaging", "smoke_entry.py"), extra_excludes=["PyQt6", "ui", "cv2"])
-smoke = _exe(a_smoke, "BadgeSmoke", console=True)
+smoke = _onedir(a_smoke, "BadgeSmoke", console=True)
 
 # Отчёт о Qt-файлах для CI (dist/BadgeGenerator.bundle.txt): по строке на шаблон "FOUND|MISSING<TAB>шаблон<TAB>файлы"
 _dist = os.path.join(ROOT, "dist"); os.makedirs(_dist, exist_ok=True)
@@ -142,5 +165,11 @@ with open(os.path.join(_dist, "BadgeGenerator.bundle.txt"), "w", encoding="utf-8
     f.write(f"{'FOUND' if _cv2_in else 'MISSING'}\tcv2\t{','.join(_cv2_in)}\n")
     _st_in = any(str(t[0]).replace("\\", "/").endswith("badge_backend/assets/selftest_face.jpg") for t in a_app.datas)
     f.write(f"{'FOUND' if _st_in else 'MISSING'}\tbadge_backend/assets/selftest_face.jpg\t\n")
-    _csd_in = any(str(t[0]).replace("\\", "/").endswith("badge_backend/assets/smartid/reference.csd") for t in a_app.datas)
-    f.write(f"{'FOUND' if _csd_in else 'MISSING'}\tbadge_backend/assets/smartid/reference.csd\t\n")
+    # Замечание №1: ресурсы рядом с exe (проверяется по файлам в dist/BadgeGenerator/)
+    _app_dir = os.path.join(DISTPATH, "BadgeGenerator")
+    for _rel in ("assets/smartid/reference.csd", "assets/fonts/DejaVuSans.ttf"):
+        _ok = os.path.isfile(os.path.join(_app_dir, *_rel.split("/")))
+        f.write(f"{'FOUND' if _ok else 'MISSING'}\t{_rel}\t\n")
+    _ps = glob.glob(os.path.join(_app_dir, "**", "Qt6PrintSupport.dll"), recursive=True)
+    if sys.platform == "win32":
+        f.write(f"{'FOUND' if _ps else 'MISSING'}\tdist/Qt6PrintSupport.dll\t{','.join(os.path.relpath(p, _app_dir) for p in _ps)}\n")

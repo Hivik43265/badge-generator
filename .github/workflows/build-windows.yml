@@ -71,19 +71,35 @@ jobs:
           foreach ($req in @("cv2/data/haarcascade_frontalface_default.xml", "cv2", "badge_backend/assets/selftest_face.jpg")) {
             if (-not (Get-Content $m | Where-Object { $_ -like "FOUND`t$req`t*" })) { throw "required in bundle: $req" }
           }
+          # Замечание №1 (onedir): exe, Qt6PrintSupport.dll и assets/ рядом с exe — проверка по файлам папки
+          $app = "dist\BadgeGenerator"
+          if (-not (Test-Path "$app\BadgeGenerator.exe")) { throw "$app\BadgeGenerator.exe not built (onedir)" }
+          if (-not (Test-Path "dist\BadgeSmoke\BadgeSmoke.exe")) { throw "dist\BadgeSmoke\BadgeSmoke.exe not built (onedir)" }
+          $ps = Get-ChildItem -Path $app -Recurse -Filter "Qt6PrintSupport.dll" -File | Select-Object -First 1
+          if (-not $ps) { throw "Qt6PrintSupport.dll not found in $app" }
+          Write-Host "Qt6PrintSupport.dll: $($ps.FullName)"
+          foreach ($req in @("assets\smartid\reference.csd", "assets\fonts\DejaVuSans.ttf")) {
+            if (-not (Test-Path "$app\$req")) { throw "required next to exe: $app\$req" }
+          }
+
+      - name: Zip app folder
+        # Замечание №1: артефакт — zip всей папки dist/BadgeGenerator (exe + _internal + assets).
+        # Делается ДО запуска exe в смоук-шагах, чтобы в архив не попали созданные ими work/, import/, logs/.
+        shell: pwsh
+        run: Compress-Archive -Path dist\BadgeGenerator -DestinationPath dist\BadgeGenerator-win64.zip -Force
 
       - name: Smoke test (backend exe)
         shell: pwsh
         run: |
           $env:APPDATA = "$env:RUNNER_TEMP\appdata"
-          .\dist\BadgeSmoke.exe
+          .\dist\BadgeSmoke\BadgeSmoke.exe
           if ($LASTEXITCODE -ne 0) { throw "BadgeSmoke failed: $LASTEXITCODE" }
 
       - name: Smoke test (GUI exe starts and stays up)
         shell: pwsh
         run: |
           $env:APPDATA = "$env:RUNNER_TEMP\appdata-gui"
-          $p = Start-Process -FilePath .\dist\BadgeGenerator.exe -PassThru
+          $p = Start-Process -FilePath .\dist\BadgeGenerator\BadgeGenerator.exe -PassThru
           Start-Sleep -Seconds 15
           if ($p.HasExited) { throw "BadgeGenerator.exe exited early, code $($p.ExitCode)" }
           Stop-Process -Id $p.Id -Force
@@ -101,7 +117,7 @@ jobs:
           $log = "$env:RUNNER_TEMP\selftest\selftest.log"
           New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null
           if (-not (Select-String -Path main.py -Pattern '--self-test' -SimpleMatch -Quiet)) { throw "main.py has no --self-test hook (Frontend)" }
-          $p = Start-Process -FilePath .\dist\BadgeGenerator.exe -ArgumentList '--self-test','--log',"`"$log`"" -PassThru
+          $p = Start-Process -FilePath .\dist\BadgeGenerator\BadgeGenerator.exe -ArgumentList '--self-test','--log',"`"$log`"" -PassThru
           $null = $p.Handle
           if (-not $p.WaitForExit(180000)) {
             Stop-Process -Id $p.Id -Force
@@ -127,5 +143,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: BadgeGenerator
-          path: dist/BadgeGenerator.exe
+          path: dist/BadgeGenerator-win64.zip
           if-no-files-found: error

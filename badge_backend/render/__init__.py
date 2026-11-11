@@ -167,7 +167,49 @@ def _ellipsize(d, line, font, width):
     while t and _tw(d, t + ELLIPSIS, font) > width: t = t[:-1].rstrip()
     return t + ELLIPSIS if _tw(d, t + ELLIPSIS, font) <= width else ""
 
-def _fit_text(d, text, w, h, size_px, min_px, fam, bold, fpath, wrap, spacing):
+def _flag(v) -> bool:
+    """Флаг стиля: True/1/"1"/"true"/"yes" — да; False/0/"0"/"false"/""/None — нет."""
+    if isinstance(v, str):
+        return v.strip().casefold() not in ("", "0", "false", "no", "off", "none", "normal")
+    return bool(v)
+
+def _text_style_flags(st) -> tuple[bool, bool]:
+    """Замечание №3 (11.11), контракт стиля текста: style['bold']: bool, style['italic']: bool.
+    Старые данные: font_style 'italic'/'oblique' → italic; font_weight ≥ 600 или 'bold'/'black'/'heavy' → bold.
+    → (bold, italic)."""
+    st = st or {}
+    bold = _flag(st.get("bold"))
+    if not bold:
+        fw = st.get("font_weight")
+        if isinstance(fw, str):
+            w = fw.strip().casefold()
+            bold = (int(w) >= 600) if w.isdigit() else any(k in w for k in ("bold", "black", "heavy"))
+        elif isinstance(fw, (int, float)) and not isinstance(fw, bool):
+            bold = fw >= 600
+    italic = _flag(st.get("italic"))
+    if not italic:
+        fs = st.get("font_style")
+        italic = isinstance(fs, str) and any(k in fs.casefold() for k in ("italic", "oblique"))
+    return bold, italic
+
+SYNTH_SHEAR = 0.2          # синтетический курсив: наклон ≈ 11° (tan = 0,2)
+
+def _synthetic(font, bold, italic) -> tuple[int, bool]:
+    """Чего нет в загруженном начертании: → (толщина обводки для синтетического жирного px, нужен ли наклон).
+    Начертание определяется по имени стиля файла (getname()[1]: 'Bold', 'Oblique', 'Bold Italic', …)."""
+    from PIL import ImageFont
+    from .fonts import _style_slot
+    if not isinstance(font, ImageFont.FreeTypeFont):   # растровый шрифт Pillow: ни обводки, ни имени стиля
+        return 0, False
+    try: slot = _style_slot(font.getname()[1])
+    except Exception:  # noqa: BLE001 — встроенный шрифт Pillow без имени
+        slot = "regular"
+    stroke = 0
+    if bold and "bold" not in slot:
+        stroke = max(1, round(getattr(font, "size", 10) / 30))
+    return stroke, bool(italic and "italic" not in slot)
+
+def _fit_text(d, text, w, h, size_px, min_px, fam, bold, fpath, wrap, spacing, italic=False):
     """Перенос на строго заданном кегле, без уменьшения.
 
     1) перенос по пробелам, затем по дефисам/тире/слэшу;
@@ -176,10 +218,11 @@ def _fit_text(d, text, w, h, size_px, min_px, fam, bold, fpath, wrap, spacing):
        обрезка делается при рисовании по внутренней рамке.
 
     min_px сохранён в сигнатуре (ключ min_size в стиле принимается), но не используется.
+    italic (замечание №3) — выбор курсивного начертания (fonts._pick_face); нет файла — синтетика в _draw_text.
     → (font, lines, ys, widths, bbox, notes)
     """
     size = max(1, int(round(size_px)))
-    f = get_font(size, fam, bold, fpath)
+    f = get_font(size, fam, bold, fpath, italic=bool(italic))
     notes = []
     if wrap:
         # сначала обычный перенос (пробелы, дефисы); force — только если строка всё ещё шире рамки
@@ -200,16 +243,21 @@ def _fit_text(d, text, w, h, size_px, min_px, fam, bold, fpath, wrap, spacing):
 def _draw_text(img, el, text, st):
     """Текст рисуется строго заданным font_size (pt → px = pt×DPI/72).
     Всё, что выходит за внутреннюю рамку (w×h минус padding; в padding уже входит
-    толщина рамки), обрезается по ней. min_size в стиле принимается и игнорируется."""
+    толщина рамки), обрезается по ней. min_size в стиле принимается и игнорируется.
+    Замечание №3: bold/italic (_text_style_flags) выбирают начертание; если файла жирного нет —
+    синтетический жирный (обводка цветом текста), курсива нет — синтетический наклон (сдвиг строки
+    относительно её базовой линии на SYNTH_SHEAR)."""
     x, y, w, h = el["x"], el["y"], el["w"], el["h"]
     if text is None or str(text) == "": return
     pad = int(st.get("padding", 0)); iw, ih = max(1, w - 2 * pad), max(1, h - 2 * pad)
     # слой ровно внутреннего размера — ничего не попадает в padding/бордюр
     layer = Image.new("RGBA", (iw, ih), (0, 0, 0, 0)); d = ImageDraw.Draw(layer)
     size = float(st.get("font_size", 10)) * DPI / 72
+    bold, italic = _text_style_flags(st)
     f, lines, ys, ws, bb, notes = _fit_text(d, str(text), iw, ih, size, 0, st.get("font_family"),
-                                           bool(st.get("bold")), st.get("font_path"), st.get("wrap", True),
-                                           float(st.get("line_spacing", 1.0)))
+                                           bold, st.get("font_path"), st.get("wrap", True),
+                                           float(st.get("line_spacing", 1.0)), italic=italic)
+    stroke, shear = _synthetic(f, bold, italic)
     if notes:
         msg = (f"элемент {el.get('id')}: текст {str(text)[:30]!r} не помещается в {w}×{h} "
                f"при заданном размере — обрезан ({'; '.join(notes)})")
@@ -227,7 +275,19 @@ def _draw_text(img, el, text, st):
         ox = -min(0, lb[0]) + {"center": (iw - gw) / 2, "right": iw - gw}.get(align, 0)
         if gw <= iw:
             ox = min(max(ox, -min(0, lb[0])), iw - lb[2])
-        d.text((ox, oy + ly), line, font=f, fill=color, anchor="la")
+        sk = {"stroke_width": stroke, "stroke_fill": color} if stroke else {}
+        if not shear:
+            d.text((ox, oy + ly), line, font=f, fill=color, anchor="la", **sk)
+            continue
+        # синтетический курсив: строка на отдельном слое, сдвиг x += SHEAR·(базовая линия − y)
+        asc = f.getmetrics()[0] if hasattr(f, "getmetrics") else f.size
+        ox -= {"center": SYNTH_SHEAR * asc / 2, "right": SYNTH_SHEAR * asc}.get(align, 0)
+        ll = Image.new("RGBA", layer.size, (0, 0, 0, 0))
+        ImageDraw.Draw(ll).text((ox, oy + ly), line, font=f, fill=color, anchor="la", **sk)
+        yb = oy + ly + asc
+        affine = getattr(getattr(Image, "Transform", Image), "AFFINE")
+        ll = ll.transform(ll.size, affine, (1, SYNTH_SHEAR, -SYNTH_SHEAR * yb, 0, 1, 0), resample=Image.BICUBIC)
+        layer.alpha_composite(ll)
     img.paste(layer, (x + pad, y + pad), layer)
 
 # ---------- прочие элементы ----------
@@ -431,7 +491,7 @@ def render_card(person, elements, side: str = "front", background=None, base_dir
         b = _open(_resolve(bg["image_path"], base_dir))
         if b: img.alpha_composite(_cover_crop(b, W, H))
     els = sorted((_d(e) for e in elements if _d(e).get("side", "front") == side),
-                 key=lambda e: (e.get("z_order", 0), e.get("id") or 0))
+                 key=lambda e: (int(e.get("z_order") or 0), e.get("id") or 0))   # №7: z_order=None не роняет сортировку
     for el in els:
         el = {**el, **{k: units_to_px(el[k], DPI) for k in ("x", "y", "w", "h")}}
         if el["type"] == "line":
@@ -470,7 +530,7 @@ def render_card(person, elements, side: str = "front", background=None, base_dir
                 src = _open_photo(person, el, base_dir)
                 view = _photo_view(person, el)
                 if src: ph = _view_tile(src, el["w"], el["h"], view)
-                else: ph = _placeholder(el["w"], el["h"])
+                else: ph = _placeholder(el["w"], el["h"], el.get("_placeholder_label") or "нет фото")
                 _paste_clipped(tile, loc, ph, st)
             elif t == "image":
                 src = _open(_resolve(el.get("static_value"), base_dir))
@@ -513,7 +573,7 @@ def load_elements(con, side=None, template_id=None):
     from ..db import active_template_id
     tid = template_id or active_template_id(con)
     tst = json.loads((con.execute("SELECT style_json FROM templates WHERE id=?", (tid,)).fetchone() or ["{}"])[0] or "{}")
-    q = ("SELECT e.*, f.default_value AS default_value, f.data_type AS data_type FROM template_elements e "
+    q = ("SELECT e.*, f.default_value AS default_value, f.data_type AS data_type, f.label AS field_label FROM template_elements e "
          "LEFT JOIN person_fields f ON f.name = e.field_name WHERE e.template_id=?" + (" AND e.side=?" if side else "")
          + " ORDER BY e.z_order, e.id")
     out = []
@@ -536,8 +596,26 @@ def load_photo_views(con, person_id) -> dict:
     return {r[0]: json.loads(r[1]) for r in con.execute(
         "SELECT field_name, params_json FROM person_photo_views WHERE person_id=?", (person_id,))}
 
-def render_card_db(con, person, side="front", base_dir=None) -> Image.Image:
-    """render_card по данным из БД. person — id или row; None — пустой шаблон."""
+def _field_name_view(elements) -> list[dict]:
+    """Замечание №5а: элементы для вида «шаблон с названиями полей» (без записи).
+    Привязанный text/field → постоянный текст = название поля (label, иначе имя) своим шрифтом и стилем;
+    привязанный photo → заглушка с названием поля; остальное (постоянный текст, картинки, фигуры, коды) — как есть.
+    Красные #поле здесь не рисуются никогда — это разметка редактора (Frontend, Qt)."""
+    out = []
+    for e in elements:
+        e = dict(_d(e)); fn = e.get("field_name"); t = e.get("type")
+        if fn and t in ("text", "field"):
+            e.update(type="text", static_value=e.get("field_label") or fn, data_type=None)
+        elif fn and t == "photo":
+            e["_placeholder_label"] = e.get("field_label") or fn
+        out.append(e)
+    return out
+
+def render_card_db(con, person=None, side="front", base_dir=None, *, field_names: bool = True) -> Image.Image:
+    """render_card по данным из БД. person — id или row; None — пустой шаблон.
+    field_names (замечание №5а, только при person=None): True — привязанные текстовые объекты рисуются названием
+    поля (label) своим шрифтом/стилем, фото-объект — заглушкой с названием поля; постоянный текст и картинки — как есть.
+    False — прежний пустой шаблон (значения по умолчанию полей, заглушка «нет фото»). С записью field_names не влияет."""
     if isinstance(person, int):
         r = con.execute("SELECT * FROM persons WHERE id=?", (person,)).fetchone()
         if r is None: raise KeyError(f"person {person} не найден")
@@ -545,7 +623,9 @@ def render_card_db(con, person, side="front", base_dir=None) -> Image.Image:
     if person is not None:
         person = dict(person)
         if "photo_views" not in person and person.get("id") is not None: person["photo_views"] = load_photo_views(con, person["id"])
-    return render_card(person, load_elements(con, side), side, load_background(con, side), base_dir)
+    els = load_elements(con, side)
+    if person is None and field_names: els = _field_name_view(els)
+    return render_card(person, els, side, load_background(con, side), base_dir)
 
 def render_preview(con, person, side="front", scale: float = 0.5, base_dir=None) -> Image.Image:
     """Уменьшенное превью для Frontend (scale 0<s<=1, размер round(1011*s)×round(638*s))."""
