@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageChops
 from badge_backend import api, db, testing, units_to_px, px_to_units
-from tests.image_assert import assert_same_pixels
+from tests.image_assert import assert_same_pixels, assert_matches_golden
 from badge_backend.render import render_card
 from badge_backend.render.barcode import modules, layout, render_barcode, ean13_checksum
 from badge_backend.render.qr import matrix, render_qr
@@ -239,7 +239,7 @@ def test_stage10_golden(name):
         warnings.simplefilter("ignore")
         im = render_card(*CASES[name])
     ref = Image.open(GOLD / f"{name}.png").convert("RGB")
-    assert ImageChops.difference(im, ref).getbbox() is None
+    assert_matches_golden(im, ref, name)
 
 def test_symbology_alias():
     a = render_barcode(500, 150, "5901234123457", {"format": "ean13"})

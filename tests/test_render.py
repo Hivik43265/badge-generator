@@ -4,6 +4,7 @@ import pytest
 from PIL import Image, ImageChops
 from badge_backend import api, demo, CARD_W_PX, CARD_H_PX
 from badge_backend.render import render_card, transform_photo, find_font_path
+from tests.image_assert import save_golden_actual
 GOLDEN = Path(__file__).parent / "golden"
 
 def quad_img(w=200, h=200):
@@ -137,4 +138,6 @@ def test_golden(demo_db, name):
     assert ref.size == im.size == (1011, 638)
     diff = ImageChops.difference(im, ref).convert("L")
     bad = sum(diff.histogram()[33:])
+    if not (bad < 0.002 * 1011 * 638):
+        save_golden_actual(name, im)
     assert bad < 0.002 * 1011 * 638, f"{name}: {bad} px отличаются"

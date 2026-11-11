@@ -163,7 +163,7 @@ def test_failed_migration_leaves_file_untouched(tmp_path, monkeypatch):
     def boom(con):
         raise RuntimeError("искусственный сбой")
 
-    monkeypatch.setattr(db, "_v8_units", boom)
+    monkeypatch.setitem(db.MIGRATIONS, db.MIGRATIONS.index(db._v8_units), boom)
     with pytest.raises(db.MigrationError, match="верси"):
         api.connect(p)
     after = sqlite3.connect(p)

@@ -47,6 +47,14 @@ jobs:
           --deselect "tests/test_stage10.py::test_stage10_golden[barcode_ean13]"
           --deselect "tests/test_project_session.py::test_open_save_close_not_dirty"
 
+      - name: Upload golden actual
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-actual
+          path: tests/_golden_actual/
+          if-no-files-found: ignore
+
       - name: Build (PyInstaller)
         run: pyinstaller --noconfirm --clean packaging/badge_generator.spec
 

@@ -1,4 +1,23 @@
 """Сравнение изображений без гигантского repr байтов в выводе pytest."""
+from pathlib import Path
+
+from PIL import ImageChops
+
+GOLDEN_ACTUAL = Path(__file__).resolve().parent / "_golden_actual"
+
+
+def save_golden_actual(name, im):
+    """Сохранить фактический рендер при расхождении с эталоном (для артефакта CI)."""
+    GOLDEN_ACTUAL.mkdir(parents=True, exist_ok=True)
+    im.save(GOLDEN_ACTUAL / f"{name}.png")
+
+
+def assert_matches_golden(im, ref, name):
+    """Попиксельное сравнение с эталоном; при расхождении пишет tests/_golden_actual/<name>.png."""
+    diff = ImageChops.difference(im.convert("RGB"), ref.convert("RGB"))
+    if diff.getbbox() is not None:
+        save_golden_actual(name, im)
+    assert diff.getbbox() is None
 
 
 def assert_same_pixels(a, b):
