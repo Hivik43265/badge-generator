@@ -53,10 +53,10 @@ def _check(img, crop, aspect):
     assert 0 <= x and x + w <= img.width and 0 <= y and y + h <= img.height
     assert y <= head_top                                                  # макушка внутри рамки
     share = (chin - head_top) / h; room = (head_top - y) / h
-    assert 0.45 <= share <= 0.55, share
-    assert 0.07 <= room <= 0.13, room
+    assert 0.70 <= share <= 0.80, share                                  # №2: HEAD_SHARE 0.75
+    assert 0.03 <= room <= 0.07, room                                    # №2: HEADROOM 0.05
     assert abs((x + w / 2) - (fx + fw / 2)) <= 2                          # по центру
-    assert y + h - chin >= 0.3 * h                                        # шея/плечи
+    assert y + h - chin >= 0.15 * h                                       # №2: под подбородком ~20 %
     return share, room
 
 def test_two_templates_different_aspects(tmp_path):
@@ -116,7 +116,7 @@ def test_frame_spec_no_foto_preference(tmp_path):
 ASTRO = Path(__file__).parent / "fixtures" / "face_astronaut.jpg"
 
 def test_portrait_astronaut_crown_and_tone():
-    """Портрет на face_astronaut: макушка (верх Haar − 0.5·fh) внутри рамки, голова 40–60 % высоты;
+    """Портрет на face_astronaut: макушка (верх Haar − 0.5·fh) внутри рамки, голова 65–85 % высоты (№2: 75 %);
     яркость и контраст не меняются."""
     img = Image.open(ASTRO); img.load()
     prev = {"brightness": 18, "contrast": 8, "scale": 110}
@@ -130,5 +130,5 @@ def test_portrait_astronaut_crown_and_tone():
     crown, chin = fy - 0.5 * fh, fy + fh
     assert y <= crown
     share = (chin - crown) / h
-    assert 0.40 <= share <= 0.60, share
+    assert 0.65 <= share <= 0.85, share
 

@@ -41,6 +41,21 @@ def test_fallback_root_when_not_writable(tmp_path, monkeypatch):
     assert app_paths.logs_dir() == tmp_path / "local" / "BadgeGenerator" / "logs"
 
 
+def test_frozen_db_in_projects_and_legacy_copy(tmp_path, monkeypatch):
+    """№1 (доп.): БД exe — <папка программы>/projects/project.db; старая %APPDATA%-БД копируется со спутниками."""
+    mei = tmp_path / "_MEI1"; mei.mkdir(); root = tmp_path / "app"
+    monkeypatch.setattr(sys, "frozen", True, raising=False); monkeypatch.setattr(sys, "_MEIPASS", str(mei), raising=False)
+    monkeypatch.setenv("BG_APP_ROOT", str(root)); monkeypatch.setenv("APPDATA", str(tmp_path / "AppData"))
+    old = tmp_path / "AppData" / "BadgeGenerator"; (old / "photos").mkdir(parents=True)
+    api.connect(old / "project.db").close(); (old / "photos" / "a.jpg").write_bytes(b"jpg"); (old / "project.csd").write_bytes(b"csd")
+    before = (old / "project.db").read_bytes()
+    new = db.default_db_path()
+    assert new == root / "projects" / "project.db" and new.is_file()
+    assert (new.parent / "photos" / "a.jpg").read_bytes() == b"jpg" and (new.parent / "project.csd").is_file()
+    assert (old / "project.db").read_bytes() == before                  # копия, оригинал на месте
+    new.write_bytes(b"mine"); assert db.default_db_path() == new and new.read_bytes() == b"mine"   # не перезаписывает
+
+
 def test_bundled_assets_found():
     assert app_paths.find_asset("fonts", "DejaVuSans.ttf") is not None
     assert app_paths.find_asset("smartid", "reference.csd") is not None
@@ -104,6 +119,44 @@ def test_v9_merges_auto_photo_fields(tmp_path):
     assert {r[0] for r in con.execute("SELECT updated_at FROM persons")} == {"2026-01-01T10:00:00+03:00"}
 
 
+def _v8_raw(path, sql):
+    raw = sqlite3.connect(path); v0 = db.LATEST; db.LATEST = 8
+    try: db.migrate(raw)
+    finally: db.LATEST = v0
+    raw.executescript(sql); raw.commit(); raw.close()
+    return db.connect(str(path))
+
+
+def test_v9_logo_not_merged(tmp_path):
+    """№4 (доп.): logo не сливается в своё поле; пустое и ни к чему не привязанное logo удаляется, иначе остаётся."""
+    con = _v8_raw(tmp_path / "a.db", """
+      INSERT INTO person_fields(name,label,sort_order,data_type) VALUES ('pic','Портрет',0,'image'),('logo','Логотип',1,'image');
+      INSERT INTO persons(fields_json,print_mark) VALUES ('{"logo":""}',0);""")
+    assert [f["name"] for f in api.list_image_fields(con)] == ["pic"]
+    con = _v8_raw(tmp_path / "b.db", """
+      INSERT INTO person_fields(name,label,sort_order,data_type) VALUES ('pic','Портрет',0,'image'),('logo','Логотип',1,'image');
+      INSERT INTO persons(fields_json,print_mark) VALUES ('{"logo":"l.png"}',0);""")
+    assert [f["name"] for f in api.list_image_fields(con)] == ["pic", "logo"]
+    assert json.loads(con.execute("SELECT fields_json FROM persons").fetchone()[0]) == {"logo": "l.png"}
+    con = _v8_raw(tmp_path / "c.db", """
+      INSERT INTO person_fields(name,label,sort_order,data_type) VALUES ('pic','Портрет',0,'image'),('logo','Логотип',1,'image');
+      INSERT INTO template_elements(type,x,y,w,h,field_name,side,z_order,template_id) VALUES ('photo',0,0,100,100,'logo','front',0,1);""")
+    assert [e["field_name"] for e in api.list_elements(con)] == ["logo"] and len(api.list_image_fields(con)) == 2
+    snap = json.dumps({"elements": [{"type": "photo", "field_name": "logo"}]})
+    con = _v8_raw(tmp_path / "d.db", f"""
+      INSERT INTO person_fields(name,label,sort_order,data_type) VALUES ('pic','Портрет',0,'image'),('logo','Логотип',1,'image');
+      INSERT OR REPLACE INTO project_settings(key,value) VALUES ('template_edit_snapshot','{snap}');""")
+    assert "logo" in [f["name"] for f in api.list_image_fields(con)]   # привязка только в снимке правки — не удаляется
+
+
+def test_v9_logo_is_not_target_for_auto_photo(tmp_path):
+    con = _v8_raw(tmp_path / "a.db", """
+      INSERT INTO person_fields(name,label,sort_order,data_type) VALUES ('logo','Логотип',0,'image'),('Фото','Фото',1,'image');
+      INSERT INTO persons(fields_json,print_mark) VALUES ('{"logo":"l.png","Фото":"a.jpg"}',0);""")
+    assert sorted(f["name"] for f in api.list_image_fields(con)) == ["logo", "Фото"]
+    assert json.loads(con.execute("SELECT fields_json FROM persons").fetchone()[0]) == {"logo": "l.png", "Фото": "a.jpg"}
+
+
 def test_v9_without_own_field_keeps_auto(tmp_path):
     p = tmp_path / "v8.db"; raw = sqlite3.connect(p); v0 = db.LATEST; db.LATEST = 8
     try: db.migrate(raw)
@@ -112,12 +165,13 @@ def test_v9_without_own_field_keeps_auto(tmp_path):
     con = db.connect(str(p)); assert [f["name"] for f in api.list_image_fields(con)] == ["Фото"]
 
 
-# ---------- №5: render_card_db(person=None, field_names=True) ----------
+# ---------- №5: render_card_db(person=None, field_names=...) ----------
 def test_render_card_db_field_names():
     con = api.connect(); api.upsert_field(con, "fio", "ФИО", default_value="Иванов")
     api.create_element(con, "field", 20, 20, 600, 120, field_name="fio")
-    names, empty = render_card_db(con, None), render_card_db(con, None, field_names=False)
+    names, empty = render_card_db(con, None, field_names=True), render_card_db(con, None, field_names=False)
     assert names.tobytes() != empty.tobytes()
+    assert render_card_db(con, None).tobytes() == empty.tobytes()          # по умолчанию — прежний пустой шаблон
     ref = api.connect(); api.create_element(ref, "text", 20, 20, 600, 120, static_value="ФИО")
     assert names.tobytes() == render_card_db(ref, None).tobytes()      # название поля тем же стилем, без красных #поле
 
@@ -125,7 +179,19 @@ def test_render_card_db_field_names():
 def test_render_card_db_photo_placeholder_label():
     con = api.connect(); api.upsert_field(con, "pic", "Портрет", data_type="image")
     api.create_element(con, "photo", 20, 20, 200, 250, field_name="pic")
-    assert render_card_db(con, None).tobytes() != render_card_db(con, None, field_names=False).tobytes()
+    assert render_card_db(con, None, field_names=True).tobytes() != render_card_db(con, None).tobytes()
+
+
+@pytest.mark.parametrize("fn", [True, False])
+def test_preview_worker_same_as_render_card_db(tmp_path, fn):
+    from ui.backend_api import BackendAPI, render_card_mem
+    a = BackendAPI(str(tmp_path / "p.db"), base_dir=str(tmp_path))
+    a.upsert_field("fio", "ФИО", 0); a.upsert_field("pic", "Портрет", 1, data_type="image")
+    api.create_element(a.con, "field", 20, 20, 600, 120, field_name="fio")
+    api.create_element(a.con, "photo", 20, 200, 200, 250, field_name="pic", side="back")
+    for side in ("front", "back"):
+        got = render_card_mem(**a.gather_render_args(None, side, field_names=fn))
+        assert got.tobytes() == render_card_db(a.con, None, side, str(tmp_path), field_names=fn).tobytes()
 
 
 # ---------- №7: api.set_z_order ----------
