@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QGraphicsView, QGraphicsScene
                              QGraphicsRectItem, QGraphicsSimpleTextItem, QGraphicsItem, QGroupBox,
                              QFormLayout, QLabel, QComboBox, QPushButton, QSpinBox, QLineEdit,
                              QPlainTextEdit, QMessageBox, QCheckBox, QToolButton, QGridLayout,
-                             QInputDialog, QFileDialog, QColorDialog, QSizePolicy)
+                             QInputDialog, QFileDialog, QColorDialog, QSizePolicy, QApplication)
 from .stage15 import UNLINKED_COLOR
 from .backend_api import (
     BackendAPI, CARD_W_PX, CARD_H_PX, TYPE_NAMES, SIDE_NAMES, field_type,
@@ -83,7 +83,8 @@ class FieldNameTag(QGraphicsSimpleTextItem):
 
     def __init__(self, name, parent=None):
         super().__init__(f"#{name}", parent)
-        f = QFont()
+        app = QApplication.instance()
+        f = QFont(app.font()) if app is not None else QFont()
         f.setPointSize(8)
         self.setFont(f)
         self.setBrush(QBrush(QColor("#CC0000")))
@@ -311,20 +312,17 @@ class LayoutEditor(QWidget):
         sw, sh = scene_width(), scene_height()
         self.scene.setSceneRect(0, 0, sw, sh)
         self._field_names_bg = False
-        if self.show_render:
-            pid = self.person_id if self.person_id is not None and self.api.get_person(self.person_id) else None
-            self.person_id = pid
-            ph = QPixmap(int(sw), int(sh)); ph.fill(QColor("#FFFFFF"))
-            self._bg_item = self.scene.addPixmap(ph)
-            bg = self._bg_item
-            if uses_grid_units() and ph.width():
-                bg.setScale(sw / ph.width())
-            self._start_canvas_render(pid, side)
-        else:
-            bg = self._try_field_names_background(side, sw, sh)
-            if bg is None:
-                b = self.api.get_background(side) or {"color": "#FFFFFF"}
-                bg = self.scene.addRect(QRectF(0, 0, sw, sh), QPen(Qt.PenStyle.NoPen), QBrush(QColor(b["color"])))
+        self._field_names_error = None
+        pid = self.person_id if self.person_id is not None and self.api.get_person(self.person_id) else None
+        self.person_id = pid
+        # Фон холста всегда через preview_jobs (не блокируем UI):
+        # рендер вкл. + запись — данные из БД; иначе — имена полей (field_names=True).
+        ph = QPixmap(int(sw), int(sh)); ph.fill(QColor("#FFFFFF"))
+        self._bg_item = self.scene.addPixmap(ph)
+        bg = self._bg_item
+        if uses_grid_units() and ph.width():
+            bg.setScale(sw / ph.width())
+        self._start_canvas_render(pid, side)
         bg.setZValue(-1)
         self._bg_item = bg
         self.scene.addRect(QRectF(0, 0, sw, sh), QPen(QColor("#888888"))).setZValue(0)
@@ -360,9 +358,6 @@ class LayoutEditor(QWidget):
 
     def refresh_render(self):
         """Обновить рисунок карточки под рамками, не сбрасывая выделение (ввод текста)."""
-        if not self.show_render:
-            self._refresh_field_names_pixmap()
-            return
         pid = self.person_id if self.person_id is not None and self.api.get_person(self.person_id) else None
         self.person_id = pid
         from PyQt6.QtWidgets import QGraphicsPixmapItem
@@ -390,19 +385,36 @@ class LayoutEditor(QWidget):
         if self.show_render and self.isVisible():
             self._start_canvas_render(self.person_id, self.side)
 
-    def _start_canvas_render(self, person_id, side):
+    def _editor_field_names(self, person_id):
+        """Нужны ли имена полей вместо данных записи на холсте.
+
+        Спецификация: «рендер включён — данные из базы + красные #поле».
+        Если записи нет, данных нет — показываем имена полей (field_names=True),
+        тот же вид, что при выключенном рендере. Рендер выключен: всегда True.
+        """
+        return (not self.show_render) or (person_id is None)
+
+    def _start_canvas_render(self, person_id, side, *, field_names=None):
         self._render_gen += 1
         gen = self._render_gen
+        if field_names is None:
+            field_names = self._editor_field_names(person_id)
         try:
-            payload = self.api.gather_render_args(person_id, side, field_names=False)
+            payload = self.api.gather_render_args(person_id, side, field_names=field_names)
         except KeyError:
-            payload = self.api.gather_render_args(None, side, field_names=False)
+            # Нет записи: вид имён полей (как при выключенном рендере).
+            payload = self.api.gather_render_args(None, side, field_names=True)
+        if field_names or person_id is None:
+            self._field_names_bg = True
         render_pool().start(RenderCardJob(gen, payload, self._render_signals))
 
     def _on_canvas_rendered(self, gen, result, side):
         if gen != self._render_gen or side != self.side:
             return
         if isinstance(result, Exception):
+            self._field_names_error = str(result)
+            if not self.show_render:
+                self.status.emit(f"Макет ({SIDE_LABELS[self.side]}): {result}")
             return
         self.canvas_image = result
         from PyQt6.QtWidgets import QGraphicsPixmapItem
@@ -421,51 +433,6 @@ class LayoutEditor(QWidget):
         """Обновить красные подписи #поле (содержимое холста даёт render_card_db)."""
         for it in self.items():
             it.refresh_field_tag()
-
-    def _field_names_image(self, side):
-        """render_card_db(con, None, side, base_dir, field_names=True) через обёртку.
-        Нет функции → LookupError (сообщение missing_backend)."""
-        return self.api.render_card(None, side, field_names=True)
-
-    def _try_field_names_background(self, side, sw, sh):
-        """Фон редактора при выключенном рендере: только render_card_db(..., field_names=True)."""
-        self._field_names_error = None
-        try:
-            img = self._field_names_image(side)
-        except LookupError as e:
-            self._field_names_error = str(e)
-            return None
-        except Exception as e:  # noqa: BLE001
-            self._field_names_error = str(e)
-            return None
-        if img is None or img.isNull():
-            return None
-        pm = QPixmap.fromImage(img)
-        if pm.isNull():
-            return None
-        bg = self.scene.addPixmap(pm)
-        if uses_grid_units() and pm.width():
-            bg.setScale(sw / pm.width())
-        self._field_names_bg = True
-        return bg
-
-    def _refresh_field_names_pixmap(self):
-        """Обновить фон имён полей на месте (после смены стиля), без пересборки рамок."""
-        from PyQt6.QtWidgets import QGraphicsPixmapItem
-        bg = getattr(self, "_bg_item", None)
-        try:
-            img = self._field_names_image(self.side)
-        except Exception:  # noqa: BLE001
-            return
-        if img is None or img.isNull() or not isinstance(bg, QGraphicsPixmapItem):
-            return
-        pm = QPixmap.fromImage(img)
-        if pm.isNull():
-            return
-        bg.setPixmap(pm)
-        if uses_grid_units() and pm.width():
-            bg.setScale(scene_width() / pm.width())
-        self._field_names_bg = True
 
     def _apply_item_flags(self, it):
         locked = bool((it.el.get("style") or {}).get("locked"))

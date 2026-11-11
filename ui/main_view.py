@@ -63,10 +63,13 @@ class PreviewPanel(QWidget):
         self._render_gen += 1
         gen = self._render_gen
         for side in ("front", "back"):
+            # Есть запись: данные из БД (field_names=False). Нет записи — данных нет,
+            # показываем имена полей (field_names=True), как при выключенном рендере.
+            fn = self.person_id is None
             try:
-                payload = self.api.gather_render_args(self.person_id, side, field_names=False)
+                payload = self.api.gather_render_args(self.person_id, side, field_names=fn)
             except KeyError:
-                payload = self.api.gather_render_args(None, side, field_names=False)
+                payload = self.api.gather_render_args(None, side, field_names=True)
             render_pool().start(RenderCardJob(gen, payload, self._render_signals))
         self.caption.setText(f"Запись #{p['id']}" if p else "Пустой шаблон (запись не выбрана)")
         _fl = self.api.list_fields(); labels = {f["name"]: f["label"] or f["name"] for f in _fl}
