@@ -418,8 +418,9 @@ class BackendAPI:
     def render_preview(self, person, side="front", scale=0.5):
         return pil_to_qimage(_api.render_preview(self.con, person, side, scale, self.base_dir))
 
-    def gather_render_args(self, person, side="front"):
-        """GUI-поток: прочитать person / элементы / фон. Результат — аргументы render_card без con."""
+    def gather_render_args(self, person, side="front", *, field_names=True):
+        """GUI-поток: прочитать person / элементы / фон. Результат — аргументы render_card_mem без con.
+        Замечание №5а: field_names (при person=None) уходит в payload — воркер рисует как render_card_db."""
         from badge_backend.render import load_elements, load_background, load_photo_views
         if isinstance(person, int):
             row = _api.get_person(self.con, person)
@@ -433,7 +434,8 @@ class BackendAPI:
             if "photo_views" not in person and person.get("id") is not None:
                 person["photo_views"] = load_photo_views(self.con, person["id"])
         return {"person": person, "elements": load_elements(self.con, side), "side": side,
-                "background": load_background(self.con, side), "base_dir": self.base_dir}
+                "background": load_background(self.con, side), "base_dir": self.base_dir,
+                "field_names": bool(field_names)}
 
     # --- импорт (GUI-поток, соединение привязано к нему) ---
     def read_headers(self, path): return read_table(path)[0]
@@ -556,8 +558,13 @@ def apply_photo_edit(img, params):
     return fn(img, dict(params)) if fn else img
 
 
-def render_card_mem(person, elements, side="front", background=None, base_dir=None):
-    """Чистый Backend render_card: без соединения SQLite (для воркера превью)."""
+def render_card_mem(person, elements, side="front", background=None, base_dir=None, field_names=True):
+    """Чистый Backend render_card: без соединения SQLite (для воркера превью).
+    Замечание №5а: person=None и field_names=True → тот же вид, что render_card_db(con, None, field_names=True):
+    привязанный текст — названием поля, фото — заглушкой с названием (элементы из load_elements, ключ field_label)."""
+    if person is None and field_names:
+        from badge_backend.render import _field_name_view
+        elements = _field_name_view(elements)
     return _api.render_card(person, elements, side, background, base_dir)
 
 
