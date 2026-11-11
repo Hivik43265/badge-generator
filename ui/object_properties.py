@@ -284,6 +284,7 @@ class ObjectPropertiesPanel(QWidget):
 
         self.g_photo = self._group("Фото")
         self.w_photo_link = QLabel("—"); self.w_photo_link.setWordWrap(True)
+        self.w_photo_link.setMinimumWidth(1)   # не растягивает панель; длинное имя поля переносится
         self.w_photo_link.setStyleSheet("color:#1F4E8C;")
         self._row(self.g_photo, "Связь", self.w_photo_link)
 
@@ -502,11 +503,14 @@ class ObjectPropertiesPanel(QWidget):
             if t == "photo":
                 fn = e.get("field_name")
                 if fn:
-                    self.w_photo_link.setText(f"Связан с полем «{fn}» (тип «{PHOTO_FIELD_TYPE}»)")
+                    # короткая надпись, чтобы не обрезалась в узкой панели; тип поля — в подсказке
+                    self.w_photo_link.setText(f"Поле: «{fn}»")
+                    self.w_photo_link.setToolTip(f"Связан с полем «{fn}» (тип «{PHOTO_FIELD_TYPE}»)")
                 else:
                     self.w_photo_link.setText("Не связан — выберите поле")
+                    self.w_photo_link.setToolTip("Фото-объект не связан ни с одним полем")
             else:
-                self.w_photo_link.setText("—")
+                self.w_photo_link.setText("—"); self.w_photo_link.setToolTip("")
 
             self._sync_field_combo(e.get("field_name") or "")
             self.w_static.setText(e.get("static_value") or "")
