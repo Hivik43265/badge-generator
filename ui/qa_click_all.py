@@ -34,7 +34,7 @@ def wait_previews(app):
 
 def scenario(tmp, chk, out, EXC):
     from badge_backend import api as B
-    from .backend_api import BackendAPI, CARD_W_UNITS, CARD_H_UNITS
+    from .backend_api import BackendAPI, CARD_W_UNITS, CARD_H_UNITS, stored_to_mm, mm_to_stored
     from .main_window import MainWindow
     def spin(ms=30):
         l = QEventLoop(); QTimer.singleShot(ms, l.quit); l.exec()
@@ -125,7 +125,7 @@ def scenario(tmp, chk, out, EXC):
         w2 = MainWindow(BackendAPI(db)); w2.show(); spin(100)
         for name, title in (("act_settings", "Настройки"), ("act_field_manager", "Настр. поля"), ("act_card_add", "Карта: добавить"),
                             ("act_card_edit", "Карта: изменить"), ("act_import", "Импорт"), ("act_export", "Экспорт"),
-                            ("act_position", "Положение"), ("act_queue", "Очередь печати"), ("act_about", "О программе")):
+                            ("act_queue", "Очередь печати"), ("act_about", "О программе")):
             a = w2.findChild(QAction, name)
             if a is None: chk(f"DLG {title}", False, f"нет {name}"); continue
             w2.ribbon.select(dict(w2.ribbon.places).get(a, ("Главная",))[0]); spin(30)
@@ -136,6 +136,51 @@ def scenario(tmp, chk, out, EXC):
             spin(30); OPENED.clear(); n = len(EXC); a.trigger(); spin(400)
             chk(f"DLG {title} открылся и закрылся без исключений", OPENED and len(EXC) == n,
                 EXC[-1] if len(EXC) > n else OPENED or "диалог не открылся")
+        # Положение: диалога больше нет — группа Position на панели «Свойства объекта»
+        n = len(EXC)
+        ev = ""
+        try:
+            w2.show_editor(); spin(30)
+            le = w2.layout_editor
+            el = next((e for e in w2.api.list_elements(le.side) if e.get("type") == "rect"), None)
+            if el is None:
+                els = w2.api.list_elements(le.side)
+                el = els[0] if els else None
+            if el is None:
+                ok_pos, ev = False, "нет элементов"
+            else:
+                le.select(el["id"]); spin(50)
+                tt = w2.template_tools
+                if not tt.template_mode:
+                    tt.confirm_hook = lambda: True
+                    w2.act_template_mode.trigger(); spin(50)
+                w2.edit_position(); spin(50)
+                op = w2.props_dock.panel
+                shown = w2.props_dock.isVisible() and not op.g_pos.isHidden()
+                vals_ok = (
+                    mm_to_stored(op.w_left.value()) == el["x"]
+                    and mm_to_stored(op.w_top.value()) == el["y"]
+                    and mm_to_stored(op.w_width.value()) == el["w"]
+                    and mm_to_stored(op.w_height.value()) == el["h"]
+                )
+                new_x = el["x"] + 11
+                op.w_left.setValue(stored_to_mm(new_x))
+                op.flush()
+                op.w_left.editingFinished.emit()
+                spin(50)
+                got = next(e for e in w2.api.list_elements(le.side) if e["id"] == el["id"])
+                ok_pos = shown and vals_ok and got["x"] == new_x and len(EXC) == n
+                ev = (f"shown={shown} vals={vals_ok} x {el['x']}→{got['x']} (ждали {new_x})"
+                      f"; mm=({op.w_left.value()}, {op.w_top.value()}, {op.w_width.value()}, {op.w_height.value()})")
+                tt._saving = True
+                try:
+                    if tt.template_mode:
+                        tt.set_template_mode(False)
+                finally:
+                    tt._saving = False
+        except Exception:  # noqa: BLE001
+            ok_pos, ev = False, traceback.format_exc()[-600:]
+        chk("Панель свойств: группа Position, X/Y/W/H в мм и запись X через API", ok_pos, ev or "ok")
         # камера (блок фото формы записи, D22) и менеджер полей — открываются даже без камеры
         from .record_form import RecordForm
         n = len(EXC); f = RecordForm(w2.api, None, w2); f.show(); QApplication.processEvents(); vis = f.isVisible(); spin(150)

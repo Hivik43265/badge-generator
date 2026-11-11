@@ -460,13 +460,17 @@ class MainWindow(QMainWindow):
         r = self.api.redo(); self.layout_editor.reload(); self._sync_selection(); return r
 
     def edit_position(self):
-        """Одно место для X/Y/W/H — панель «Свойства объекта»."""
+        """Одно место для X/Y/W/H — группа Position панели «Свойства объекта»."""
         le = self.layout_editor
         if not le.current:
             self.statusBar().showMessage("Выберите объект на холсте"); return None
+        self.show_editor()
         if hasattr(self, "props_dock"):
             self.props_dock.show(); self.props_dock.raise_()
-            self.props_dock.panel.expand_all()
+            op = self.props_dock.panel
+            op.expand_all()
+            if getattr(op, "g_pos", None) is not None:
+                op.g_pos.setExpanded(True)
         return None
 
     # --- расположение ---
