@@ -469,8 +469,16 @@ class BackendAPI:
             im = fn(self.con, person, side, self.base_dir)
         return pil_to_qimage(im)
 
-    def render_preview(self, person, side="front", scale=0.5):
-        return pil_to_qimage(_api.render_preview(self.con, person, side, scale, self.base_dir))
+    def render_preview(self, person, side="front", scale=0.5, *, field_names=False):
+        """Обёртка render_preview; field_names передаётся явно. Старая сигнатура Backend — без флага."""
+        fn = getattr(_api, "render_preview", None)
+        if not callable(fn):
+            raise LookupError(missing_backend("render_preview"))
+        try:
+            im = fn(self.con, person, side, scale, self.base_dir, field_names=field_names)
+        except TypeError:
+            im = fn(self.con, person, side, scale, self.base_dir)
+        return pil_to_qimage(im)
 
     def gather_render_args(self, person, side="front", *, field_names=False):
         """GUI-поток: прочитать person / элементы / фон. Результат — аргументы render_card_mem без con.
@@ -624,7 +632,7 @@ def apply_photo_edit(img, params):
     return fn(img, dict(params)) if fn else img
 
 
-def render_card_mem(person, elements, side="front", background=None, base_dir=None, field_names=False):
+def render_card_mem(person, elements, side="front", background=None, base_dir=None, *, field_names=False):
     """Чистый Backend render_card: без соединения SQLite (для воркера превью).
     Замечание №5а: по умолчанию field_names=False — как render_card_db без флага (пустой шаблон).
     person=None и явный field_names=True → тот же вид, что render_card_db(con, None, field_names=True):
@@ -732,6 +740,35 @@ def projects_dir():
     if fn is None:
         raise LookupError(missing_backend("projects_dir"))
     return fn()
+
+
+def settings_path():
+    """app_paths.settings_path() → projects_dir()/settings.ini. Нет функции → LookupError."""
+    fn = _backend_fn("settings_path")
+    if fn is None:
+        raise LookupError(missing_backend("settings_path"))
+    return fn()
+
+
+def legacy_appdata_dir():
+    """app_paths.legacy_appdata_dir() → прежний %APPDATA%\\BadgeGenerator (или ~/.BadgeGenerator). Нет функции → LookupError."""
+    fn = _backend_fn("legacy_appdata_dir")
+    if fn is None:
+        raise LookupError(missing_backend("legacy_appdata_dir"))
+    return fn()
+
+
+def default_db_path(project_dir=None):
+    """badge_backend.default_db_path: в exe — projects_dir()/project.db, иначе <project_dir или cwd>/project.db."""
+    fn = getattr(_api, "default_db_path", None)
+    if not callable(fn):
+        raise LookupError(missing_backend("default_db_path"))
+    return fn() if project_dir is None else fn(project_dir)
+
+
+def default_db_filename():
+    """Имя файла БД по умолчанию (константа Backend DEFAULT_DB_PATH, обычно project.db)."""
+    return str(getattr(_api, "DEFAULT_DB_PATH", "project.db"))
 
 
 NO_TARGET_FN = "Нет функции Backend для пропорций"

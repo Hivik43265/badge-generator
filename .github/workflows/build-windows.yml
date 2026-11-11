@@ -141,26 +141,24 @@ jobs:
       - name: Self-test (GUI exe --self-test)
         # Контракт (Frontend, ui/self_test.py): BadgeGenerator.exe --self-test --log <path>
         #   сценарий — ui/qa_click_all.py (встроен в exe; от reports/qa/* сборка не зависит), лог — <path>
-        #   (запасной, замечание №1: dist\BadgeGenerator\logs\self_test.log — app_paths.logs_dir()); watchdog Frontend 170 c; 0 — успех, !=0 — провал.
+        #   по умолчанию (без --log): app_paths.logs_dir()/self_test.log — рядом с exe: dist\BadgeGenerator\logs\
+        #   (изоляция самотеста: BG_APP_ROOT внутри процесса); watchdog Frontend 170 c; 0 — успех, !=0 — провал.
         #   Таймаут 180 c -> провал job. Шаг выполняется всегда (без условия): нет хука -> job падает.
         shell: pwsh
         timeout-minutes: 5
         run: |
           $env:APPDATA = "$env:RUNNER_TEMP\appdata-selftest"
-          $log = "$env:RUNNER_TEMP\selftest\selftest.log"
-          New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null
+          $logs = Join-Path (Resolve-Path .\dist\BadgeGenerator) "logs"
+          New-Item -ItemType Directory -Force -Path $logs | Out-Null
+          $log = Join-Path $logs "self_test.log"
           if (-not (Select-String -Path main.py -Pattern '--self-test' -SimpleMatch -Quiet)) { throw "main.py has no --self-test hook (Frontend)" }
           $p = Start-Process -FilePath .\dist\BadgeGenerator\BadgeGenerator.exe -ArgumentList '--self-test','--log',"`"$log`"" -PassThru
           $null = $p.Handle
           if (-not $p.WaitForExit(180000)) {
             Stop-Process -Id $p.Id -Force
-            $alt = "dist\BadgeGenerator\logs\self_test.log"
-            if (Test-Path $alt) { Copy-Item $alt $log -ErrorAction SilentlyContinue }
             throw "self-test timeout (180 s)"
           }
-          $alt = "dist\BadgeGenerator\logs\self_test.log"
-          if (-not (Test-Path $log) -and (Test-Path $alt)) { Copy-Item $alt $log }
-          if (Test-Path $log) { Get-Content $log -Tail 200 } else { Write-Warning "self-test log not found" }
+          if (Test-Path $log) { Get-Content $log -Tail 200 } else { Write-Warning "self-test log not found: $log" }
           if ($p.ExitCode -ne 0) { throw "self-test failed, exit code $($p.ExitCode)" }
 
       - name: Upload self-test log
@@ -169,8 +167,7 @@ jobs:
         with:
           name: selftest-log
           path: |
-            ${{ runner.temp }}/selftest/
-            dist/BadgeGenerator/logs/*.log
+            dist/BadgeGenerator/logs/
           if-no-files-found: ignore
 
       - uses: actions/upload-artifact@v4

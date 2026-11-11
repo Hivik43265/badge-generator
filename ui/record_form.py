@@ -159,7 +159,7 @@ class RecordForm(QDialog):
         if not self.preview.isVisible():
             return
         try:
-            img = self.api.render_preview(self.draft_person(), self.side.currentData(), 0.5)
+            img = self.api.render_preview(self.draft_person(), self.side.currentData(), 0.5, field_names=False)
             self.preview.setPixmap(QPixmap.fromImage(img))
         except Exception as e:  # noqa: BLE001
             self.preview.setText(f"Ошибка рендера: {e}")

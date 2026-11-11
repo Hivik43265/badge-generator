@@ -11,7 +11,8 @@ from PyQt6.QtWidgets import (QMainWindow, QFileDialog, QMessageBox, QInputDialog
 from .backend_api import (BackendAPI, DEFAULT_DB_PATH, TYPE_NAMES,
                           RecoverableProjectError, ProjectLockedError, ProjectSaveError,
                           UnsavedChangesError, TemplateEditActiveError, recover,
-                          format_schema_migration_error, units_to_mm, mm_to_units)
+                          format_schema_migration_error, units_to_mm, mm_to_units,
+                          settings_path, legacy_appdata_dir, default_db_path, default_db_filename)
 from .records_table import RecordsWidget, PRINTED_FILTERS
 from .layout_editor import LayoutEditor
 from .object_properties import ObjectPropertiesDock
@@ -107,6 +108,54 @@ class FieldWidgetAction(QWidgetAction):
     def widget(self): return self.widgets[0]
 
 
+def _frontend_settings():
+    """Настройки программы: app_paths.settings_path() в IniFormat.
+    Нет функции — прежний QSettings(«BadgeGenerator», «Frontend»).
+    Если INI ещё нет, ключи копируются из старого хранилища (реестр не очищается).
+    db_path на legacy_appdata_dir()/project.db заменяется на default_db_path()."""
+    try:
+        path = Path(settings_path())
+    except Exception:
+        s = QSettings("BadgeGenerator", "Frontend")
+        _migrate_legacy_db_path(s)
+        return s
+    existed = path.is_file()
+    ini = QSettings(str(path), QSettings.Format.IniFormat)
+    if not existed:
+        old = QSettings("BadgeGenerator", "Frontend")
+        for k in old.allKeys():
+            ini.setValue(k, old.value(k))
+        ini.sync()
+    _migrate_legacy_db_path(ini)
+    return ini
+
+
+def _migrate_legacy_db_path(settings):
+    """Если сохранённый db_path — старая %APPDATA%-БД, подставить default_db_path() Backend."""
+    raw = settings.value("db_path")
+    if not raw:
+        return
+    try:
+        legacy = legacy_appdata_dir()
+    except Exception:
+        return
+    if not legacy:
+        return
+    try:
+        name = default_db_filename()
+        old_db = (Path(legacy) / name).resolve()
+        if Path(str(raw)).resolve() != old_db:
+            return
+        try:
+            new = default_db_path()
+        except Exception:
+            new = DEFAULT_DB_PATH
+        settings.setValue("db_path", str(new))
+        settings.sync()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class MainWindow(QMainWindow):
     STATE_VERSION = 3
     MIN_W = 1000
@@ -114,7 +163,7 @@ class MainWindow(QMainWindow):
     def __init__(self, api: BackendAPI | None = None):
         super().__init__()
         self.setObjectName("bg_main_window"); self.setStyleSheet(STYLE)
-        self.settings = QSettings("BadgeGenerator", "Frontend")
+        self.settings = _frontend_settings()
         self._own_api = api is None
         self.api = api if api is not None else self._open_api(self.settings.value("db_path", str(DEFAULT_DB_PATH)))
         self._dirty_override = None   # тесты: set_project_dirty принудительно показывает «*» / снимает
