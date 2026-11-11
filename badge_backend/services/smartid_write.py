@@ -325,28 +325,52 @@ def _objects_of(template: dict) -> list[dict]:
     return list(objs)
 
 
+def _flag_on(val) -> bool:
+    """Флаг стиля: True/1/"1"/"true"/"yes" — включён; False/0/"0"/"false"/""/None — нет."""
+    if isinstance(val, str):
+        return val.strip().casefold() not in ("", "0", "false", "no", "off", "none", "normal")
+    return bool(val)
+
+
+def _weight_is_bold(weight) -> bool:
+    if weight is None or weight == "":
+        return False
+    if isinstance(weight, str):
+        w = weight.strip().casefold()
+        if w.isdigit():
+            return int(w) >= 600
+        return any(k in w for k in ("bold", "black", "heavy"))
+    try:
+        return float(weight) >= 600
+    except (TypeError, ValueError):
+        return False
+
+
 def _note_dropped_style(obj: dict, st: dict, dropped: list, title: str) -> None:
-    said_bold = False
-    said_italic = False
+    """Жирный / курсив / подчёркивание → dropped, по одной строке на начертание.
+
+    Источники (любой включает): style["bold"] / style["italic"] / style["underline"]
+    (ключи модели), те же ключи на уровне объекта, font_weight (≥600 или «bold»),
+    font_style italic/oblique.
+    """
+    def get(key):
+        return st.get(key) if st.get(key) is not None else obj.get(key)
+
+    reasons: dict[str, list[str]] = {}
+    for key in ("bold", "italic", "underline"):
+        if _flag_on(get(key)):
+            reasons.setdefault(key, []).append(f"style[{key!r}]")
+    weight = get("font_weight")
+    if _weight_is_bold(weight):
+        reasons.setdefault("bold", []).append(f"font_weight={weight!r}")
+    fstyle = get("font_style")
+    if isinstance(fstyle, str) and fstyle.strip().casefold() in ("italic", "oblique"):
+        reasons.setdefault("italic", []).append(f"font_style={fstyle!r}")
     for key, user_msg in (("bold", "жирный"), ("italic", "курсив"), ("underline", "подчёркивание")):
-        if st.get(key) or obj.get(key):
+        if key in reasons:
             _drop(dropped, title, user_msg,
-                  tech=f"начертание {key!r} не записывается: смещение в записи ET неизвестно")
-            if key == "bold":
-                said_bold = True
-            if key == "italic":
-                said_italic = True
-    weight = st.get("font_weight") or obj.get("font_weight")
-    if weight not in (None, "", "normal", "Normal", 400, "400"):
-        if not said_bold:
-            _drop(dropped, title, "жирный",
-                  tech=f"font_weight={weight!r} не записывается: смещение в записи ET неизвестно")
-        else:
-            log.info("write_csd %s: font_weight=%r не записывается", title, weight)
-    if st.get("font_style") in ("italic", "oblique") or obj.get("font_style") in ("italic", "oblique"):
-        if not (st.get("italic") or obj.get("italic") or said_italic):
-            _drop(dropped, title, "курсив",
-                  tech="font_style italic/oblique не записывается: смещение в записи ET неизвестно")
+                  tech=f"начертание {key} не записывается ({', '.join(reasons[key])}): "
+                       "смещение в записи ET неизвестно")
 
 
 
