@@ -55,6 +55,20 @@ jobs:
           path: tests/_golden_actual/
           if-no-files-found: ignore
 
+      - name: UI screenshots (remarks)
+        if: always()
+        continue-on-error: true
+        run: python ui/qa_screens.py
+
+      - name: Upload screens
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: screens
+          path: reports/screens/
+          if-no-files-found: ignore
+
       - name: Build (PyInstaller)
         run: pyinstaller --noconfirm --clean packaging/badge_generator.spec
 
