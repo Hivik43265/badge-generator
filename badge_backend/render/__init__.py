@@ -223,6 +223,7 @@ def _fit_text(d, text, w, h, size_px, min_px, fam, bold, fpath, wrap, spacing, i
     """
     size = max(1, int(round(size_px)))
     f = get_font(size, fam, bold, fpath, italic=bool(italic))
+    w = max(1, w - 2 * _synthetic(f, bold, italic)[0])   # синтетический жирный: обводка шире глифа на stroke с каждой стороны
     notes = []
     if wrap:
         # сначала обычный перенос (пробелы, дефисы); force — только если строка всё ещё шире рамки
