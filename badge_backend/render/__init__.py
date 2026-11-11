@@ -491,7 +491,7 @@ def render_card(person, elements, side: str = "front", background=None, base_dir
         b = _open(_resolve(bg["image_path"], base_dir))
         if b: img.alpha_composite(_cover_crop(b, W, H))
     els = sorted((_d(e) for e in elements if _d(e).get("side", "front") == side),
-                 key=lambda e: (e.get("z_order", 0), e.get("id") or 0))
+                 key=lambda e: (int(e.get("z_order") or 0), e.get("id") or 0))   # №7: z_order=None не роняет сортировку
     for el in els:
         el = {**el, **{k: units_to_px(el[k], DPI) for k in ("x", "y", "w", "h")}}
         if el["type"] == "line":

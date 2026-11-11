@@ -192,6 +192,34 @@ def update_element(con, element_id: int, **changes) -> bool:
         return con.execute(f"UPDATE template_elements SET {','.join(k+'=?' for k in v)} WHERE id=?",
                            (*v.values(), element_id)).rowcount > 0
 
+_Z_OPS = ("front", "back", "up", "down")
+
+def set_z_order(con, element_id: int, op) -> int | None:
+    """Замечание №7: слой объекта в пределах его стороны (и шаблона).
+    op: 'front' — поверх всех, 'back' — под всеми, 'up' / 'down' — на один слой выше / ниже,
+        int — встать на позицию op (0 — самый нижний; за пределами — к краю).
+    Все объекты стороны перенумеровываются 0..n-1 без дыр в порядке (z_order, id) — так же их рисует рендер,
+    печать, PNG и PDF (render_card сортирует по z_order, id). Неизвестный op → ValueError.
+    → новый z_order объекта; нет объекта → None."""
+    if isinstance(op, bool) or not (isinstance(op, int) or op in _Z_OPS):
+        raise ValueError(f"op должен быть одним из {_Z_OPS} или int, получено {op!r}")
+    r = con.execute("SELECT template_id, side FROM template_elements WHERE id=?", (element_id,)).fetchone()
+    if r is None: return None
+    tid, side = r[0], r[1]
+    ids = [x[0] for x in con.execute(
+        "SELECT id FROM template_elements WHERE side=? AND template_id IS ? ORDER BY z_order, id", (side, tid))]
+    i = ids.index(element_id); ids.pop(i)
+    if op == "front": j = len(ids)
+    elif op == "back": j = 0
+    elif op == "up": j = min(len(ids), i + 1)
+    elif op == "down": j = max(0, i - 1)
+    else: j = max(0, min(len(ids), int(op)))
+    ids.insert(j, element_id)
+    with con:
+        con.executemany("UPDATE template_elements SET z_order=? WHERE id=? AND z_order IS NOT ?",
+                        [(z, eid, z) for z, eid in enumerate(ids)])
+    return j
+
 def delete_element(con, element_id: int) -> bool:
     """Удалить элемент. style.locked → ValueError."""
     st = _element_style(con, element_id)
