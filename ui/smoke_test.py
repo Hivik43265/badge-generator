@@ -9,11 +9,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import Qt, QEventLoop, QTimer, QSettings, QThreadPool
+from PyQt6.QtCore import Qt, QEventLoop, QTimer, QThreadPool
 from PyQt6.QtGui import QPixmap, QImage, QColor
 from PyQt6.QtPrintSupport import QPrinter
 _cfg = tempfile.mkdtemp(prefix="bg_ui_cfg_")   # не трогать настройки пользователя
-QSettings.setPath(QSettings.Format.NativeFormat, QSettings.Scope.UserScope, _cfg)
+os.environ["BG_APP_ROOT"] = _cfg               # изоляция app_paths: settings.ini, логи, проекты
 
 app = QApplication([])
 from badge_backend import demo  # тестовые данные только через Backend
@@ -1046,8 +1046,9 @@ api14.close()
 ok("этап 14/15: редактор фото — Применить → только set_photo_view (spec 6, без JPEG); путь исходника; D43 discard на «Из файла…»; D41/D42/пропорции")
 # расположение окна сохраняется автоматически в closeEvent
 _cfg2 = tempfile.mkdtemp(prefix="bg_ui_cfg2_")
-QSettings.setPath(QSettings.Format.NativeFormat, QSettings.Scope.UserScope, _cfg2)
-w.settings = QSettings("BadgeGenerator", "Frontend")
+os.environ["BG_APP_ROOT"] = _cfg2
+# тот же INI, что и MainWindow: app_paths.settings_path() через _frontend_settings()
+w.settings = mw._frontend_settings()
 w.show_main(); w.resize(1280, 800); app.processEvents(); w.splitter.setSizes([500, 700]); app.processEvents(); saved = w.splitter.sizes()
 w.close(); app.processEvents()
 assert w.settings.value("window/splitter") is not None
