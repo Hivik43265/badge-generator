@@ -18,7 +18,8 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QGraphicsView, QGraphicsScene
 from .stage15 import UNLINKED_COLOR, PHOTO_FIELD_LABEL, PHOTO_FIELD_TYPE
 from .backend_api import (
     BackendAPI, CARD_W_PX, CARD_H_PX, TYPE_NAMES, SIDE_NAMES, field_type,
-    scene_width, scene_height, uses_grid_units, px_to_units, units_to_mm, snap_scene,
+    missing_backend, scene_width, scene_height, uses_grid_units, px_to_units,
+    units_to_mm, snap_scene,
 )
 from .preview_jobs import RenderCardJob, RenderSignals, render_pool
 
@@ -705,10 +706,44 @@ class LayoutEditor(QWidget):
         return self.api.get_background(self.side)
 
     def move_z(self, delta):
-        if not self.current: return
+        """Лента «Выше»/«Ниже» → set_z_order('up'|'down')."""
+        self.apply_z_order("up" if delta > 0 else "down")
+
+    def apply_z_order(self, order):
+        """Вызвать api.set_z_order и обновить setZValue на холсте."""
+        if not self.current:
+            return False
         eid = self.current.el["id"]
-        self.api.update_element(eid, z_order=(self.current.el.get("z_order") or 0) + delta)
-        self.load(self.side, eid)
+        fn = getattr(self.api, "set_z_order", None)
+        if not callable(fn):
+            _warn(self, "Слой", missing_backend("set_z_order"))
+            return False
+        try:
+            fn(eid, order)
+        except LookupError as e:
+            _warn(self, "Слой", str(e))
+            return False
+        except Exception as e:  # noqa: BLE001
+            _warn(self, "Слой", f"Backend отклонил порядок слоя: {e}")
+            return False
+        self._sync_z_values()
+        if self.show_render:
+            self.refresh_render()
+        return True
+
+    def _sync_z_values(self):
+        els = {e["id"]: e for e in self.api.list_elements(self.side)}
+        for it in self.items():
+            el = els.get(it.el["id"])
+            if el is None:
+                continue
+            it.el["z_order"] = el.get("z_order") or 0
+            it.setZValue(1000 + (it.el["z_order"] or 0))
+        if self.current and self.current.el["id"] in els:
+            self.current.el["z_order"] = els[self.current.el["id"]].get("z_order") or 0
+        op = getattr(self, "object_props", None)
+        if op is not None:
+            op.sync()
 
     def delete_element(self):
         if not self.current: return

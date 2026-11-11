@@ -1,7 +1,7 @@
 """Панель «Свойства объекта» в стиле Smart IDesigner (QDockWidget + дерево свойств).
 
 Заголовок на русском. Группы: База, Position, Border, Background, Шрифт (Ж/К),
-Фото, Поле, Штрихкод / QR-код, Дополнительно. Laser нет.
+Фото, Поле, Штрихкод / QR-код, Слой, Дополнительно. Laser нет.
 Единственный путь записи свойств элемента (лента зовёт set_props → apply_values).
 """
 from __future__ import annotations
@@ -314,19 +314,33 @@ class ObjectPropertiesPanel(QWidget):
         self._row(self.g_qr, "Коррекция", self.w_ec)
         self._row(self.g_qr, "Поле QR, мод.", self.w_qborder)
 
-        self.g_extra = self._group("Дополнительно", expanded=False)
+        self.g_layer = self._group("Слой")
         self.w_z = _int_spin(-1000, 1000)
+        self._row(self.g_layer, "Порядок", self.w_z)
+        layer_btns = QWidget()
+        vl = QVBoxLayout(layer_btns)
+        vl.setContentsMargins(0, 0, 0, 0)
+        vl.setSpacing(2)
+        self.btn_z_front = QPushButton("На передний план")
+        self.btn_z_up = QPushButton("Выше")
+        self.btn_z_down = QPushButton("Ниже")
+        self.btn_z_back = QPushButton("На задний план")
+        for b in (self.btn_z_front, self.btn_z_up, self.btn_z_down, self.btn_z_back):
+            b.setMaximumHeight(24)
+            vl.addWidget(b)
+        self._row(self.g_layer, "Команды", layer_btns)
+
+        self.g_extra = self._group("Дополнительно", expanded=False)
         self.w_style = QPlainTextEdit()
         self.w_style.setFixedHeight(80)
         self.w_style.setTabChangesFocus(True)
-        self._row(self.g_extra, "Слой (z)", self.w_z)
         self._row(self.g_extra, "Стиль (JSON)", self.w_style)
 
         self.groups = {
             "base": self.g_base, "pos": self.g_pos, "border": self.g_border,
             "bg": self.g_bg, "font": self.g_font, "photo": self.g_photo,
             "bind": self.g_bind, "barcode": self.g_barcode, "qr": self.g_qr,
-            "extra": self.g_extra,
+            "layer": self.g_layer, "extra": self.g_extra,
         }
 
     def _wire(self):
@@ -356,6 +370,10 @@ class ObjectPropertiesPanel(QWidget):
         self.w_ec.activated.connect(self._apply_qr)
         self.w_qborder.editingFinished.connect(self._apply_qr)
         self.w_z.editingFinished.connect(self._apply_z)
+        self.btn_z_front.clicked.connect(lambda: self._set_z_cmd("front"))
+        self.btn_z_up.clicked.connect(lambda: self._set_z_cmd("up"))
+        self.btn_z_down.clicked.connect(lambda: self._set_z_cmd("down"))
+        self.btn_z_back.clicked.connect(lambda: self._set_z_cmd("back"))
         self._style_timer = QTimer(self, singleShot=True, interval=700, timeout=self._apply_json)
         self.w_style.textChanged.connect(lambda: None if self._loading else self._style_timer.start())
         self._text_timer = QTimer(self, singleShot=True, interval=300, timeout=self._apply_text)
@@ -515,12 +533,13 @@ class ObjectPropertiesPanel(QWidget):
             self.row_static.setHidden(t not in ("image", "barcode", "qr"))
             self._set_group_visible(self.g_barcode, t == "barcode")
             self._set_group_visible(self.g_qr, t == "qr")
+            self._set_group_visible(self.g_layer, True)
             self._set_group_visible(self.g_extra, True)
             self._set_group_visible(self.g_base, True)
             self._set_group_visible(self.g_pos, True)
 
             for g in (self.g_base, self.g_pos, self.g_border, self.g_bg, self.g_font,
-                      self.g_photo, self.g_bind, self.g_barcode, self.g_qr):
+                      self.g_photo, self.g_bind, self.g_barcode, self.g_qr, self.g_layer):
                 if not g.isHidden():
                     g.setExpanded(True)
         finally:
@@ -785,10 +804,19 @@ class ObjectPropertiesPanel(QWidget):
             border=int(self.w_qborder.value()),
         )
 
+    def _set_z_cmd(self, cmd):
+        if self._loading or not self.editor.current:
+            return
+        fn = getattr(self.editor, "apply_z_order", None)
+        if callable(fn):
+            fn(cmd)
+
     def _apply_z(self):
         if self._loading or not self.editor.current:
             return
-        self._write_element(z_order=int(self.w_z.value()))
+        fn = getattr(self.editor, "apply_z_order", None)
+        if callable(fn):
+            fn(int(self.w_z.value()))
 
     def _apply_json(self):
         if self._loading or not self.editor.current:

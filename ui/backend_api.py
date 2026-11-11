@@ -432,6 +432,13 @@ class BackendAPI:
             self._record(("update", eid, {"style": old.get("style")}, {"style": r}))
         return r
 
+    def set_z_order(self, element_id, order):
+        """api.set_z_order(element_id, 'front'|'back'|'up'|'down'|int). Нет функции → LookupError."""
+        fn = _backend_fn("set_z_order")
+        if fn is None:
+            raise LookupError(missing_backend("set_z_order"))
+        return fn(self.con, self._id(element_id), order)
+
     # --- рендер (Backend) ---
     def render_card(self, person, side="front", *, field_names=False):
         """person: id | dict | None. field_names=True — имена полей вместо данных (контракт render_card_db).
