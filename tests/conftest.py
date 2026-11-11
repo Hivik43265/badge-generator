@@ -5,6 +5,11 @@ sys.path.insert(0, ROOT)
 import pytest
 from badge_backend import api, demo
 
+@pytest.fixture(autouse=True)
+def _bg_app_root(tmp_path_factory, monkeypatch):
+    """Замечание №1: папки программы (work/import/logs/projects) — во временном BG_APP_ROOT, не в репозитории."""
+    monkeypatch.setenv("BG_APP_ROOT", str(tmp_path_factory.mktemp("bg_app_root")))
+
 @pytest.fixture
 def con(): return api.connect()
 

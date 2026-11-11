@@ -2,7 +2,7 @@
 import hashlib, os, sqlite3, time
 from pathlib import Path
 import pytest
-from badge_backend import api, db
+from badge_backend import api, db, app_paths
 from badge_backend.services import project_session as PS
 from badge_backend.services.templates import begin_template_edit, get_template_edit_state
 from badge_backend.services.photos import save_photo, project_base_dir
@@ -181,7 +181,7 @@ def test_live_pid_locked(tmp_path):
 def test_photos_go_to_source_dir_even_if_work_in_temp(tmp_path, monkeypatch):
     monkeypatch.setattr(PS, "should_use_temp_work", lambda d: True)
     s = api.create_project(tmp_path / "p.db")
-    assert "BadgeGenerator-work" in str(s.work_path)
+    assert Path(s.work_path).parent.resolve() == app_paths.work_dir().resolve()   # №1: <папка программы>/work, не %TEMP%
     from io import BytesIO
     from PIL import Image
     buf = BytesIO(); Image.new("RGB", (8, 8), (1, 2, 3)).save(buf, "JPEG")
@@ -294,7 +294,7 @@ def test_unwritable_source_dir_session_goes_to_temp(tmp_path):
         if os.access(src_dir, os.W_OK):
             pytest.skip("каталог всё ещё доступен на запись")
         opened = api.open_project(db)
-        assert "BadgeGenerator-work" in str(opened.work_path)
+        assert Path(opened.work_path).parent.resolve() == app_paths.work_dir().resolve()   # №1
         sess = opened.work_path.with_name(opened.work_path.name + ".bg-session")
         assert sess.is_file()
         assert not (src_dir / "p.db.bg-session").exists()

@@ -197,7 +197,7 @@ def test_legacy_project_db_import(tmp_path, ver):
     con = api.connect(); rep = _imp(api.import_rows, con, sh[0], photo_dir=tmp_path)
     assert rep.added == 1, rep
     pr = api.list_persons(con)[0]
-    assert pr["fields"] == {"last_name": "Ёжиков", "first_name": "Пётр", "Фото": "f.jpg"}   # v7: photo_path → «Фото»
+    assert pr["fields"] == {"last_name": "Ёжиков", "first_name": "Пётр"}   # №4: v7 не создаёт «Фото», фото — в photo_path
     assert pr["photo_path"] == "f.jpg" and pr["print_mark"] == 1
     w = sh[0].work_path; sh[0].close(); sh[0].close()
     assert not w.exists()

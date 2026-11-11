@@ -56,18 +56,17 @@ jobs:
           if-no-files-found: ignore
 
       - name: UI screenshots (remarks)
+        # QA: без continue-on-error — зелёный прогон означает, что снимки сняты
         if: always()
-        continue-on-error: true
         run: python ui/qa_screens.py
 
       - name: Upload screens
         if: always()
-        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: screens
           path: reports/screens/
-          if-no-files-found: ignore
+          if-no-files-found: error
 
       - name: Build (PyInstaller)
         run: pyinstaller --noconfirm --clean packaging/badge_generator.spec
@@ -117,12 +116,16 @@ jobs:
           Start-Sleep -Seconds 15
           if ($p.HasExited) { throw "BadgeGenerator.exe exited early, code $($p.ExitCode)" }
           Stop-Process -Id $p.Id -Force
-          if (-not (Test-Path "$env:APPDATA\BadgeGenerator\project.db")) { throw "project.db not created in %APPDATA%\BadgeGenerator" }
+          # Замечание №1: БД по умолчанию переезжает рядом с exe (Backend докатит); пока принимается и %APPDATA%.
+          $db = @(Get-ChildItem -Path dist\BadgeGenerator -Recurse -Filter project.db -File -ErrorAction SilentlyContinue) + @(Get-Item "$env:APPDATA\BadgeGenerator\project.db" -ErrorAction SilentlyContinue) | Where-Object { $_ }
+          if (-not $db) { throw "project.db not created (dist\BadgeGenerator\** or %APPDATA%\BadgeGenerator)" }
+          $db | ForEach-Object { Write-Host "project.db: $($_.FullName)" }
+          if (Test-Path "$env:APPDATA\BadgeGenerator\project.db") { Write-Warning "project.db still in %APPDATA% (замечание №1: должна быть рядом с exe)" }
 
       - name: Self-test (GUI exe --self-test)
         # Контракт (Frontend, ui/self_test.py): BadgeGenerator.exe --self-test --log <path>
         #   сценарий — ui/qa_click_all.py (встроен в exe; от reports/qa/* сборка не зависит), лог — <path>
-        #   (запасной: %APPDATA%\BadgeGenerator\self_test.log); watchdog Frontend 170 c; 0 — успех, !=0 — провал.
+        #   (запасной, замечание №1: dist\BadgeGenerator\logs\self_test.log — app_paths.logs_dir()); watchdog Frontend 170 c; 0 — успех, !=0 — провал.
         #   Таймаут 180 c -> провал job. Шаг выполняется всегда (без условия): нет хука -> job падает.
         shell: pwsh
         timeout-minutes: 5
@@ -135,11 +138,11 @@ jobs:
           $null = $p.Handle
           if (-not $p.WaitForExit(180000)) {
             Stop-Process -Id $p.Id -Force
-            $alt = "$env:APPDATA\BadgeGenerator\self_test.log"
+            $alt = "dist\BadgeGenerator\logs\self_test.log"
             if (Test-Path $alt) { Copy-Item $alt $log -ErrorAction SilentlyContinue }
             throw "self-test timeout (180 s)"
           }
-          $alt = "$env:APPDATA\BadgeGenerator\self_test.log"
+          $alt = "dist\BadgeGenerator\logs\self_test.log"
           if (-not (Test-Path $log) -and (Test-Path $alt)) { Copy-Item $alt $log }
           if (Test-Path $log) { Get-Content $log -Tail 200 } else { Write-Warning "self-test log not found" }
           if ($p.ExitCode -ne 0) { throw "self-test failed, exit code $($p.ExitCode)" }
@@ -151,7 +154,7 @@ jobs:
           name: selftest-log
           path: |
             ${{ runner.temp }}/selftest/
-            ${{ runner.temp }}/appdata-selftest/BadgeGenerator/*.log
+            dist/BadgeGenerator/logs/*.log
           if-no-files-found: ignore
 
       - uses: actions/upload-artifact@v4

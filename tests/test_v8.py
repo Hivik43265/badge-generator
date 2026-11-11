@@ -37,7 +37,7 @@ def test_migration_v7_to_v8_and_idempotent(tmp_path):
     )
     raw.commit(); raw.close()
     con = api.connect(p)
-    assert db.get_schema_version(con) == 8 == db.LATEST
+    assert db.get_schema_version(con) == db.LATEST >= 8   # №4: LATEST=9 (v9 чистка авто-полей)
     els = {e["type"]: e for e in api.list_elements(con)}
     r = els["rect"]
     assert (r["x"], r["y"], r["w"], r["h"]) == (0, 0, 856, 540)
@@ -48,7 +48,7 @@ def test_migration_v7_to_v8_and_idempotent(tmp_path):
     ln = els["line"]
     assert (ln["x"], ln["y"], ln["w"], ln["h"]) == (px_to_units(10), px_to_units(20), px_to_units(-300), px_to_units(120))
     before = [(e["x"], e["y"], e["w"], e["h"], e["style"]) for e in api.list_elements(con)]
-    assert db.migrate(con) == 8
+    assert db.migrate(con) == db.LATEST
     after = [(e["x"], e["y"], e["w"], e["h"], e["style"]) for e in api.list_elements(con)]
     assert after == before
 

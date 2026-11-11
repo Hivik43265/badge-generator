@@ -31,13 +31,14 @@ def test_migration_v6_realistic_no_loss(tmp_path):
     p = tmp_path / "v6.db"; _v6(p)
     con = db.connect(str(p)); assert db.get_schema_version(con) == db.LATEST
     ps = {r["id"]: api.get_person(con, r["id"]) for r in con.execute("SELECT id FROM persons")}
-    assert ps[1]["fields"]["fio"] == "Иванов" and ps[1]["fields"]["Фото"] == "p/1.jpg" and ps[1]["photo_path"] == "p/1.jpg"
-    assert "Фото" not in ps[2]["fields"] or not ps[2]["fields"]["Фото"]
+    # замечание №4: v7 больше не создаёт поле «Фото»; фото записи остаётся в photo_path
+    assert ps[1]["fields"]["fio"] == "Иванов" and "Фото" not in ps[1]["fields"] and ps[1]["photo_path"] == "p/1.jpg"
+    assert "Фото" not in ps[2]["fields"] and [f["name"] for f in api.list_fields(con)] == ["fio", "dept"]
     assert ps[1]["printed_at"] == "2026-01-03T12:00:00+03:00"
     assert ps[1]["created_at"][:4] == "2026" and ps[1]["created_at"][-6] in "+-"
     els = api.list_elements(con)
     assert len([e for e in els]) == 4 and {e["type"] for e in els} == {"photo", "field", "text", "qr"}
-    assert [e["field_name"] for e in els if e["type"] == "photo"] == ["Фото"]
+    assert [e["field_name"] for e in els if e["type"] == "photo"] == [None]   # №4: фото-объект не привязывается автоматически
     assert api.get_background(con, "front")["color"] == "#EEEEEE"
     assert [t["name"] for t in T.list_templates(con)] == ["Основной"]
 
@@ -77,12 +78,12 @@ def test_link_none_creates_and_unlink_keeps_type():
     assert e["type"] == "field" and e["field_name"] is None
 
 
-def test_photo_insert_creates_photo_field():
+def test_photo_insert_creates_no_field():
+    """Замечание №4: фото-объект без field_name создаётся непривязанным, полей не появляется."""
     con = api.connect()
     api.create_element(con, "photo", 0, 0, 100, 120)
-    f = {x["name"]: x for x in api.list_fields(con)}
-    assert "Фото" in f and f["Фото"]["data_type"] == "image"
-    assert api.list_elements(con)[0]["field_name"] == "Фото"
+    assert api.list_fields(con) == [] and api.list_image_fields(con) == []
+    assert api.list_elements(con)[0]["field_name"] is None
 
 
 def test_photo_view_nondestructive(tmp_path):

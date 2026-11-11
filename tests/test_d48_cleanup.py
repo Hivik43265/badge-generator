@@ -2,7 +2,7 @@
 import os, tempfile, time
 from pathlib import Path
 import pytest
-from badge_backend import db
+from badge_backend import db, app_paths
 from badge_backend.services import sources
 
 @pytest.fixture
@@ -37,7 +37,8 @@ def test_iterdir_error_does_not_raise(tmpdir_env, monkeypatch):
     assert sources._cleanup_stale_work_copies() == []
 
 def test_work_copy_in_own_dir_and_connect_hook(tmpdir_env, monkeypatch):
-    root, d = tmpdir_env
+    root, _ = tmpdir_env
+    d = app_paths.import_dir()          # №1: рабочие копии импорта — <папка программы>/import, не %TEMP%
     from badge_backend.testing import create_legacy_db
     sh = sources.open_source(create_legacy_db(root / "v1.db", version=1))
     w = sh[0].work_path
