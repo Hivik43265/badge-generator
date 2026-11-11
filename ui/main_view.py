@@ -64,9 +64,9 @@ class PreviewPanel(QWidget):
         gen = self._render_gen
         for side in ("front", "back"):
             try:
-                payload = self.api.gather_render_args(self.person_id, side)
+                payload = self.api.gather_render_args(self.person_id, side, field_names=False)
             except KeyError:
-                payload = self.api.gather_render_args(None, side)
+                payload = self.api.gather_render_args(None, side, field_names=False)
             render_pool().start(RenderCardJob(gen, payload, self._render_signals))
         self.caption.setText(f"Запись #{p['id']}" if p else "Пустой шаблон (запись не выбрана)")
         _fl = self.api.list_fields(); labels = {f["name"]: f["label"] or f["name"] for f in _fl}

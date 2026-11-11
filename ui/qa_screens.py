@@ -249,14 +249,14 @@ def shot_07_layer(app, w, path: Path):
 
 def main():
     _ensure_out()
-    from PyQt6.QtCore import QSettings, QCoreApplication
+    from PyQt6.QtCore import QCoreApplication
     from PyQt6.QtWidgets import QApplication
-    from ui.backend_api import BackendAPI, missing_backend
-    from ui.main_window import MainWindow
 
     QCoreApplication.setApplicationName("BadgeGenerator")
     tmp = Path(tempfile.mkdtemp(prefix="bg_qa_screens_"))
-    QSettings.setPath(QSettings.Format.NativeFormat, QSettings.Scope.UserScope, str(tmp / "cfg"))
+    os.environ["BG_APP_ROOT"] = str(tmp)
+    from ui.backend_api import BackendAPI, missing_backend
+    from ui.main_window import MainWindow
     app = QApplication.instance() or QApplication(sys.argv[:1])
 
     shots = {

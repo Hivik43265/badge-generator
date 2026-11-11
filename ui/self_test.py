@@ -1,13 +1,14 @@
 """Встроенный самотест (`BadgeGenerator.exe --self-test`, из исходников: `python main.py --self-test`).
 
-Основа — копия reports/qa/e2e_click_all.py (оригинал QA не меняется). Временная БД и временный QSettings;
+Основа — копия reports/qa/e2e_click_all.py (оригинал QA не меняется). Изоляция — BG_APP_ROOT на временную папку
+(как ожидает badge_backend.app_paths: логи, проекты, settings.ini).
 1) нажать КАЖДЫЙ QAction ленты (+ act_align_*), модальные окна закрываются таймером;
 2) открыть каждый диалог напрямую; 3) «добавить запись → текст на превью» (с полями и без person_fields).
 Любое исключение (в т.ч. в слоте Qt, через sys.excepthook) → FAIL.
 
-Опции: --log <путь> — файл лога (по умолчанию <AppData>/BadgeGenerator/self_test.log).
+Опции: --log <путь> — файл лога (по умолчанию <BG_APP_ROOT>/logs/self_test.log, как app_paths.logs_dir()).
 Сторожевой таймер 240 с → FAIL и код 1. excepthook в режиме самотеста модальных окон не показывает; любое исключение → код 1.
-Лог: stdout и файл (Windows: %APPDATA%\\BadgeGenerator\\self_test.log), строки
+Лог: stdout и файл (logs_dir()/self_test.log), строки
     PASS | <проверка> | <доказательство>
     FAIL | <проверка> | <доказательство/трейсбек>
     ИТОГО: N/M PASS; исключений в слотах: K; tmp=<каталог>
@@ -19,17 +20,17 @@ WATCHDOG_S = 240
 
 
 def run(argv=None, *, app=None, log_file=None, exit_process=False):
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen") if "--show" not in (argv or []) else None
-    from PyQt6.QtCore import QSettings
-    from PyQt6.QtWidgets import QApplication
+    argv = list(argv or [])
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen") if "--show" not in argv else None
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="bg_selftest_"))
-    QSettings.setPath(QSettings.Format.NativeFormat, QSettings.Scope.UserScope, str(tmp / "cfg"))
+    # До импорта путей и создания настроек: app_paths.app_root() читает BG_APP_ROOT.
+    os.environ["BG_APP_ROOT"] = str(tmp)
+    from PyQt6.QtWidgets import QApplication
     app = app or QApplication.instance() or QApplication(list(argv or sys.argv[:1]))
     from . import errors
     errors.install()
     from . import main_view, photo_block
 
-    argv = list(argv or [])
     if log_file is None and "--log" in argv and argv.index("--log") + 1 < len(argv): log_file = argv[argv.index("--log") + 1]
     log_file = os.path.abspath(log_file or os.path.join(errors.log_dir(), "self_test.log"))
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
@@ -88,7 +89,7 @@ def run(argv=None, *, app=None, log_file=None, exit_process=False):
             chk("PDF страница CR80", pdf.is_file() and pdf_pages_are_cr80(pdf), pdf_page_sizes_mm(pdf) if pdf.is_file() else None)
             # рендер карточки Backend (PIL): есть небелые пиксели (координаты не сравниваем)
             from badge_backend import api as _bapi
-            img49 = _bapi.render_card_db(a49.con, pid49, "front", a49.base_dir).convert("L")
+            img49 = _bapi.render_card_db(a49.con, pid49, "front", a49.base_dir, field_names=False).convert("L")
             mn49 = img49.getextrema()[0]
             chk("D49 рендер карточки (текст + Code128): есть небелые пиксели", mn49 < 255, f"min яркость={mn49}; размер={img49.size}")
         except Exception as e:  # noqa: BLE001

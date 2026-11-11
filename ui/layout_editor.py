@@ -394,9 +394,9 @@ class LayoutEditor(QWidget):
         self._render_gen += 1
         gen = self._render_gen
         try:
-            payload = self.api.gather_render_args(person_id, side)
+            payload = self.api.gather_render_args(person_id, side, field_names=False)
         except KeyError:
-            payload = self.api.gather_render_args(None, side)
+            payload = self.api.gather_render_args(None, side, field_names=False)
         render_pool().start(RenderCardJob(gen, payload, self._render_signals))
 
     def _on_canvas_rendered(self, gen, result, side):

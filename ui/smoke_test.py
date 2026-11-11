@@ -172,9 +172,9 @@ ok("редактор: delete_element, стороны")
 # --- предпросмотр ---
 w.show_main(); w._select_person(ivanov); wait_previews(app)
 assert w.stack.currentWidget() is w.db_page and w.preview_panel.person_id == ivanov
-assert w.preview_panel.pixmap.toImage() == QPixmap.fromImage(api.render_card(ivanov, "front")).toImage()
+assert w.preview_panel.pixmap.toImage() == QPixmap.fromImage(api.render_card(ivanov, "front", field_names=False)).toImage()
 w.grab().save(str(shots / "screenshot_preview.png")); w.show_editor()
-api.render_card(ivanov).save(str(shots / "preview_backend_render.png"))
+api.render_card(ivanov, field_names=False).save(str(shots / "preview_backend_render.png"))
 ok("предпросмотр: рендер Backend")
 # --- экспорт: фото в порядке ---
 ex = ExportDialog(api, [ivanov], w); ex.target.setText(str(tmp / "png"))
@@ -349,14 +349,14 @@ for pid in (petrova, ivanov):
     r = w.records.proxy.mapFromSource(w.records.model.index(next(r for r in range(w.records.model.rowCount()) if w.records.model.person_id(r) == pid), 1)).row()
     w.records.view.selectRow(r); wait_previews(app)
     assert w.layout_editor.person_id == pid and w.preview_panel.person_id == pid
-    assert w.layout_editor.canvas_image == api.render_card(pid, "front"), pid
+    assert w.layout_editor.canvas_image == api.render_card(pid, "front", field_names=False), pid
 ok("выбор строки в доке «Записи» → холст = render_card(выбранная запись), предпросмотр синхронизирован")
 w.grab().save(str(shots / "screenshot.png"))
 # пустая БД → пустой шаблон, подсказка; кнопки создают элементы нужных типов
 w.switch_db(tmp / "empty.db"); le = w.layout_editor; wait_previews(app)
 assert api.list_elements() == [] and api.list_elements("back") == [] and le.items() == []
 assert le.hint is not None and le.hint.text() == lem.EMPTY_HINT == "Добавьте элементы: вкладка ленты «Рисование»"
-assert api.render_card(None, "front") == le.canvas_image   # подсказка — не часть рендера
+assert api.render_card(None, "front", field_names=False) == le.canvas_image   # подсказка — не часть рендера
 ok("пустая БД: шаблон пуст (0 элементов), показана подсказка, демо-макет не создан")
 demo.make_logo(tmp / "logo2.png"); api.base_dir = str(tmp)
 made, skipped = {}, []
@@ -606,8 +606,8 @@ pp = w.preview_panel
 people = api.list_persons(); a_id, b_id = people[0]["id"], people[1]["id"]
 for pid in (a_id, b_id):
     w._select_person(pid); wait_previews(app)
-    assert pp.person_id == pid and pp.pixmap.toImage() == QPixmap.fromImage(api.render_card(pid, "front")).toImage()
-    assert pp.pixmaps["back"].toImage() == QPixmap.fromImage(api.render_card(pid, "back")).toImage()
+    assert pp.person_id == pid and pp.pixmap.toImage() == QPixmap.fromImage(api.render_card(pid, "front", field_names=False)).toImage()
+    assert pp.pixmaps["back"].toImage() == QPixmap.fromImage(api.render_card(pid, "back", field_names=False)).toImage()
     rows = pp.db_rows(); f = api.get_person(pid)["fields"]
     assert rows and any(v in f.values() for _k, v in rows) and not any("None" in k for k, _v in rows), rows
 ok(f"выбор строки → «Сторона 1/2» = render_card, «Поле шаблона | Значение из БД»: {rows[:3]}…")

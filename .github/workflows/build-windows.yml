@@ -101,31 +101,28 @@ jobs:
           Start-Sleep -Seconds 15
           if ($p.HasExited) { throw "BadgeGenerator.exe exited early, code $($p.ExitCode)" }
           Stop-Process -Id $p.Id -Force
-          if (-not (Test-Path "$env:APPDATA\BadgeGenerator\project.db")) { throw "project.db not created in %APPDATA%\BadgeGenerator" }
+          if (-not (Test-Path ".\dist\projects\project.db")) { throw "project.db not created in dist/projects (app_paths.projects_dir)" }
 
       - name: Self-test (GUI exe --self-test)
         # Контракт (Frontend, ui/self_test.py): BadgeGenerator.exe --self-test --log <path>
         #   сценарий — ui/qa_click_all.py (встроен в exe; от reports/qa/* сборка не зависит), лог — <path>
-        #   (запасной: %APPDATA%\BadgeGenerator\self_test.log); watchdog Frontend 170 c; 0 — успех, !=0 — провал.
+        #   по умолчанию (без --log): app_paths.logs_dir()/self_test.log — рядом с exe: dist/logs/
+        #   (изоляция самотеста: BG_APP_ROOT внутри процесса). 0 — успех, !=0 — провал.
         #   Таймаут 180 c -> провал job. Шаг выполняется всегда (без условия): нет хука -> job падает.
         shell: pwsh
         timeout-minutes: 5
         run: |
-          $env:APPDATA = "$env:RUNNER_TEMP\appdata-selftest"
-          $log = "$env:RUNNER_TEMP\selftest\selftest.log"
-          New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null
+          $logs = Join-Path (Resolve-Path .\dist) "logs"
+          New-Item -ItemType Directory -Force -Path $logs | Out-Null
+          $log = Join-Path $logs "self_test.log"
           if (-not (Select-String -Path main.py -Pattern '--self-test' -SimpleMatch -Quiet)) { throw "main.py has no --self-test hook (Frontend)" }
           $p = Start-Process -FilePath .\dist\BadgeGenerator.exe -ArgumentList '--self-test','--log',"`"$log`"" -PassThru
           $null = $p.Handle
           if (-not $p.WaitForExit(180000)) {
             Stop-Process -Id $p.Id -Force
-            $alt = "$env:APPDATA\BadgeGenerator\self_test.log"
-            if (Test-Path $alt) { Copy-Item $alt $log -ErrorAction SilentlyContinue }
             throw "self-test timeout (180 s)"
           }
-          $alt = "$env:APPDATA\BadgeGenerator\self_test.log"
-          if (-not (Test-Path $log) -and (Test-Path $alt)) { Copy-Item $alt $log }
-          if (Test-Path $log) { Get-Content $log -Tail 200 } else { Write-Warning "self-test log not found" }
+          if (Test-Path $log) { Get-Content $log -Tail 200 } else { Write-Warning "self-test log not found: $log" }
           if ($p.ExitCode -ne 0) { throw "self-test failed, exit code $($p.ExitCode)" }
 
       - name: Upload self-test log
@@ -134,8 +131,7 @@ jobs:
         with:
           name: selftest-log
           path: |
-            ${{ runner.temp }}/selftest/
-            ${{ runner.temp }}/appdata-selftest/BadgeGenerator/*.log
+            dist/logs/
           if-no-files-found: ignore
 
       - uses: actions/upload-artifact@v4
